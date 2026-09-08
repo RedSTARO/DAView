@@ -162,10 +162,12 @@ class PlaybackService(
         sessions[id] = session
 
         if (session.isExternal) {
-            Thread.ofVirtual().start {
+            // A platform thread, not a virtual one: Android has none, and this is
+            // a single short-lived read of the container index.
+            Thread({
                 runCatching { session.cueIndex = streams.cueIndex(item) }
                     .onFailure { log.debug("cue index unavailable for {}", item.name) }
-            }
+            }, "daview-cue-index").apply { isDaemon = true }.start()
         }
         return session
     }

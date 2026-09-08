@@ -151,13 +151,21 @@ class StreamService(
      * bound and a few parallel readers cut wall-clock time dramatically without
      * putting real load on the storage backend.
      */
+    /**
+     * Plain platform threads rather than virtual ones: Android has no virtual
+     * threads, and the pool is bounded by [parallelism] anyway.
+     */
+    private val probeThreadFactory = java.util.concurrent.ThreadFactory { runnable ->
+        Thread(runnable, "daview-probe").apply { isDaemon = true }
+    }
+
     fun probeMissing(libraryId: String, limit: Int, parallelism: Int = 6, onProgress: (Int, Int, String) -> Unit) {
         val pending = repository.itemsNeedingProbe(libraryId, limit)
         if (pending.isEmpty()) return
         val done = java.util.concurrent.atomic.AtomicInteger()
         val gate = java.util.concurrent.Semaphore(parallelism.coerceAtLeast(1))
         val threads = pending.map { item ->
-            Thread.ofVirtual().unstarted {
+            probeThreadFactory.newThread {
                 gate.acquire()
                 try {
                     runCatching { probeItem(item) }

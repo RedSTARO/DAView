@@ -39,6 +39,9 @@ dependencies {
     implementation(libs.ktor.client.cio)
     implementation(libs.ktor.client.content.negotiation)
 
+    // Blocking HTTP that also exists on Android, unlike java.net.http.
+    implementation(libs.okhttp)
+
     implementation(libs.sqlite.jdbc)
     implementation(libs.logback.classic)
 

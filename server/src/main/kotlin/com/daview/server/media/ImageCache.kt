@@ -1,14 +1,12 @@
 package com.daview.server.media
 
 import org.slf4j.LoggerFactory
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
-import java.time.Duration
+import java.util.concurrent.TimeUnit
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 
@@ -21,9 +19,10 @@ class ImageCache(dataDir: Path) {
     private val log = LoggerFactory.getLogger(ImageCache::class.java)
     private val dir: Path = dataDir.resolve("cache").resolve("images").also { it.createDirectories() }
 
-    private val http: HttpClient = HttpClient.newBuilder()
-        .followRedirects(HttpClient.Redirect.NORMAL)
-        .connectTimeout(Duration.ofSeconds(15))
+    private val http: OkHttpClient = OkHttpClient.Builder()
+        .followRedirects(true)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
     data class Entry(val file: Path, val contentType: String)
@@ -37,20 +36,21 @@ class ImageCache(dataDir: Path) {
         val file = dir.resolve("$key.$extension")
         if (file.exists() && Files.size(file) > 0) return Entry(file, contentType(extension))
 
-        val request = HttpRequest.newBuilder(URI.create(remoteUrl))
-            .GET()
-            .timeout(Duration.ofSeconds(30))
+        val request = Request.Builder()
+            .url(remoteUrl)
+            .get()
             .header("User-Agent", "DAView/1.0")
             .build()
-        val response = runCatching { http.send(request, HttpResponse.BodyHandlers.ofByteArray()) }
+        val response = runCatching { http.newCall(request).execute() }
             .getOrElse {
                 log.warn("下载图片失败 {}: {}", remoteUrl, it.message)
                 return null
             }
-        if (response.statusCode() !in 200..299 || response.body().isEmpty()) return null
+        val bytes = response.use { if (it.isSuccessful) it.body.bytes() else ByteArray(0) }
+        if (bytes.isEmpty()) return null
 
         val tmp = dir.resolve("$key.$extension.tmp")
-        Files.write(tmp, response.body())
+        Files.write(tmp, bytes)
         Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         return Entry(file, contentType(extension))
     }

@@ -19,13 +19,13 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
-import java.net.URI
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
-import java.time.Duration
+import java.util.concurrent.TimeUnit
 
 data class ScrapeCandidate(
     val providerId: String,
@@ -91,9 +91,10 @@ interface MetadataScraper {
 abstract class HttpScraper(protected val repository: Repository?) {
     protected val log = LoggerFactory.getLogger(javaClass)
 
-    protected val http: HttpClient = HttpClient.newBuilder()
-        .followRedirects(HttpClient.Redirect.NORMAL)
-        .connectTimeout(Duration.ofSeconds(15))
+    protected val http: OkHttpClient = OkHttpClient.Builder()
+        .followRedirects(true)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
     protected val json = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -109,23 +110,26 @@ abstract class HttpScraper(protected val repository: Repository?) {
                 return JsonElementOrNull(runCatching { json.parseToJsonElement(it) }.getOrNull())
             }
         }
-        val builder = HttpRequest.newBuilder(URI.create(url))
-            .GET()
-            .timeout(Duration.ofSeconds(25))
+        val builder = Request.Builder()
+            .url(url)
+            .get()
             .header("Accept", "application/json")
             .header("User-Agent", USER_AGENT)
         headers.forEach { (k, v) -> builder.header(k, v) }
-        val response = runCatching { http.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)) }
+        val response = runCatching { http.newCall(builder.build()).execute() }
             .getOrElse {
                 log.warn("请求 {} 失败: {}", url, it.message)
                 return JsonElementOrNull(null)
             }
-        if (response.statusCode() !in 200..299) {
-            log.warn("请求 {} 返回 HTTP {}", url, response.statusCode())
-            return JsonElementOrNull(null)
+        val body = response.use {
+            if (!it.isSuccessful) {
+                log.warn("请求 {} 返回 HTTP {}", url, it.code)
+                return JsonElementOrNull(null)
+            }
+            it.body.string()
         }
-        cacheKey?.let { repository?.cachePut(it, response.body()) }
-        return JsonElementOrNull(runCatching { json.parseToJsonElement(response.body()) }.getOrNull())
+        cacheKey?.let { repository?.cachePut(it, body) }
+        return JsonElementOrNull(runCatching { json.parseToJsonElement(body) }.getOrNull())
     }
 
     protected fun postJson(
@@ -133,23 +137,25 @@ abstract class HttpScraper(protected val repository: Repository?) {
         body: JsonObject,
         headers: Map<String, String> = emptyMap()
     ): JsonElementOrNull {
-        val builder = HttpRequest.newBuilder(URI.create(url))
-            .POST(HttpRequest.BodyPublishers.ofString(body.toString(), StandardCharsets.UTF_8))
-            .timeout(Duration.ofSeconds(25))
-            .header("Content-Type", "application/json")
+        val builder = Request.Builder()
+            .url(url)
+            .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
             .header("Accept", "application/json")
             .header("User-Agent", USER_AGENT)
         headers.forEach { (k, v) -> builder.header(k, v) }
-        val response = runCatching { http.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)) }
+        val response = runCatching { http.newCall(builder.build()).execute() }
             .getOrElse {
                 log.warn("请求 {} 失败: {}", url, it.message)
                 return JsonElementOrNull(null)
             }
-        if (response.statusCode() !in 200..299) {
-            log.warn("请求 {} 返回 HTTP {}", url, response.statusCode())
-            return JsonElementOrNull(null)
+        return response.use {
+            if (!it.isSuccessful) {
+                log.warn("请求 {} 返回 HTTP {}", url, it.code)
+                JsonElementOrNull(null)
+            } else {
+                JsonElementOrNull(runCatching { json.parseToJsonElement(it.body.string()) }.getOrNull())
+            }
         }
-        return JsonElementOrNull(runCatching { json.parseToJsonElement(response.body()) }.getOrNull())
     }
 
     protected fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8)
@@ -161,6 +167,7 @@ abstract class HttpScraper(protected val repository: Repository?) {
 
     companion object {
         const val USER_AGENT = "DAView/1.0 (+https://github.com/daview)"
+        val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }
 
