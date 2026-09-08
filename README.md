@@ -207,7 +207,7 @@ POST /api/sync/pull       # 拉回并合并
 
 | Job | 平台 | 产物 |
 | --- | --- | --- |
-| `test` | ubuntu | `:server:test`，报告作为 artifact |
+| `test` | ubuntu | `:core:jvmTest`，报告作为 artifact |
 | `msi` | windows | `composeApp/build/compose/binaries/main/msi/*.msi` |
 | `apk` | ubuntu | `composeApp/build/outputs/apk/debug/*.apk` |
 
@@ -323,15 +323,19 @@ DAVIEW_WEB_DIR=...          # 网页客户端目录，默认取 composeApp 的�
 
 ```
 shared/      KMP：DTO 与 REST 客户端（jvm / android / wasmJs）
-server/      KMP core（jvm / android）：WebDAV、扫描、命名解析、刮削、SQLite、流媒体、图片缓存
-             共享源码在 src/core，**不能**放 src/main——传统 Android DSL 下那也是 AGP 自己的
-             main 源集，重复注册会让 compileDebugKotlinAndroid 一直报 UP-TO-DATE，APK 里带的
-             是旧代码
+core/        KMP（jvm / android）：WebDAV、扫描、命名解析、刮削、SQLite、流媒体、图片缓存、同步
+             里面没有 HTTP 服务端。桌面端与 Android 端直接调它，所以它们不必为了跟自己说话
+             而开一个端口
+server/      core 的 HTTP 外壳：路由、访问令牌、托管网页客户端的静态文件。只有网页端需要它
 server-app/  独立服务端的启动器，只有一个 main()
 composeApp/  Compose Multiplatform 客户端（androidMain / desktopMain / wasmJsMain）
 docs/        架构说明与实测记录
 
-`server` 的两个 target 编译同一份 `src/main/kotlin`。唯一真正有平台差异的是 SQL 驱动
+两个模块的共享源码都放在 `src/core`，**不能**放 `src/main`——传统 Android DSL 下那也是
+AGP 自己的 main 源集，重复注册会让 `compileDebugKotlinAndroid` 一直报 UP-TO-DATE，
+APK 里带的是旧代码。
+
+`core` 的两个 target 编译同一份源码。唯一真正有平台差异的是 SQL 驱动
 （JDBC / Android SQLite），它是注入进 `ServerContext` 的，所以既不需要 expect/actual，
 也不需要中间 source set。
 ```
@@ -368,7 +372,7 @@ docs/        架构说明与实测记录
 ## 测试
 
 ```bash
-./gradlew :server:jvmTest
+./gradlew :core:jvmTest
 ```
 
 覆盖命名解析（季 / 集 / 双语字幕 / 噪音过滤）、外置播放器的进度推算

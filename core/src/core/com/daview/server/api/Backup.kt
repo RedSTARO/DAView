@@ -16,12 +16,6 @@ import com.daview.shared.model.MetadataProvider
 import com.daview.shared.model.ScraperSettingsDto
 import com.daview.shared.model.StorageSettingsDto
 import com.daview.shared.model.UserDataDto
-import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
-import io.ktor.server.application.ApplicationCall
-import io.ktor.server.response.header
-import io.ktor.server.response.respondBytesWriter
-import io.ktor.utils.io.writeFully
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import java.time.Instant
@@ -52,80 +46,77 @@ private const val ITEM_PAGE = 400
 private val stampFormat: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyyMMdd-HHmm").withZone(ZoneId.systemDefault())
 
+/** The name a downloaded backup lands under. */
+fun backupFileName(): String = "daview-backup-${stampFormat.format(Instant.now())}.json"
+
 /**
- * Writes the backup straight to the socket instead of building it in memory.
+ * The backup as a lazy series of JSON fragments, rather than one string.
+ *
  * A full catalogue is a few thousand items carrying overviews, cast lists and
- * track lists; the server is expected to run on a small heap, so the item array
- * is emitted a page at a time.
+ * track lists, and this runs on a small heap — on a phone, on whatever the
+ * desktop JVM was given — so the item array is produced a page at a time and
+ * whoever is writing it out never holds more than one page.
+ *
+ * The transport is deliberately not here: this module knows the format, and
+ * whatever is on the other end (a socket, a file the user picked) knows how to
+ * write bytes.
  */
-suspend fun ApplicationCall.respondBackup(context: ServerContext, options: BackupOptions) {
-    response.header(
-        HttpHeaders.ContentDisposition,
-        "attachment; filename=\"daview-backup-${stampFormat.format(Instant.now())}.json\""
-    )
-    respondBytesWriter(contentType = ContentType.Application.Json) {
-        suspend fun emit(text: String) {
-            val bytes = text.toByteArray(Charsets.UTF_8)
-            writeFully(bytes, 0, bytes.size)
-        }
+fun backupChunks(context: ServerContext, options: BackupOptions): Sequence<String> = sequence {
+    yield("{\"format\":\"$BACKUP_FORMAT\",\"version\":$BACKUP_VERSION")
+    yield(",\"createdAt\":${System.currentTimeMillis()}")
+    yield(",\"serverVersion\":\"$DAVIEW_VERSION\"")
+    yield(",\"containsSecrets\":${options.secrets}")
 
-        emit("{\"format\":\"$BACKUP_FORMAT\",\"version\":$BACKUP_VERSION")
-        emit(",\"createdAt\":${System.currentTimeMillis()}")
-        emit(",\"serverVersion\":\"$DAVIEW_VERSION\"")
-        emit(",\"containsSecrets\":${options.secrets}")
-
-        if (options.settings) {
-            emit(",\"settings\":")
-            emit(backupJson.encodeToString(BackupSettingsDto.serializer(), context.backupSettings(options.secrets)))
-        }
-        if (options.libraries) {
-            emit(",\"libraries\":")
-            emit(
-                backupJson.encodeToString(
-                    ListSerializer(LibraryDto.serializer()),
-                    context.repository.libraries()
-                )
-            )
-        }
-        if (options.userData) {
-            emit(",\"userData\":")
-            emit(
-                backupJson.encodeToString(
-                    ListSerializer(BackupUserDataDto.serializer()),
-                    context.repository.allUserData()
-                        .map { BackupUserDataDto(it.itemId, it.data, it.updatedAt) }
-                )
-            )
-        }
-        if (options.pins) {
-            emit(",\"pins\":")
-            emit(
-                backupJson.encodeToString(
-                    ListSerializer(BackupPinDto.serializer()),
-                    context.repository.allPins().mapNotNull { it.toBackup() }
-                )
-            )
-        }
-        if (options.items) {
-            emit(",\"items\":[")
-            var offset = 0
-            var first = true
-            while (true) {
-                val page = context.repository.itemRecordsPage(ITEM_PAGE, offset)
-                if (page.isEmpty()) break
-                for (record in page) {
-                    if (!first) emit(",")
-                    first = false
-                    emit(backupJson.encodeToString(BackupItemDto.serializer(), record.toBackup()))
-                }
-                offset += page.size
-                if (page.size < ITEM_PAGE) break
-            }
-            emit("]")
-        }
-        emit("}")
-        flush()
+    if (options.settings) {
+        yield(",\"settings\":")
+        yield(backupJson.encodeToString(BackupSettingsDto.serializer(), context.backupSettings(options.secrets)))
     }
+    if (options.libraries) {
+        yield(",\"libraries\":")
+        yield(
+            backupJson.encodeToString(
+                ListSerializer(LibraryDto.serializer()),
+                context.repository.libraries()
+            )
+        )
+    }
+    if (options.userData) {
+        yield(",\"userData\":")
+        yield(
+            backupJson.encodeToString(
+                ListSerializer(BackupUserDataDto.serializer()),
+                context.repository.allUserData()
+                    .map { BackupUserDataDto(it.itemId, it.data, it.updatedAt) }
+            )
+        )
+    }
+    if (options.pins) {
+        yield(",\"pins\":")
+        yield(
+            backupJson.encodeToString(
+                ListSerializer(BackupPinDto.serializer()),
+                context.repository.allPins().mapNotNull { it.toBackup() }
+            )
+        )
+    }
+    if (options.items) {
+        yield(",\"items\":[")
+        var offset = 0
+        var first = true
+        while (true) {
+            val page = context.repository.itemRecordsPage(ITEM_PAGE, offset)
+            if (page.isEmpty()) break
+            for (record in page) {
+                if (!first) yield(",")
+                first = false
+                yield(backupJson.encodeToString(BackupItemDto.serializer(), record.toBackup()))
+            }
+            offset += page.size
+            if (page.size < ITEM_PAGE) break
+        }
+        yield("]")
+    }
+    yield("}")
 }
 
 /**

@@ -37,7 +37,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew :server:jvmTest
+      - run: ./gradlew :core:jvmTest
 
       # There is no dynamic version scheme in the Gradle build, so the human
       # label for artifacts and release notes is resolved here: the tag name for
@@ -70,7 +70,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-report
-          path: server/build/reports/tests/jvmTest
+          path: core/build/reports/tests/jvmTest
           if-no-files-found: ignore
 
   # ─── Android ────────────────────────────────────────────────────────────────
