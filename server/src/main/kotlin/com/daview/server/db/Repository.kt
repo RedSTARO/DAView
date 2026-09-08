@@ -12,8 +12,6 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
-import java.sql.Connection
-import java.sql.ResultSet
 
 private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
 
@@ -41,21 +39,21 @@ class Repository(private val db: Database) {
     // ------------------------------------------------------------ libraries
 
     fun libraries(): List<LibraryDto> = db.read { connection ->
-        connection.prepareStatement(
+        connection.statement(
             "SELECT l.*, (SELECT COUNT(*) FROM items i WHERE i.library_id = l.id AND i.kind IN ('MOVIE','SERIES')) AS item_count " +
                 "FROM libraries l ORDER BY l.created_at"
         ).useQuery { it.map(::readLibrary) }
     }
 
     fun library(id: String): LibraryDto? = db.read { connection ->
-        connection.prepareStatement(
+        connection.statement(
             "SELECT l.*, (SELECT COUNT(*) FROM items i WHERE i.library_id = l.id AND i.kind IN ('MOVIE','SERIES')) AS item_count " +
                 "FROM libraries l WHERE l.id = ?"
         ).apply { setString(1, id) }.useQuery { if (it.next()) readLibrary(it) else null }
     }
 
     fun upsertLibrary(library: LibraryDto) = db.transaction { connection ->
-        connection.prepareStatement(
+        connection.statement(
             """
             INSERT INTO libraries(id, name, kind, path, provider_order, language, last_scan_at, image_url, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -71,7 +69,7 @@ class Repository(private val db: Database) {
             statement.setString(4, library.path)
             statement.setString(5, json.encodeToString(providerListSerializer, library.providerOrder))
             statement.setString(6, library.language)
-            library.lastScanAt?.let { statement.setLong(7, it) } ?: statement.setNull(7, java.sql.Types.INTEGER)
+            library.lastScanAt?.let { statement.setLong(7, it) } ?: statement.setNull(7)
             statement.setString(8, library.imageUrl)
             statement.setLong(9, System.currentTimeMillis())
             statement.executeUpdate()
@@ -79,29 +77,29 @@ class Repository(private val db: Database) {
     }
 
     fun deleteLibrary(id: String) = db.transaction { connection ->
-        connection.prepareStatement("DELETE FROM user_data WHERE item_id IN (SELECT id FROM items WHERE library_id = ?)")
+        connection.statement("DELETE FROM user_data WHERE item_id IN (SELECT id FROM items WHERE library_id = ?)")
             .use { it.setString(1, id); it.executeUpdate() }
-        connection.prepareStatement("DELETE FROM items WHERE library_id = ?")
+        connection.statement("DELETE FROM items WHERE library_id = ?")
             .use { it.setString(1, id); it.executeUpdate() }
-        connection.prepareStatement("DELETE FROM libraries WHERE id = ?")
+        connection.statement("DELETE FROM libraries WHERE id = ?")
             .use { it.setString(1, id); it.executeUpdate() }
     }
 
     fun markScanned(libraryId: String, at: Long) = db.transaction { connection ->
-        connection.prepareStatement("UPDATE libraries SET last_scan_at = ? WHERE id = ?").use {
+        connection.statement("UPDATE libraries SET last_scan_at = ? WHERE id = ?").use {
             it.setLong(1, at); it.setString(2, libraryId); it.executeUpdate()
         }
     }
 
-    private fun readLibrary(rs: ResultSet) = LibraryDto(
-        id = rs.getString("id"),
-        name = rs.getString("name"),
-        kind = runCatching { LibraryKind.valueOf(rs.getString("kind")) }.getOrDefault(LibraryKind.OTHER),
-        path = rs.getString("path"),
+    private fun readLibrary(rs: SqlCursor) = LibraryDto(
+        id = rs.requireString("id"),
+        name = rs.requireString("name"),
+        kind = runCatching { LibraryKind.valueOf(rs.requireString("kind")) }.getOrDefault(LibraryKind.OTHER),
+        path = rs.requireString("path"),
         providerOrder = runCatching {
-            json.decodeFromString(providerListSerializer, rs.getString("provider_order"))
+            json.decodeFromString(providerListSerializer, rs.requireString("provider_order"))
         }.getOrDefault(emptyList()),
-        language = rs.getString("language"),
+        language = rs.requireString("language"),
         itemCount = runCatching { rs.getInt("item_count") }.getOrDefault(0),
         lastScanAt = rs.getLongOrNull("last_scan_at"),
         imageUrl = rs.getString("image_url")
@@ -123,7 +121,7 @@ class Repository(private val db: Database) {
     private fun writeItems(records: List<ItemRecord>, sql: String) {
         if (records.isEmpty()) return
         db.transaction { connection ->
-            connection.prepareStatement(sql).use { statement ->
+            connection.statement(sql).use { statement ->
                 records.forEach { record ->
                     bindItem(statement, record)
                     statement.addBatch()
@@ -134,40 +132,40 @@ class Repository(private val db: Database) {
     }
 
     fun item(id: String): MediaItemDto? = db.read { connection ->
-        connection.prepareStatement("$SELECT_ITEM WHERE i.id = ?")
+        connection.statement("$SELECT_ITEM WHERE i.id = ?")
             .apply { setString(1, id) }
             .useQuery { if (it.next()) readItem(it) else null }
     }
 
     fun itemRecord(id: String): ItemRecord? = db.read { connection ->
-        connection.prepareStatement("$SELECT_ITEM WHERE i.id = ?")
+        connection.statement("$SELECT_ITEM WHERE i.id = ?")
             .apply { setString(1, id) }
             .useQuery { if (it.next()) readItemRecord(it) else null }
     }
 
     fun children(parentId: String): List<MediaItemDto> = db.read { connection ->
-        connection.prepareStatement(
+        connection.statement(
             "$SELECT_ITEM WHERE i.parent_id = ? ORDER BY COALESCE(i.index_number, 99999), i.sort_name"
         ).apply { setString(1, parentId) }.useQuery { it.map(::readItem) }
     }
 
     fun episodesOfSeries(seriesId: String): List<MediaItemDto> = db.read { connection ->
-        connection.prepareStatement(
+        connection.statement(
             "$SELECT_ITEM WHERE i.series_id = ? AND i.kind = 'EPISODE' " +
                 "ORDER BY COALESCE(i.parent_index_number, 0), COALESCE(i.index_number, 99999)"
         ).apply { setString(1, seriesId) }.useQuery { it.map(::readItem) }
     }
 
     fun idsInLibrary(libraryId: String): Set<String> = db.read { connection ->
-        connection.prepareStatement("SELECT id FROM items WHERE library_id = ?")
+        connection.statement("SELECT id FROM items WHERE library_id = ?")
             .apply { setString(1, libraryId) }
-            .useQuery { rs -> rs.map { it.getString(1) }.toSet() }
+            .useQuery { rs -> rs.map { it.requireString("id") }.toSet() }
     }
 
     fun deleteItems(ids: Collection<String>) {
         if (ids.isEmpty()) return
         db.transaction { connection ->
-            connection.prepareStatement("DELETE FROM items WHERE id = ?").use { statement ->
+            connection.statement("DELETE FROM items WHERE id = ?").use { statement ->
                 ids.forEach { statement.setString(1, it); statement.addBatch() }
                 statement.executeBatch()
             }
@@ -208,11 +206,11 @@ class Repository(private val db: Database) {
             else -> "i.sort_name"
         }
 
-        val total = connection.prepareStatement(
+        val total = connection.statement(
             "SELECT COUNT(*) FROM items i LEFT JOIN user_data u ON u.item_id = i.id $where"
-        ).apply { bind(binds) }.useQuery { if (it.next()) it.getInt(1) else 0 }
+        ).apply { bind(binds) }.useQuery { if (it.next()) it.getIntAt(1) else 0 }
 
-        val items = connection.prepareStatement(
+        val items = connection.statement(
             "$SELECT_ITEM $where ORDER BY $order LIMIT ? OFFSET ?"
         ).apply {
             bind(binds)
@@ -225,7 +223,7 @@ class Repository(private val db: Database) {
 
     /** Partially watched playable items, most recent first. */
     fun resume(limit: Int): List<MediaItemDto> = db.read { connection ->
-        connection.prepareStatement(
+        connection.statement(
             "$SELECT_ITEM WHERE u.position_ms > 0 AND COALESCE(u.played, 0) = 0 " +
                 "AND i.kind IN ('MOVIE','EPISODE') ORDER BY u.last_played_at DESC LIMIT ?"
         ).apply { setInt(1, limit) }.useQuery { it.map(::readItem) }
@@ -233,7 +231,7 @@ class Repository(private val db: Database) {
 
     /** First unwatched episode of every series that has been started. */
     fun nextUp(limit: Int): List<MediaItemDto> = db.read { connection ->
-        connection.prepareStatement(
+        connection.statement(
             """
             $SELECT_ITEM
             WHERE i.kind = 'EPISODE'
@@ -259,7 +257,7 @@ class Repository(private val db: Database) {
 
     fun latest(libraryId: String?, limit: Int): List<MediaItemDto> = db.read { connection ->
         val filter = if (libraryId == null) "" else "AND i.library_id = ?"
-        connection.prepareStatement(
+        connection.statement(
             "$SELECT_ITEM WHERE i.kind IN ('MOVIE','SERIES') $filter ORDER BY i.date_created DESC LIMIT ?"
         ).apply {
             if (libraryId == null) setInt(1, limit) else { setString(1, libraryId); setInt(2, limit) }
@@ -268,43 +266,43 @@ class Repository(private val db: Database) {
 
     fun itemsNeedingScrape(libraryId: String, force: Boolean): List<MediaItemDto> = db.read { connection ->
         val condition = if (force) "" else "AND i.scraped_at IS NULL"
-        connection.prepareStatement(
+        connection.statement(
             "$SELECT_ITEM WHERE i.library_id = ? AND i.kind IN ('MOVIE','SERIES') $condition ORDER BY i.sort_name"
         ).apply { setString(1, libraryId) }.useQuery { it.map(::readItem) }
     }
 
     fun itemsNeedingProbe(libraryId: String, limit: Int): List<MediaItemDto> = db.read { connection ->
-        connection.prepareStatement(
+        connection.statement(
             "$SELECT_ITEM WHERE i.library_id = ? AND i.kind IN ('MOVIE','EPISODE') AND i.probed_at IS NULL LIMIT ?"
         ).apply { setString(1, libraryId); setInt(2, limit) }.useQuery { it.map(::readItem) }
     }
 
     /** One page of the whole catalogue, ordered so paging is stable. Used by the backup export. */
     fun itemRecordsPage(limit: Int, offset: Int): List<ItemRecord> = db.read { connection ->
-        connection.prepareStatement("$SELECT_ITEM ORDER BY i.id LIMIT ? OFFSET ?")
+        connection.statement("$SELECT_ITEM ORDER BY i.id LIMIT ? OFFSET ?")
             .apply { setInt(1, limit); setInt(2, offset) }
             .useQuery { it.map(::readItemRecord) }
     }
 
     fun totalItemCount(): Int = db.read { connection ->
-        connection.prepareStatement("SELECT COUNT(*) FROM items").useQuery { if (it.next()) it.getInt(1) else 0 }
+        connection.statement("SELECT COUNT(*) FROM items").useQuery { if (it.next()) it.getIntAt(1) else 0 }
     }
 
     // ------------------------------------------------------------ user data
 
     fun userData(itemId: String): UserDataDto = db.read { connection ->
-        connection.prepareStatement("SELECT * FROM user_data WHERE item_id = ?")
+        connection.statement("SELECT * FROM user_data WHERE item_id = ?")
             .apply { setString(1, itemId) }
             .useQuery { if (it.next()) readUserData(it, null) else UserDataDto() }
     }
 
     /** Every watch-state row, for the backup export and for sync. */
     fun allUserData(): List<UserDataRow> = db.read { connection ->
-        connection.prepareStatement("SELECT * FROM user_data ORDER BY item_id")
+        connection.statement("SELECT * FROM user_data ORDER BY item_id")
             .useQuery { rs ->
                 rs.map {
                     UserDataRow(
-                        itemId = it.getString("item_id"),
+                        itemId = it.requireString("item_id"),
                         data = readUserData(it, null),
                         updatedAt = it.getLongOrNull("updated_at") ?: 0L
                     )
@@ -317,15 +315,15 @@ class Repository(private val db: Database) {
      * without diffing every row: the newest timestamp plus the row count.
      */
     fun userDataFingerprint(): Pair<Long, Int> = db.read { connection ->
-        connection.prepareStatement("SELECT COALESCE(MAX(updated_at), 0), COUNT(*) FROM user_data")
-            .useQuery { if (it.next()) it.getLong(1) to it.getInt(2) else 0L to 0 }
+        connection.statement("SELECT COALESCE(MAX(updated_at), 0), COUNT(*) FROM user_data")
+            .useQuery { if (it.next()) it.getLongAt(1) to it.getIntAt(2) else 0L to 0 }
     }
 
     /** When a watch-state row last changed, or null when there is no such row. */
     fun userDataUpdatedAt(itemId: String): Long? = db.read { connection ->
-        connection.prepareStatement("SELECT updated_at FROM user_data WHERE item_id = ?")
+        connection.statement("SELECT updated_at FROM user_data WHERE item_id = ?")
             .apply { setString(1, itemId) }
-            .useQuery { if (it.next()) it.getLong(1) else null }
+            .useQuery { if (it.next()) it.getLongAt(1) else null }
     }
 
     /**
@@ -338,7 +336,7 @@ class Repository(private val db: Database) {
         data: UserDataDto,
         updatedAt: Long = System.currentTimeMillis()
     ) = db.transaction { connection ->
-        connection.prepareStatement(
+        connection.statement(
             """
             INSERT INTO user_data(item_id, position_ms, played, play_count, favorite,
                                   last_played_at, audio_stream_index, subtitle_stream_index, updated_at)
@@ -357,9 +355,9 @@ class Repository(private val db: Database) {
             statement.setInt(3, if (data.played) 1 else 0)
             statement.setInt(4, data.playCount)
             statement.setInt(5, if (data.favorite) 1 else 0)
-            data.lastPlayedAt?.let { statement.setLong(6, it) } ?: statement.setNull(6, java.sql.Types.INTEGER)
-            data.audioStreamIndex?.let { statement.setInt(7, it) } ?: statement.setNull(7, java.sql.Types.INTEGER)
-            data.subtitleStreamIndex?.let { statement.setInt(8, it) } ?: statement.setNull(8, java.sql.Types.INTEGER)
+            data.lastPlayedAt?.let { statement.setLong(6, it) } ?: statement.setNull(6)
+            data.audioStreamIndex?.let { statement.setInt(7, it) } ?: statement.setNull(7)
+            data.subtitleStreamIndex?.let { statement.setInt(8, it) } ?: statement.setNull(8)
             statement.setLong(9, updatedAt)
             statement.executeUpdate()
         }
@@ -383,7 +381,7 @@ class Repository(private val db: Database) {
         val playCount = if (played && !existing.played) existing.playCount + 1 else existing.playCount
 
         db.transaction { connection ->
-            connection.prepareStatement(
+            connection.statement(
                 """
                 INSERT INTO user_data(item_id, position_ms, played, play_count, favorite,
                                       last_played_at, audio_stream_index, subtitle_stream_index, updated_at)
@@ -405,8 +403,8 @@ class Repository(private val db: Database) {
                 statement.setInt(4, playCount)
                 statement.setString(5, itemId)
                 statement.setLong(6, now)
-                audioStreamIndex?.let { statement.setInt(7, it) } ?: statement.setNull(7, java.sql.Types.INTEGER)
-                subtitleStreamIndex?.let { statement.setInt(8, it) } ?: statement.setNull(8, java.sql.Types.INTEGER)
+                audioStreamIndex?.let { statement.setInt(7, it) } ?: statement.setNull(7)
+                subtitleStreamIndex?.let { statement.setInt(8, it) } ?: statement.setNull(8)
                 statement.setLong(9, now)
                 statement.executeUpdate()
             }
@@ -416,7 +414,7 @@ class Repository(private val db: Database) {
 
     fun setFavorite(itemId: String, favorite: Boolean): UserDataDto {
         db.transaction { connection ->
-            connection.prepareStatement(
+            connection.statement(
                 """
                 INSERT INTO user_data(item_id, favorite, updated_at) VALUES (?, ?, ?)
                 ON CONFLICT(item_id) DO UPDATE SET favorite = excluded.favorite, updated_at = excluded.updated_at
@@ -433,7 +431,7 @@ class Repository(private val db: Database) {
 
     fun setPlayed(itemId: String, played: Boolean): UserDataDto {
         db.transaction { connection ->
-            connection.prepareStatement(
+            connection.statement(
                 """
                 INSERT INTO user_data(item_id, played, position_ms, play_count, last_played_at, updated_at)
                 VALUES (?, ?, 0, COALESCE((SELECT play_count FROM user_data WHERE item_id = ?), 0) + ?, ?, ?)
@@ -459,7 +457,7 @@ class Repository(private val db: Database) {
     // ------------------------------------------------------------ scrape cache
 
     fun cacheGet(key: String, maxAgeMs: Long): String? = db.read { connection ->
-        connection.prepareStatement("SELECT payload, fetched_at FROM scrape_cache WHERE key = ?")
+        connection.statement("SELECT payload, fetched_at FROM scrape_cache WHERE key = ?")
             .apply { setString(1, key) }
             .useQuery {
                 if (!it.next()) return@useQuery null
@@ -469,7 +467,7 @@ class Repository(private val db: Database) {
     }
 
     fun cachePut(key: String, payload: String) = db.transaction { connection ->
-        connection.prepareStatement(
+        connection.statement(
             "INSERT INTO scrape_cache(key, payload, fetched_at) VALUES (?, ?, ?) " +
                 "ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, fetched_at = excluded.fetched_at"
         ).use {
@@ -482,19 +480,19 @@ class Repository(private val db: Database) {
 
     // ------------------------------------------------------------ mapping
 
-    private fun java.sql.PreparedStatement.bind(values: List<Any?>) {
+    private fun SqlStatement.bind(values: List<Any?>) {
         values.forEachIndexed { index, value ->
             when (value) {
                 is String -> setString(index + 1, value)
                 is Int -> setInt(index + 1, value)
                 is Long -> setLong(index + 1, value)
-                null -> setObject(index + 1, null)
+                null -> setNull(index + 1)
                 else -> setString(index + 1, value.toString())
             }
         }
     }
 
-    private fun bindItem(statement: java.sql.PreparedStatement, record: ItemRecord) {
+    private fun bindItem(statement: SqlStatement, record: ItemRecord) {
         val dto = record.dto
         var i = 0
         statement.setString(++i, dto.id)
@@ -506,50 +504,50 @@ class Repository(private val db: Database) {
         statement.setString(++i, dto.originalName)
         statement.setString(++i, dto.sortName)
         statement.setString(++i, dto.overview)
-        dto.year?.let { statement.setInt(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+        dto.year?.let { statement.setInt(++i, it) } ?: statement.setNull(++i)
         statement.setString(++i, dto.premiereDate)
-        dto.runtimeMs?.let { statement.setLong(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
-        dto.communityRating?.let { statement.setDouble(++i, it) } ?: statement.setNull(++i, java.sql.Types.REAL)
+        dto.runtimeMs?.let { statement.setLong(++i, it) } ?: statement.setNull(++i)
+        dto.communityRating?.let { statement.setDouble(++i, it) } ?: statement.setNull(++i)
         statement.setString(++i, dto.officialRating)
         statement.setString(++i, json.encodeToString(stringListSerializer, dto.genres))
         statement.setString(++i, json.encodeToString(stringListSerializer, dto.studios))
         statement.setString(++i, json.encodeToString(personListSerializer, dto.people))
-        dto.indexNumber?.let { statement.setInt(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
-        dto.parentIndexNumber?.let { statement.setInt(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+        dto.indexNumber?.let { statement.setInt(++i, it) } ?: statement.setNull(++i)
+        dto.parentIndexNumber?.let { statement.setInt(++i, it) } ?: statement.setNull(++i)
         statement.setString(++i, dto.posterUrl)
         statement.setString(++i, dto.backdropUrl)
         statement.setString(++i, dto.logoUrl)
         statement.setString(++i, json.encodeToString(stringMapSerializer, dto.providerIds))
         statement.setString(++i, dto.lockedProvider?.name)
         statement.setString(++i, dto.path)
-        dto.sizeBytes?.let { statement.setLong(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+        dto.sizeBytes?.let { statement.setLong(++i, it) } ?: statement.setNull(++i)
         statement.setString(++i, json.encodeToString(streamListSerializer, dto.mediaStreams))
         statement.setLong(++i, record.dateCreated)
         statement.setLong(++i, record.dateModified)
         statement.setString(++i, record.etag)
-        record.scrapedAt?.let { statement.setLong(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
-        record.probedAt?.let { statement.setLong(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+        record.scrapedAt?.let { statement.setLong(++i, it) } ?: statement.setNull(++i)
+        record.probedAt?.let { statement.setLong(++i, it) } ?: statement.setNull(++i)
     }
 
-    private fun readItem(rs: ResultSet): MediaItemDto = MediaItemDto(
-        id = rs.getString("id"),
-        libraryId = rs.getString("library_id"),
-        kind = runCatching { ItemKind.valueOf(rs.getString("kind")) }.getOrDefault(ItemKind.MOVIE),
+    private fun readItem(rs: SqlCursor): MediaItemDto = MediaItemDto(
+        id = rs.requireString("id"),
+        libraryId = rs.requireString("library_id"),
+        kind = runCatching { ItemKind.valueOf(rs.requireString("kind")) }.getOrDefault(ItemKind.MOVIE),
         parentId = rs.getString("parent_id"),
         seriesId = rs.getString("series_id"),
         seriesName = runCatching { rs.getString("series_name") }.getOrNull(),
-        name = rs.getString("name"),
+        name = rs.requireString("name"),
         originalName = rs.getString("original_name"),
-        sortName = rs.getString("sort_name") ?: "",
+        sortName = rs.requireString("sort_name") ?: "",
         overview = rs.getString("overview"),
         year = rs.getIntOrNull("year"),
         premiereDate = rs.getString("premiere_date"),
         runtimeMs = rs.getLongOrNull("runtime_ms"),
         communityRating = rs.getDoubleOrNull("community_rating"),
         officialRating = rs.getString("official_rating"),
-        genres = decodeList(rs.getString("genres")),
-        studios = decodeList(rs.getString("studios")),
-        people = runCatching { json.decodeFromString(personListSerializer, rs.getString("people")) }
+        genres = decodeList(rs.requireString("genres")),
+        studios = decodeList(rs.requireString("studios")),
+        people = runCatching { json.decodeFromString(personListSerializer, rs.requireString("people")) }
             .getOrDefault(emptyList()),
         indexNumber = rs.getIntOrNull("index_number"),
         parentIndexNumber = rs.getIntOrNull("parent_index_number"),
@@ -560,19 +558,19 @@ class Repository(private val db: Database) {
             ?: runCatching { rs.getString("series_poster") }.getOrNull(),
         backdropUrl = rs.getString("backdrop_url"),
         logoUrl = rs.getString("logo_url"),
-        providerIds = runCatching { json.decodeFromString(stringMapSerializer, rs.getString("provider_ids")) }
+        providerIds = runCatching { json.decodeFromString(stringMapSerializer, rs.requireString("provider_ids")) }
             .getOrDefault(emptyMap()),
         lockedProvider = rs.getString("locked_provider")
             ?.let { name -> MetadataProvider.entries.firstOrNull { it.name == name } },
         childCount = rs.getIntOrNull("child_count"),
         path = rs.getString("path"),
         sizeBytes = rs.getLongOrNull("size_bytes"),
-        mediaStreams = runCatching { json.decodeFromString(streamListSerializer, rs.getString("media_streams")) }
+        mediaStreams = runCatching { json.decodeFromString(streamListSerializer, rs.requireString("media_streams")) }
             .getOrDefault(emptyList()),
         userData = readUserData(rs, rs.getLongOrNull("runtime_ms"))
     )
 
-    private fun readItemRecord(rs: ResultSet) = ItemRecord(
+    private fun readItemRecord(rs: SqlCursor) = ItemRecord(
         dto = readItem(rs),
         dateCreated = rs.getLong("date_created"),
         dateModified = rs.getLong("date_modified"),
@@ -581,7 +579,7 @@ class Repository(private val db: Database) {
         probedAt = rs.getLongOrNull("probed_at")
     )
 
-    private fun readUserData(rs: ResultSet, runtimeMs: Long?): UserDataDto {
+    private fun readUserData(rs: SqlCursor, runtimeMs: Long?): UserDataDto {
         val position = rs.getLongOrNull("position_ms") ?: 0L
         return UserDataDto(
             positionMs = position,

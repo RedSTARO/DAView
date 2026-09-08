@@ -1,82 +1,50 @@
 package com.daview.server.db
 
 import java.nio.file.Path
-import java.sql.Connection
-import java.sql.DriverManager
-import java.sql.PreparedStatement
-import java.sql.ResultSet
-import java.util.concurrent.locks.ReentrantLock
-import kotlin.concurrent.withLock
-import kotlin.io.path.createDirectories
 
 /**
  * The scraped catalogue lives in a single SQLite file so that it can be backed
  * up, inspected and moved with the rest of the server data directory.
  *
- * Access is funnelled through one connection guarded by a lock: writes during a
- * scan are batched inside short transactions, so contention stays low and we
- * avoid SQLITE_BUSY entirely.
+ * The connection itself comes from a [SqlDatabase], which is where the platform
+ * difference lives: JDBC on the desktop and server, Android's own SQLite on the
+ * phone. Everything above this line — schema, queries, row mapping — is shared.
  */
-class Database(dataDir: Path) : AutoCloseable {
+class Database(private val sql: SqlDatabase) : AutoCloseable {
 
-    private val lock = ReentrantLock()
-    private val connection: Connection
+    /** Convenience for the JVM callers, which all want the JDBC driver. */
+    constructor(dataDir: Path) : this(JdbcSqlDatabase(dataDir))
 
     init {
-        dataDir.createDirectories()
-        Class.forName("org.sqlite.JDBC")
-        val file = dataDir.resolve("daview.db").toAbsolutePath()
-        connection = DriverManager.getConnection("jdbc:sqlite:$file").apply {
-            autoCommit = true
-            createStatement().use { statement ->
-                statement.execute("PRAGMA journal_mode=WAL")
-                statement.execute("PRAGMA synchronous=NORMAL")
-                statement.execute("PRAGMA foreign_keys=ON")
-                statement.execute("PRAGMA busy_timeout=10000")
-            }
-        }
         migrate()
     }
 
-    fun <T> read(block: (Connection) -> T): T = lock.withLock { block(connection) }
+    fun <T> read(block: (SqlConnection) -> T): T = sql.read(block)
 
-    fun <T> transaction(block: (Connection) -> T): T = lock.withLock {
-        connection.autoCommit = false
-        try {
-            val result = block(connection)
-            connection.commit()
-            result
-        } catch (t: Throwable) {
-            runCatching { connection.rollback() }
-            throw t
-        } finally {
-            connection.autoCommit = true
+    fun <T> transaction(block: (SqlConnection) -> T): T = sql.transaction(block)
+
+    private fun migrate() = sql.transaction { connection ->
+        connection.statement(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+        ).use { it.executeUpdate() }
+
+        val current = connection.statement("SELECT version FROM schema_version LIMIT 1")
+            .useQuery { if (it.next()) it.getIntAt(1) else -1 }
+        if (current < 0) {
+            connection.statement("INSERT INTO schema_version(version) VALUES (0)").use { it.executeUpdate() }
+        }
+
+        var version = maxOf(current, 0)
+        while (version < MIGRATIONS.size) {
+            MIGRATIONS[version].forEach { sqlText ->
+                connection.statement(sqlText).use { it.executeUpdate() }
+            }
+            version++
+            connection.statement("UPDATE schema_version SET version = $version").use { it.executeUpdate() }
         }
     }
 
-    private fun migrate() = lock.withLock {
-        connection.createStatement().use { statement ->
-            statement.executeUpdate(
-                """
-                CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)
-                """.trimIndent()
-            )
-            val current = statement.executeQuery("SELECT version FROM schema_version LIMIT 1").use {
-                if (it.next()) it.getInt(1) else -1
-            }
-            if (current < 0) {
-                statement.executeUpdate("INSERT INTO schema_version(version) VALUES (0)")
-            }
-            var version = maxOf(current, 0)
-            while (version < MIGRATIONS.size) {
-                MIGRATIONS[version].forEach { statement.executeUpdate(it) }
-                version++
-                statement.executeUpdate("UPDATE schema_version SET version = $version")
-            }
-        }
-    }
-
-    override fun close() = lock.withLock { connection.close() }
+    override fun close() = sql.close()
 
     companion object {
         private val MIGRATIONS: List<List<String>> = listOf(
@@ -165,29 +133,4 @@ class Database(dataDir: Path) : AutoCloseable {
             )
         )
     }
-}
-
-// ---------------------------------------------------------------- helpers
-
-fun <T> PreparedStatement.useQuery(block: (ResultSet) -> T): T = use { executeQuery().use(block) }
-
-fun ResultSet.getLongOrNull(column: String): Long? {
-    val value = getLong(column)
-    return if (wasNull()) null else value
-}
-
-fun ResultSet.getIntOrNull(column: String): Int? {
-    val value = getInt(column)
-    return if (wasNull()) null else value
-}
-
-fun ResultSet.getDoubleOrNull(column: String): Double? {
-    val value = getDouble(column)
-    return if (wasNull()) null else value
-}
-
-fun <T> ResultSet.map(block: (ResultSet) -> T): List<T> {
-    val out = ArrayList<T>()
-    while (next()) out += block(this)
-    return out
 }
