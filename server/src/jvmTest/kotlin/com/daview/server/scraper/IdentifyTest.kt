@@ -2,6 +2,7 @@ package com.daview.server.scraper
 
 import com.daview.server.config.ScraperConfig
 import com.daview.server.db.Database
+import com.daview.server.db.JdbcSqlDatabase
 import com.daview.server.db.ItemRecord
 import com.daview.server.db.Repository
 import com.daview.shared.model.ItemKind
@@ -23,7 +24,7 @@ import kotlin.test.assertTrue
 class IdentifyTest {
 
     private val dir = createTempDirectory("daview-identify-test")
-    private val database = Database(dir)
+    private val database = Database(JdbcSqlDatabase(dir))
     private val repository = Repository(database)
     private val scraper = FakeScraper(
         known = mapOf(

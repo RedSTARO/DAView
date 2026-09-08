@@ -1,7 +1,6 @@
 package com.daview.server
 
 import com.daview.server.api.apiRoutes
-import com.daview.server.config.ConfigStore
 import com.daview.shared.model.ApiError
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -12,8 +11,8 @@ import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.http.content.staticFiles
-import io.ktor.server.netty.Netty
-import io.ktor.server.netty.NettyApplicationEngine
+import io.ktor.server.cio.CIO
+import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.cors.routing.CORS
@@ -25,30 +24,17 @@ import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.io.File
-import java.nio.file.Path
-
-fun main(args: Array<String>) {
-    val dataDir = args.firstOrNull()?.let { Path.of(it) } ?: ConfigStore.defaultDataDir()
-    val context = ServerContext(dataDir)
-    val config = context.config
-
-    val log = LoggerFactory.getLogger("DAView")
-    log.info("数据目录: {}", dataDir.toAbsolutePath())
-    log.info("访问令牌: {}", config.accessToken)
-    log.info("Web 客户端: http://127.0.0.1:{}/?token={}", config.port, config.accessToken)
-
-    Runtime.getRuntime().addShutdownHook(Thread { context.close() })
-
-    startServer(context).start(wait = true)
-}
 
 /**
- * Builds the HTTP server. The desktop app calls this directly so it can run a
- * server in-process without spawning a second JVM.
+ * Builds the HTTP server. The desktop and Android apps call this directly so
+ * they run a server in-process rather than depending on a separate one.
+ *
+ * CIO rather than Netty: it is plain coroutines, which is what makes the same
+ * server usable on Android.
  */
-fun startServer(context: ServerContext): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
+fun startServer(context: ServerContext): EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration> {
     val config = context.config
-    return embeddedServer(Netty, port = config.port, host = config.host) {
+    return embeddedServer(CIO, port = config.port, host = config.host) {
         module(context)
     }
 }

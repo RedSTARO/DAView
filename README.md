@@ -8,13 +8,25 @@
 后端是同一个仓库里的 **Ktor** 服务。
 
 ```
-┌────────────┐   REST + 流媒体   ┌──────────────────────────────┐   WebDAV / CDN 直链
-│ composeApp │ ────────────────▶ │ server (Ktor, JVM)           │ ──────────────────▶ 存储
-│  Android   │                   │  扫描 · 刮削 · SQLite · 进度  │
-│  Desktop   │ ◀──────────────── │  流媒体代理 · 图片缓存        │
-│  Web(wasm) │    进度 / 元数据   └──────────────────────────────┘
-└────────────┘
+桌面端 / Android：core 跑在应用进程里，不需要另一台服务器
+┌─────────────────────────────────────┐   WebDAV / CDN 直链
+│ 应用进程                             │ ──────────────────▶ 存储
+│  UI ──HTTP(127.0.0.1)──▶ server core │
+│                扫描 · 刮削 · SQLite   │
+└─────────────────────────────────────┘
+
+网页端：浏览器发不出带凭据的跨域 PROPFIND，只能连一台服务端
+┌────────────┐   REST + 流媒体   ┌──────────────┐
+│  Web(wasm) │ ────────────────▶ │ 桌面端或独立  │ ──────────────────▶ 存储
+└────────────┘                   │ 服务端        │
+                                 └──────────────┘
 ```
+
+桌面端与 Android 端**不依赖任何独立后端**：`:server` 是一个 KMP 模块（jvm + android），
+两端都在自己的进程里启动它。仍然走 HTTP，只是走 127.0.0.1——这样三端共用同一套客户端
+代码，也才能把地址交给外置播放器和图片加载器（它们没法接收一个 Kotlin 对象）。
+
+跨设备的状态一致由 WebDAV 上的一个同步文件解决（见「跨端同步」），而不是靠共用服务器。
 
 ## 为什么是「客户端 + 服务器」而不是纯客户端
 
@@ -227,9 +239,11 @@ PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--
 （Coil 3.6 的 AAR 要求 `compileSdk >= 37`）。
 
 ```bash
-./gradlew :server:installDist
-DAVIEW_DATA=./run server/build/install/server/bin/server
+./gradlew :server-app:installDist
+DAVIEW_DATA=./run server-app/build/install/server-app/bin/server-app
 ```
+
+> 独立服务端只有网页端需要。桌面端和 Android 端自己就带着 core。
 
 首次启动会在日志里打印访问令牌与网页地址：
 
@@ -274,9 +288,14 @@ DAVIEW_WEB_DIR=...          # 网页客户端目录，默认取 composeApp 的�
 
 ```
 shared/      KMP：DTO 与 REST 客户端（jvm / android / wasmJs）
-server/      Ktor 服务：WebDAV、扫描、命名解析、刮削、SQLite、流媒体、图片缓存
+server/      KMP core（jvm / android）：WebDAV、扫描、命名解析、刮削、SQLite、流媒体、图片缓存
+server-app/  独立服务端的启动器，只有一个 main()
 composeApp/  Compose Multiplatform 客户端（androidMain / desktopMain / wasmJsMain）
 docs/        架构说明与实测记录
+
+`server` 的两个 target 编译同一份 `src/main/kotlin`。唯一真正有平台差异的是 SQL 驱动
+（JDBC / Android SQLite），它是注入进 `ServerContext` 的，所以既不需要 expect/actual，
+也不需要中间 source set。
 ```
 
 ## 已知限制
@@ -311,7 +330,7 @@ docs/        架构说明与实测记录
 ## 测试
 
 ```bash
-./gradlew :server:test
+./gradlew :server:jvmTest
 ```
 
 覆盖命名解析（季 / 集 / 双语字幕 / 噪音过滤）、外置播放器的进度推算

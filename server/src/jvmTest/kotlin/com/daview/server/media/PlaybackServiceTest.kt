@@ -1,6 +1,7 @@
 package com.daview.server.media
 
 import com.daview.server.db.Database
+import com.daview.server.db.JdbcSqlDatabase
 import com.daview.server.db.ItemRecord
 import com.daview.server.db.Repository
 import com.daview.shared.model.ItemKind
@@ -24,7 +25,7 @@ import kotlin.test.assertTrue
 class PlaybackServiceTest {
 
     private val dir = createTempDirectory("daview-test")
-    private val database = Database(dir)
+    private val database = Database(JdbcSqlDatabase(dir))
     private val repository = Repository(database)
     private val streams = StreamService({ null }, repository)
     private val playback = PlaybackService(repository, streams) { 300 }

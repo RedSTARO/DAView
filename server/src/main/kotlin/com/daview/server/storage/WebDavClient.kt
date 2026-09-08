@@ -110,7 +110,15 @@ class WebDavClient(private val config: StorageConfig) {
     private fun parseMultiStatus(xml: String, requestedPath: String): List<DavEntry> {
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = true
-            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            isExpandEntityReferences = false
+            // Android's parser is Expat-based and rejects features the JDK's
+            // Xerces accepts, so each one is applied where it exists rather than
+            // assumed. Expat does not resolve external entities in the first
+            // place, which is what these guard against.
+            HARDENING.forEach { feature ->
+                runCatching { setFeature(feature, false) }
+            }
+            runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
         }
         val doc = factory.newDocumentBuilder()
             .parse(xml.byteInputStream(StandardCharsets.UTF_8))
@@ -298,6 +306,12 @@ class WebDavClient(private val config: StorageConfig) {
 
     private companion object {
         val XML_MEDIA_TYPE = "application/xml; charset=utf-8".toMediaType()
+
+        val HARDENING = listOf(
+            "http://xml.org/sax/features/external-general-entities",
+            "http://xml.org/sax/features/external-parameter-entities",
+            "http://apache.org/xml/features/nonvalidating/load-external-dtd"
+        )
 
         fun Element.firstChild(localName: String): Element? {
             val nodes = childNodes

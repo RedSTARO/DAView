@@ -89,6 +89,7 @@ actual fun createSettingsStore(): SettingsStore = object : SettingsStore {
     }
 }
 
-actual fun ambientServerUrl(): String? = null
+/** The app's own in-process server, unless the user has pointed it elsewhere. */
+actual fun ambientServerUrl(): String? = com.daview.app.EmbeddedServer.url
 
-actual fun ambientToken(): String? = null
+actual fun ambientToken(): String? = com.daview.app.EmbeddedServer.token

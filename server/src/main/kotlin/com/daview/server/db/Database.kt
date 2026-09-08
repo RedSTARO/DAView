@@ -1,7 +1,5 @@
 package com.daview.server.db
 
-import java.nio.file.Path
-
 /**
  * The scraped catalogue lives in a single SQLite file so that it can be backed
  * up, inspected and moved with the rest of the server data directory.
@@ -11,9 +9,6 @@ import java.nio.file.Path
  * phone. Everything above this line — schema, queries, row mapping — is shared.
  */
 class Database(private val sql: SqlDatabase) : AutoCloseable {
-
-    /** Convenience for the JVM callers, which all want the JDBC driver. */
-    constructor(dataDir: Path) : this(JdbcSqlDatabase(dataDir))
 
     init {
         migrate()

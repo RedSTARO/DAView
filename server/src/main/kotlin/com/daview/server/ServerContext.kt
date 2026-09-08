@@ -4,6 +4,7 @@ import com.daview.server.config.AppConfig
 import com.daview.server.config.ConfigStore
 import com.daview.server.db.Database
 import com.daview.server.db.Repository
+import com.daview.server.db.SqlDatabase
 import com.daview.server.media.ImageCache
 import com.daview.server.media.PlaybackService
 import com.daview.server.media.ScanService
@@ -14,11 +15,17 @@ import java.nio.file.Path
 
 const val DAVIEW_VERSION = "1.0.0"
 
-/** Wires the server's singletons together and keeps them in sync with the config. */
-class ServerContext(dataDir: Path) : AutoCloseable {
+/**
+ * Wires the server's singletons together and keeps them in sync with the config.
+ *
+ * The SQL driver is handed in rather than built here: it is the one piece that
+ * differs between the desktop, where it is JDBC, and Android, where it is the
+ * platform's own SQLite.
+ */
+class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
 
     val configStore = ConfigStore(dataDir)
-    val database = Database(dataDir)
+    val database = Database(sql)
     val repository = Repository(database)
     val images = ImageCache(dataDir)
     val metadata = MetadataService(repository)

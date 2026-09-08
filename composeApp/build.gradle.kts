@@ -51,6 +51,8 @@ kotlin {
         }
 
         androidMain.dependencies {
+            // The phone runs the whole core itself; there is no separate backend.
+            implementation(project(":server"))
             implementation(compose.preview)
             implementation(libs.androidx.activity.compose)
             implementation(libs.ktor.client.okhttp)

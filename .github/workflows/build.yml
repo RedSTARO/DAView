@@ -30,14 +30,14 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew :server:test
+      - run: ./gradlew :server:jvmTest
 
       - name: 上传测试报告
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-report
-          path: server/build/reports/tests/test
+          path: server/build/reports/tests/jvmTest
           if-no-files-found: ignore
 
   msi:

@@ -1,6 +1,7 @@
 package com.daview.server.scraper
 
 import com.daview.server.db.Database
+import com.daview.server.db.JdbcSqlDatabase
 import com.daview.server.db.Repository
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MediaItemDto
@@ -18,7 +19,7 @@ import kotlin.test.assertNull
 class MetadataServiceTest {
 
     private val dir = createTempDirectory("daview-scraper-test")
-    private val database = Database(dir)
+    private val database = Database(JdbcSqlDatabase(dir))
     private val service = MetadataService(Repository(database))
 
     @AfterTest
