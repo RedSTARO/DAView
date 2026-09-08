@@ -11,12 +11,28 @@ import java.awt.datatransfer.StringSelection
 import java.io.File
 import java.net.URI
 import java.util.prefs.Preferences
+import com.daview.app.player.MpvNative
+import com.daview.app.player.PlayerPreferences
 
 actual object PlatformInfo {
     actual val name: String = System.getProperty("os.name") ?: "Desktop"
     actual val isDesktop: Boolean = true
     actual val isAndroid: Boolean = false
-    actual val hasInternalPlayer: Boolean = false
+
+    /**
+     * There is an in-app player exactly when libmpv could be loaded. It is not
+     * a build-time fact: the library is looked up on disk, the user can point
+     * at another copy from settings, and where it is missing the app falls back
+     * to handing the stream to PotPlayer, VLC or mpv as it always did.
+     *
+     * A getter rather than a stored value, so pointing at a different libmpv
+     * takes effect without a restart.
+     */
+    actual val hasInternalPlayer: Boolean
+        get() {
+            PlayerPreferences.install()
+            return MpvNative.available
+        }
 }
 
 actual fun defaultDeviceName(): String =

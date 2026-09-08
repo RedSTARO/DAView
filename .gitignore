@@ -30,3 +30,7 @@ replay_pid*.log
 
 # Dev-server launch config: holds machine-specific absolute paths
 .claude/launch.json
+
+# The in-app player's engine. ~115 MB, fetched by scripts/fetch-libmpv rather
+# than committed; CI runs that before packaging the desktop app.
+/composeApp/nativeResources/*/libmpv*

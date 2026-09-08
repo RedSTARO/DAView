@@ -60,7 +60,16 @@ kotlin {
                 implementation(compose.desktop.currentOs)
                 implementation(libs.kotlinx.coroutines.swing)
                 implementation(project(":core"))
+                // The in-app player is libmpv, reached through JNA. Not FFM:
+                // both JVM targets compile at language level 17, and the panama
+                // API only became final in 22.
+                implementation(libs.jna)
             }
+        }
+
+        val desktopTest by getting
+        desktopTest.dependencies {
+            implementation(kotlin("test"))
         }
 
         // Needed by the shared source directory, which is compiled into both
@@ -100,6 +109,19 @@ android {
     }
 }
 
+// The packaging tasks treat `appResourcesRootDir` as an internal property, not
+// an input, so dropping libmpv into it after a build leaves them up to date and
+// they happily re-emit a package with an empty `app/resources`. Verified: fetch
+// the DLL, build again, and it is in the staging directory but not in the
+// package. Declaring the directory as an input is what makes the second build
+// notice. Optional, because a checkout that never fetches has no such directory.
+tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask>().configureEach {
+    inputs.dir(project.layout.projectDirectory.dir("nativeResources"))
+        .withPropertyName("daviewAppResources")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .optional(true)
+}
+
 compose.desktop {
     application {
         mainClass = "com.daview.app.MainKt"
@@ -107,6 +129,18 @@ compose.desktop {
             targetFormats(TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Dmg)
             packageName = "DAView"
             packageVersion = "1.0.0"
+            // Everything under here is copied into the installed app next to
+            // the runtime, and found at run time through the
+            // `compose.application.resources.dir` system property. The Windows
+            // subdirectory holds libmpv-2.dll — the in-app player. It is ~115 MB
+            // and is therefore not in git: `scripts/fetch-libmpv.*` puts it
+            // there, and CI runs that before packaging. A build without it still
+            // packages fine; the desktop app just falls back to external players.
+            //
+            // prepareAppResources only copies the subdirectory matching the
+            // machine doing the build, so the Linux and macOS packages never
+            // carry the Windows DLL.
+            appResourcesRootDir.set(project.layout.projectDirectory.dir("nativeResources"))
             // jlink builds the bundled runtime from this list plus what Compose
             // asks for, and anything missing only shows up at runtime: the
             // Windows launcher swallows the stack trace and reports "Failed to

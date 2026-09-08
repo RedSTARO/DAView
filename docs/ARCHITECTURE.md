@@ -97,7 +97,73 @@ seek，重新锚定。读取指针总是领先画面，所以 `onBytesRead` 修�
 
 超过 90% 视为看完（与 Emby 一致），并清空续播点。
 
-## 5. 为什么不用 PotPlayer 自己的记录
+## 5. 桌面端的应用内播放（libmpv）
+
+**实测**（RTX 4060 Laptop + Radeon 780M 的混合显卡笔记本，Windows 11，
+libmpv `v0.41.0-1023-g69e63f425`，2026-09-03 的 shinchiro 构建）：
+
+| 验证项 | 结果 |
+| --- | --- |
+| JNA 按绝对路径加载 `libmpv-2.dll` | 成功 |
+| 从 Compose `SwingPanel` 里的重量级 `java.awt.Canvas` 取原生句柄 | 成功 |
+| mpv 按 `wid` 在该 Canvas 下建子窗口 | 成功（`FindWindowEx` 能枚举到） |
+| 内置 OSC 是否在 libmpv 里 | 在。`osc: osc_init`，但脚本加载记在 **debug** 级，verbose 看不到 |
+| `d3d11vpp` 两项 NVIDIA 功能 | `NVIDIA RTX Super Resolution enabled.` + `NVIDIA RTX Video HDR enabled.` |
+| 输出色彩空间 | `Converting YCBCR_STUDIO_G22_LEFT_P709 to RGB_FULL_G2084_NONE_P2020`，`video-out-params` 1920×1080 → 3840×2160、gamma `pq`、primaries `bt.2020` |
+| 不指定 `--d3d11-adapter` | mpv 落在 **AMD Radeon 780M** 上，NVIDIA 扩展无从谈起 |
+| 指定 `--d3d11-adapter=NVIDIA` | 切到 **RTX 4060**，两项功能启用 |
+| idle 状态下 `sub-add` | **失败**，返回 `-12`（`MPV_ERROR_COMMAND`），`track-list/count` 保持 0 |
+| `loadfile` 之后、收到 `MPV_EVENT_FILE_LOADED` 再 `sub-add` | 成功，`track-list/count` 加一，`sub/ass: Using subtitle decoder srt` |
+
+### 为什么不能走 mpv 的 render API
+
+render API（`MPV_RENDER_API_TYPE_OPENGL`）能把画面渲进自己的 FBO，从而让 Compose
+把 UI 画在视频之上——这是 mpv 官方推荐的嵌入方式。这里**不能**用，原因是两项功能
+的终点：
+
+- `d3d11vpp` 要求 VO 发布一个 `IMGFMT_D3D11` + `AV_HWDEVICE_TYPE_D3D11VA` 的 hwdec 设备；
+- RTX Video HDR 必须把结果**呈现**在 PQ / BT.2020 的 swapchain 上。
+
+把帧交给 Skia 合成就没有那条 swapchain 了，HDR 与 RTX 一并失效。所以画面必须由 mpv
+自己的窗口呈现，代价是 Compose 盖不上去——播放控件因此用 mpv 自带的 OSC。
+这是个取舍，不是疏忽。
+
+### 踩过的坑
+
+1. **`scaling-mode=nvidia` 单独设置是空操作。** `vf_d3d11vpp.c` 里
+   `require_filtering = !mp_image_params_static_equal(...) || want_nvidia_true_hdr(vf)`，
+   倍率 1 且无格式变化时整条直通，视频处理器根本不创建。`VideoEnhancement` 因此把倍率
+   夹在 2–4，有测试盯着。
+2. **编号版本的 `nvidia-true-hdr` 只设扩展、不改输出。** 把输出格式改成 `X2BGR10`
+   并按 HDR10 重新打标的两个提交在 0.41.0 之后才进 master。必须用 master 构建。
+3. **libmpv 的内置 profile 关掉了 `osc` / `input-default-bindings` / `input-vo-keyboard`。**
+   `mpv --show-profile=libmpv` 能看到完整列表；这些只是默认值，打开即可用。
+4. **`ytdl` 默认是开的**，会拿我们自己的 `127.0.0.1` 管道地址去跑 yt-dlp 的 hook。显式关掉。
+5. **mpv 在 Windows 上不吃 `file:` URI**，会当成相对路径拼到工作目录后面。DAView 一律
+   传 http 管道地址，不受影响，但调试时容易踩。
+6. **`sub-add` 和轨道号只对"当前打开的文件"生效。** `loadfile` 之前挂字幕会静默失败
+   （返回 `-12`），而 `loadfile` 本身是异步的——紧跟其后调用一样早。所以外挂字幕的挂载
+   与 `aid`/`sid` 的设置都推迟到 `MPV_EVENT_FILE_LOADED`，并且只做一次。
+7. **`mpv_command` 的返回值不能丢。** 上面那条失败得毫无痕迹，正是因为它被丢了；
+   现在命令、属性、选项三条路径的失败都会走同一个 `warn()`，`-Ddaview.mpv.log=1` 能看到。
+8. **`%.3f` 不能用默认 Locale。** mpv 的 `--start` 按 `[[hh:]mm:]ss[.ms]` 解析，
+   逗号不是合法小数点，德语 / 法语系统上续播点会被整条拒绝、从头播放。用 `Locale.ROOT`。
+9. **"播完"和"被退出"必须分开。** `MPV_EVENT_END_FILE` 的 `reason` 里 `QUIT(3)` 与 `EOF(0)`
+   长得一样，而 mpv 一旦开始关闭就不再回答 `time-pos`。若两者共用"取不到位置就用片长"的兜底，
+   用户在画面上按 `q` 会被服务端按 100% 记成看完、续播点清零。现在只有 `EOF` 才允许回退到片长，
+   其余情况用最后一次读到的位置。
+10. **`Native.getComponentPointer` 要求组件已经 displayable。** Compose 的 interop 生命周期
+   没有可靠的「peer 已就绪」回调，所以是轮询等待，上限 5 秒。
+
+### 成功与否只能读日志
+
+`d3d11vpp` 不暴露任何可查询的属性。超分那一路连能力探测都没有——只看
+`VideoProcessorSetStreamExtension` 的 `HRESULT`；True HDR 至少有一次
+`VideoProcessorGetStreamExtension` 探测。所以播放页上的状态来自匹配 mpv 自己的日志字符串
+（`EnhancementLog`），并且**只能说明「mpv 调用成功」**，不能说明驱动真的在做 AI 处理——
+用户还得在 NVIDIA 控制面板里打开对应开关，没打开时驱动照样返回成功。
+
+## 6. 为什么不用 PotPlayer 自己的记录
 
 试过三条路，都走不通，记录在这里避免重复劳动：
 
@@ -114,7 +180,7 @@ seek，重新锚定。读取指针总是领先画面，所以 `onBytesRead` 修�
 `HKLM\SOFTWARE\Classes\potplayer`，命令是 `PotPlayerMini64.exe "%1"`，
 这正是网页端交接播放的基础。
 
-## 6. 数据库
+## 7. 数据库
 
 单文件 SQLite（`daview.db`，WAL 模式），三张主表：
 
@@ -138,7 +204,7 @@ seek，重新锚定。读取指针总是领先画面，所以 `onBytesRead` 修�
 条目 ID 是 `SHA-1(libraryId + "|" + path)` 的前 12 字节，因此重复扫描是幂等的，
 文件没动过 ID 就不会变，进度也不会丢。
 
-## 7. 手动指定刮削条目
+## 8. 手动指定刮削条目
 
 自动匹配的失败模式是有限的几种：同名不同作、文件夹缺年份、源站排序把别的版本放在前面。
 `bestMatch` 的阈值只能压低错误率，压不到零，所以留了一条手动通道。
@@ -165,7 +231,7 @@ POST /api/items/{id}/identify           → 钉住 provider + id 并重建元数
 海报地址还带了一个版本号（`/api/images/{id}/primary?v=...`，由远端 URL 算出）。
 不带的话条目地址不变，重新指定之后客户端会继续显示自己缓存里的旧海报。
 
-## 8. 客户端
+## 9. 客户端
 
 `shared` 只放 DTO 与 `DaViewClient`（Ktor client，引擎由各平台的 artifact 决定，
 `HttpClient()` 无参构造自动选取）。

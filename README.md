@@ -1,8 +1,9 @@
 # DAView
 
 一个自托管的媒体库应用：扫描 WebDAV 上的影视目录，在本地生成刮削数据库，
-记录播放进度与音轨 / 字幕选择，并把播放交给 PotPlayer 等外置播放器
-——同时仍然把进度记回来。
+记录播放进度与音轨 / 字幕选择。桌面端在应用内直接播放（libmpv，支持 NVIDIA
+RTX Video Super Resolution 与 RTX Video HDR），也可以把播放交给 PotPlayer 等
+外置播放器——那种情况下仍然把进度记回来。
 
 技术栈：**Kotlin Multiplatform + Compose Multiplatform + Material 3 Expressive**。
 桌面端与 Android 端各自跑一份 core，设备之间只通过存储上的一个同步文件对齐。
@@ -19,8 +20,9 @@
                    （存储上的一个同步文件）
 ```
 
-唯一还会监听端口的是外置播放器的字节管道：`127.0.0.1` + 临时端口，交给 PotPlayer
-的那一刻才起，播完就关（见「外置播放器的进度同步是怎么做的」）。
+唯一还会监听端口的是播放用的字节管道：`127.0.0.1` + 临时端口，开始播放那一刻才起，
+播完就关。内置播放器也读它——这样 CDN 直链在片子放到一半过期时可以重新解析
+（见「外置播放器的进度同步是怎么做的」）。
 
 > 网页端已经移除：它是唯一必须有一台服务器才能活的形态。
 
@@ -77,7 +79,10 @@
 
 **播放**
 - Android：Media3 / ExoPlayer 内置播放器，可切换音轨与字幕（含外挂字幕）
-- 桌面：PotPlayer / VLC / mpv / IINA，自动探测安装路径
+- 桌面：**应用内直接播放**，引擎是 libmpv；找不到 libmpv 时退回外置播放器
+  （PotPlayer / VLC / mpv / IINA，自动探测安装路径），随时也可以手动选外置
+- 桌面 + NVIDIA：**RTX Video Super Resolution** 与 **RTX Video HDR**
+  （见「桌面端的应用内播放」）
 - 断点续播、已看标记（超过 90% 自动标记已看）、收藏、继续观看 / 接下来 / 最近添加
 - Android 上扫描跑在前台服务里，通知栏带进度与「取消」——否则切到别的应用，
   进程一被回收，扫描就静默死了
@@ -215,9 +220,94 @@ POST /api/sync/pull       # 拉回并合并
 
 - **MSI 需要 WiX Toolset 3**。jpackage 用它生成 MSI，且不接受 WiX 4/5；
   新的 runner 镜像不再预装，所以 workflow 里用 choco 装了 3.11.2。
+- **Windows 那个 job 会先拉 libmpv**（`scripts/fetch-libmpv.ps1`），拉到才有内置播放器。
+  这一步是 `continue-on-error`：拉不到照样出 MSI，只是那个包退回外置播放器。
+  `:composeApp:desktopTest` 也挂在这个 job 上，因为它是唯一已经在配置并构建 composeApp 的 runner。
 - **APK 是 debug 版**。没有密钥库的 release 包是未签名的，装不上。要出 release：
   把密钥库 base64 后存进仓库 secret，在 `composeApp/build.gradle.kts` 里加
   `signingConfigs`，再把 job 换成 `assembleRelease`。
+
+## 桌面端的应用内播放
+
+桌面端在应用窗口里直接放片，引擎是 **libmpv**。选它不是因为省事，是因为要的两个
+NVIDIA 功能只有这条路走得通。
+
+### 为什么画面是 mpv 自己的原生子窗口
+
+- **RTX Video Super Resolution** 和 **RTX Video HDR** 都活在 D3D11 的视频处理器里
+  （`ID3D11VideoContext::VideoProcessorSetStreamExtension` 加两个未公开的 NVIDIA GUID，
+  Chromium / Firefox / mpv / VLC 四家实现逐字节一致），终点是一条 D3D11 swapchain。
+- HDR 尤其如此：它必须被**呈现**在 PQ / BT.2020 色彩空间里。把帧经由 mpv 的 render API
+  交给 Skia 合成，等于拿到像素、丢掉 swapchain，HDR 和 RTX 一起没。
+
+所以 DAView 把一个重量级 AWT `Canvas` 的原生句柄交给 mpv 的 `wid`，mpv 在它下面建
+自己的子窗口。直接后果是：**Compose 画的东西盖不到视频上**（`SwingPanel` 永远在
+Compose 之上，实验开关 `compose.interop.blending` 在 DirectX 上是「擦掉前一个」）。
+因此播放控件用的是 **mpv 自带的 OSC**（连带它的键盘绑定），Compose 只在视频上方画
+一条它自己才知道的东西：DAView 的音轨 / 字幕列表和 RTX 状态。
+
+> `osc` / `input-default-bindings` / `input-vo-keyboard` 在 libmpv 的内置 profile 里
+> 默认是关的（`mpv --show-profile=libmpv` 可以看到），但那只是默认值——脚本本身
+> 编在 `libmpv-2.dll` 里，打开就能用。
+
+### 这两个功能不叫 DLSS
+
+DLSS 需要渲染管线提供运动矢量和深度，解码出来的视频帧没有这些。NVIDIA 自己也明确说
+RTX Video Super Resolution **不使用** DLSS。面向视频的产品名就是
+RTX Video Super Resolution 和 RTX Video HDR。
+
+### 实测有效的配置
+
+```
+--vo=gpu-next --gpu-api=d3d11 --hwdec=d3d11va
+--vf=d3d11vpp=scale=2:scaling-mode=nvidia:nvidia-true-hdr=yes
+--target-colorspace-hint=yes
+--d3d11-adapter=NVIDIA
+```
+
+四条踩过的坑，都写进了代码：
+
+- **`scaling-mode=nvidia` 单独给没有任何效果。** 倍率为 1 且没有格式变化时，滤镜判定
+  「不需要过滤」，视频处理器根本不会被创建，驱动扩展也就从没被设置过——没有报错，
+  画面也没有区别。所以超分一定带 `scale > 1`（`VideoEnhancement` 里强制夹紧）。
+- **`nvidia-true-hdr=yes` 会自己强制处理器存在**，所以只开 HDR 时不需要放大，也不该放大。
+- **双显卡笔记本必须指定 `--d3d11-adapter=NVIDIA`。** 实测这台机器（RTX 4060 Laptop +
+  Radeon 780M）不指定时 mpv 落在 780M 上，NVIDIA 扩展只会失败。
+- **要用 mpv 的 git master 构建，不能用编号版本。** RTX Video HDR 的两个关键提交
+  （输出格式改 `X2BGR10`、按 HDR10 重新打标）在 0.41.0 之后才进 master，任何编号版本上
+  这个开关都只是设了扩展、什么也不做。shinchiro 的 Windows 构建跟 master，可以直接用。
+
+成功与否只能读 mpv 自己的日志（`d3d11vpp` 没有可查询的属性，超分那一路连能力探测都没有，
+只看 `HRESULT`）。播放页上那两个状态标签就是这么来的：
+
+```
+NVIDIA RTX Super Resolution enabled.
+NVIDIA RTX Video HDR enabled.
+```
+
+排障时加 `-Ddaview.mpv.log=1`，mpv 的日志会原样打到 stderr。
+
+### libmpv 从哪来
+
+Windows 包内置 `libmpv-2.dll`（约 115 MB），但它不在 git 里：
+
+```powershell
+./scripts/fetch-libmpv.ps1        # 拉 shinchiro 最新构建，放进 composeApp/nativeResources/windows/
+```
+
+CI 在打 MSI 前跑这一步；拉不到也不会让打包失败，只是那个包没有内置播放器。
+运行时的查找顺序是：设置里手动指定的路径 → 安装目录的 `app/resources` →
+源码树的 `composeApp/nativeResources/<os>/` → 系统安装位置 → 系统库搜索路径。
+Linux / macOS 不内置，用系统装的 libmpv（`libmpv.so.2` / `libmpv.2.dylib`）；
+这两个平台上 RTX 那两项不存在，其余功能一样。
+
+**一个 DAView 管不到的前提**：这两项还要求用户在 NVIDIA 控制面板 / NVIDIA App 的
+「调整视频图像设置」里把对应开关打开。没打开时驱动会照常接受调用并返回成功，
+只是什么都不做——所以设置页把它们写成「请求」，播放页只报告 mpv 说了什么。
+
+**许可**：shinchiro 的构建是 GPL（其 FFmpeg 用 `--enable-gpl --enable-version3` 编译，
+实际是 GPLv3），内置它意味着分发时要承担相应义务。`d3d11vpp` 滤镜本身是 LGPLv2.1+，
+需要 LGPL 的话得自己用 `-Dgpl=false` 配 LGPL 的 FFmpeg 重新构建 libmpv。
 
 ## 外置播放器的进度同步是怎么做的
 
@@ -318,6 +408,17 @@ UP-TO-DATE，APK 里带的是旧代码。
 
 - **外置播放器的进度是推算值**：正常播放时误差在秒级（有 Matroska 索引时），但看不到暂停，
   长时间暂停后的进度会偏大。够用来续播，不能当精确计时。
+- **直接关窗口会丢最多 5 秒进度**：内置播放器每 5 秒上报一次位置，而窗口的关闭按钮走的是
+  `exitApplication()` 后紧跟 `exitProcess(0)`（`Main.kt`），Compose 的 `onDispose` 来不及跑，
+  最后一次位置写不进去，mpv 也是被进程终止而不是正常退出。用播放页上的「结束播放」或返回键
+  没有这个问题。这个退出顺序是既有行为，改它要先确认没有非守护线程会把进程挂住。
+- **「关闭字幕」这个选择存不下来**：进度上报里 `subtitleStreamIndex = null` 在服务端
+  （`PlaybackService` 的 `subtitle?.let`）和 SQL（`saveProgress` 的 `COALESCE`）两处都被当作
+  「没有提供」而忽略，于是退出时写回的仍是开播时那个索引，下次播放字幕又自动打开。
+  协议上缺一个能表达「显式为空」的形状，两处都要改，属于跨端协议变更，本次没有动。
+- **RTX 那两项能不能生效，应用无从判断**：`d3d11vpp` 不暴露可查询的属性，超分那一路连能力探测
+  都没有，只看 `HRESULT`；而且用户还得在 NVIDIA 控制面板里打开对应开关，没打开时驱动照样返回成功。
+  所以界面只报告 mpv 说了什么，不承诺画面真的变了。
 - **暂无 iOS target**：`shared` 的结构已经允许加 `iosArm64/iosSimulatorArm64`，但需要 macOS 才能构建。
 - **AGP 9 兼容**：目前用 `android.builtInKotlin=false` + `android.newDsl=false` 保留经典 KMP 布局，
   后续应迁移到 `com.android.kotlin.multiplatform.library`。
@@ -336,9 +437,18 @@ UP-TO-DATE，APK 里带的是旧代码。
 ## 测试
 
 ```bash
-./gradlew :core:jvmTest
+./gradlew :core:jvmTest :composeApp:desktopTest
 ```
 
-覆盖命名解析（季 / 集 / 双语字幕 / 噪音过滤）、外置播放器的进度推算
-（末尾索引读取不得跳到片尾、静置后才锚定、下载进度作为上限）、刮削匹配的取舍，
-以及手动指定（钉住之后不得再搜索、换条目要清掉上一个匹配的字段、id 填错不能动已有数据）。
+`:core:jvmTest` 覆盖命名解析（季 / 集 / 双语字幕 / 噪音过滤）、外置播放器的进度推算
+（末尾索引读取不得跳到片尾、静置后才锚定、下载进度作为上限）、刮削匹配的取舍、
+手动指定（钉住之后不得再搜索、换条目要清掉上一个匹配的字段、id 填错不能动已有数据），
+以及特典季的排序（`Season 00` 不得抢在第 1 季前面，但「没有季」不等于第 0 季）。
+
+`:composeApp:desktopTest` 覆盖内置播放器里两块纯逻辑：RTX 滤镜串的拼装
+（倍率 1 会让超分静默失效，所以被夹在 2–4；只开 HDR 时不放大）与 mpv 日志行的判读，
+以及 DAView 的流索引到 mpv 轨道号的映射（外挂字幕排在内封之后、没有季的视频轨不算进去）。
+
+需要真机与真 GPU 的部分不在自动测试里：libmpv 的加载与 `--wid` 嵌入、RTX 是否真的启用、
+HDR 输出的色彩空间。这些是在一台 RTX 4060 + Radeon 780M 的机器上手工验的，
+记录在 `docs/ARCHITECTURE.md` 第 5 节。

@@ -98,6 +98,7 @@ fun SettingsScreen(state: AppState) {
         item { ScraperSection(state) }
         item { SyncSection(state) }
         item { BackupSection(state) }
+        item { PlatformPlayerSettings() }
         item { ClientSection(state) }
     }
 

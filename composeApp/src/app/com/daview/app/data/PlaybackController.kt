@@ -189,4 +189,30 @@ class PlaybackController(
     }
 
     val canUseInternalPlayer: Boolean get() = PlatformInfo.hasInternalPlayer
+
+    /**
+     * Plays with whatever this device actually has, and says so when it has
+     * nothing.
+     *
+     * The in-app player is no longer a fact of the platform — on the desktop it
+     * depends on libmpv being found at run time — so "no player at all" is a
+     * state a user can be in, and it used to be expressed as the play button
+     * doing nothing whatsoever.
+     */
+    fun playAnyhow(item: MediaItemDto) {
+        if (canUseInternalPlayer) {
+            playInternal(item)
+            return
+        }
+        val player = externalPlayers.firstOrNull { it.executablePath != null || it.viaUrlScheme }
+        if (player == null) {
+            error = "没有可用的播放器：内置播放器不可用，也没有找到 PotPlayer / VLC / mpv。" +
+                "可以在设置里指定 libmpv 或自定义播放器。"
+            // The detail page shows `error`; the home page and the context menu
+            // do not, and they are two of the three places this is reached from.
+            state.toast = error
+            return
+        }
+        playExternal(item, player)
+    }
 }

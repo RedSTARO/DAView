@@ -188,6 +188,21 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # The in-app player. Not in git — 115 MB — so the MSI only carries it if
+      # this runs first. A failure here is not fatal to the package: the desktop
+      # app falls back to launching PotPlayer/VLC/mpv, which is what it did
+      # before there was an embedded engine at all.
+      # The desktop-only tests live here rather than in the ubuntu test job:
+      # :composeApp also carries the Android application plugin, and this is the
+      # runner that already configures and builds that module.
+      - run: ./gradlew :composeApp:desktopTest
+
+      - name: 取得 libmpv
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/fetch-libmpv.ps1
+
       - run: ./gradlew :composeApp:packageMsi
 
       - name: 重命名 MSI
