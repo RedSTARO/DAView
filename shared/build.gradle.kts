@@ -21,17 +21,7 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            implementation(libs.kotlinx.coroutines.core)
             api(libs.kotlinx.serialization.json)
-            api(libs.ktor.client.core)
-            implementation(libs.ktor.client.content.negotiation)
-            implementation(libs.ktor.serialization.json)
-        }
-        jvmMain.dependencies {
-            implementation(libs.ktor.client.cio)
-        }
-        androidMain.dependencies {
-            implementation(libs.ktor.client.okhttp)
         }
     }
 }

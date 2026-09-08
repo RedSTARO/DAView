@@ -7,6 +7,4 @@
     <root level="INFO">
         <appender-ref ref="STDOUT"/>
     </root>
-    <logger name="io.netty" level="WARN"/>
-    <logger name="io.ktor.server.plugins.calllogging" level="INFO"/>
 </configuration>

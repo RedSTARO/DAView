@@ -8,18 +8,20 @@
 桌面端与 Android 端各自跑一份 core，设备之间只通过存储上的一个同步文件对齐。
 
 ```
-桌面端 / Android：core 跑在应用进程里，不需要另一台服务器
-┌─────────────────────────────────────┐   WebDAV / CDN 直链
-│ 应用进程                             │ ──────────────────▶ 存储
-│  UI ──HTTP(127.0.0.1)──▶ server core │                      │
-│                扫描 · 刮削 · SQLite   │                      │
-└─────────────────────────────────────┘                      │
-              ▲                                              │
-              └────── 观看进度 / 媒体库定义 / 手动指定 ◀───────┘
-                      （存储上的一个同步文件）
+每个应用自己跑一份 core，进程内直接调用，不经过 socket
+┌──────────────────────────────────────┐   WebDAV / CDN 直链
+│ 桌面端 / Android                      │ ──────────────────▶ 存储
+│  UI ──直接调用──▶ core                │                      │
+│            扫描 · 刮削 · SQLite        │                      │
+└──────────────────────────────────────┘                      │
+              ▲                                               │
+              └─── 观看进度 / 媒体库定义 / 手动指定 ◀───────────┘
+                   （存储上的一个同步文件）
 ```
 
-> 那一跳 `127.0.0.1` 正在被拆掉，见 [docs/PLAN-LOCAL-FIRST.md](docs/PLAN-LOCAL-FIRST.md)。
+唯一还会监听端口的是外置播放器的字节管道：`127.0.0.1` + 临时端口，交给 PotPlayer
+的那一刻才起，播完就关（见「外置播放器的进度同步是怎么做的」）。
+
 > 网页端已经移除：它是唯一必须有一台服务器才能活的形态。
 
 跨设备的状态一致由 WebDAV 上的一个同步文件解决（见「跨端同步」），而不是靠共用服务器。
@@ -51,7 +53,7 @@
 - 可插拔的元数据源：**TMDB**、**TheTVDB v4**、**bangumi.tv**，每个媒体库可自定义顺序
 - 年份相差超过 1 年的候选会被直接排除（否则同名的不同作品会互相匹配）
 - 结果写入本地 SQLite；HTTP 响应带缓存，重复扫描不会反复打 API
-- 图片由服务端下载并缓存到磁盘，客户端只访问服务端，API Key 不出服务器
+- 图片下载后缓存到磁盘，界面直接读缓存文件，API Key 不出本机
 - 刮错了可以手动指定条目 id（见下节），指定后会被钉住，重新扫描也不会被覆盖回去
 - **主来源没匹配上时，退而用次级来源**：所有源都严格匹配失败后，会取排名最高、年份不冲突的
   候选顶上，而不是把条目空着。这种条目在详情页标为「次级来源顶替（未可靠匹配，建议核对）」。
@@ -132,7 +134,7 @@ POST /api/backup/import?source=datadir       # 读数据目录下的 import.json
 导入走的是平台自己的文件选择器（Android 的 SAF、桌面的 AWT 对话框），而不是「把文件放进数据目录」——**Android 的数据目录在
 `filesDir` 下，用户根本放不进东西**，那条路在手机上不成立。
 
-`?source=datadir` 仍然保留，读数据目录里的 `import.json`，用于无界面的服务端恢复。
+无界面恢复仍可把备份文件放进数据目录，命名为 `import.json`。
 
 命令行同样可以：
 
@@ -151,7 +153,7 @@ curl -X POST -H "Content-Type: application/json" --data-binary @backup.json "htt
   账号和密码一样算凭据（这个网盘的账号就是手机号）。
 - **导入时空的凭据表示「保留目标机器已有的」**，所以不含凭据的备份不会把新机器上
   已经填好的 Key 清掉。
-- 导出是**流式**写出的：3246 个条目 4.1 MB，服务端堆只有 384 MB 也不会撑爆。
+- 导出是**流式**写出的：3246 个条目 4.1 MB，一次只在内存里持有一页，手机上也不会撑爆。
 - 条目 id 是 `SHA-1(库 id + 路径)`，所以只要库定义一起带过去，观看进度就能重新对上。
   只导设置和进度、不导刮削数据也可以，代价是新机器要重新扫描一遍。
 
@@ -223,15 +225,19 @@ PotPlayer 不会向任何人汇报播放位置——实测过：
   但**用 URL 播放时不写 `playtime`**；自建带 `saveplaypos=1` 的播放列表也不会被回写。
 - 注册表 `HKCU\Software\DAUM\PotPlayerMini64` 下只有加密的 `MInfo1/MInfo2`，不可用。
 
-所以 DAView 不去猜 PotPlayer 的内部状态，而是**让播放地址指回自己**：
+所以 DAView 不去猜 PotPlayer 的内部状态，而是**让播放地址指回自己**——这也是整个应用
+里唯一还需要监听端口的地方，于是那个端口被压缩成了它该有的样子：
 
-1. 客户端请求 `POST /api/playback/start`，服务端建立会话并返回
-   `http://<server>/api/stream/{itemId}/{文件名}?session=…&mode=proxy&token=…`
-2. 播放器向这个地址请求字节。服务端因此能看到每一次 `Range`：
+1. 客户端调 `MediaFacade.startPlayback`，`PlaybackPipe` 在 `127.0.0.1` 上临时开一个
+   端口（端口号由系统分配），返回 `http://127.0.0.1:<port>/p/<会话 id>/<条目 id>/<文件名>`
+2. 播放器向这个地址请求字节。于是每一次 `Range` 都看得见：
    - 有 Matroska `Cues` 时，字节偏移可以精确换算成时间戳
    - 没有索引时按「字节比例 × 时长」线性估算
 3. 两次请求之间，位置按墙上时钟推进（正常 1 倍速播放时是准的）
-4. 播放器停止读取超过 5 分钟，会话结束并落库
+4. 播放器停止读取超过 5 分钟，会话结束并落库；最后一个会话结束时，管道自己关掉
+
+它不是一个服务端：只认路径里的会话 id，没有鉴权、没有 CORS、没有 JSON、不绑局域网，
+播完就没有任何东西在监听。
 
 界面会明确标注进度来源（`播放器上报` / `索引推算` / `时钟推算`），不会假装它是精确值。
 
@@ -254,9 +260,9 @@ PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--
 如果把这次 `Range` 当成播放位置，会立刻把整集标记成"已看完"。因此末尾 8 MB 内的
 读取被判定为索引读取而忽略，且任何 `Range` 都要静置 3 秒无新请求才会被采纳为播放位置
 （打开文件时会连续发好几次探测请求，只有最后一次是真正的起播点）。
-这两条行为有单元测试覆盖：`server/src/test/.../PlaybackServiceTest.kt`。
+这两条行为有单元测试覆盖：`core/src/jvmTest/.../PlaybackServiceTest.kt`，管道本身则由 `PlaybackPipeTest` 覆盖。
 
-**已知不足**：外置播放器暂停时服务端无从得知，时钟会继续走。
+**已知不足**：外置播放器暂停时这边无从得知，时钟会继续走。
 代理模式下会用"已下载字节对应的时间"作上限压制这个误差，但缓冲区通常领先一两分钟，
 所以暂停很久后的进度会偏大。
 
@@ -266,19 +272,13 @@ PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--
 （Coil 3.6 的 AAR 要求 `compileSdk >= 37`）。
 
 ```bash
-./gradlew :server-app:installDist
-DAVIEW_DATA=./run server-app/build/install/server-app/bin/server-app
+./gradlew :composeApp:run                        # 桌面端
+./gradlew :composeApp:assembleDebug              # Android APK
+./gradlew :composeApp:packageMsi                 # 桌面安装包（Windows）
 ```
 
-> 独立服务端不是必需的：桌面端和 Android 端自己就带着 core。
-
-首次启动会在日志里打印访问令牌：
-
-```
-访问令牌: 3f9c…
-```
-
-存储与 API Key 可以在客户端「设置」里填，也可以用环境变量（适合容器部署）：
+没有要先启动的服务端，也没有令牌要填：应用一开就是首页。WebDAV 地址与刮削 API Key
+在「设置」里填，或者用环境变量（适合无界面的容器部署）：
 
 ```bash
 DAVIEW_WEBDAV_URL=https://webdav.example.com/webdav
@@ -286,42 +286,26 @@ DAVIEW_WEBDAV_USER=...
 DAVIEW_WEBDAV_PASS=...
 DAVIEW_TMDB_KEY=...
 DAVIEW_TVDB_KEY=...
-DAVIEW_TOKEN=...            # 固定访问令牌，不填则自动生成
+DAVIEW_BANGUMI_TOKEN=...
 DAVIEW_DATA=./run           # 数据目录（config.json + daview.db + 图片缓存）
 ```
 
 > 凭据只写在数据目录下的 `config.json`，该目录已在 `.gitignore` 中。
 
-### 各端构建
-
-```bash
-./gradlew :composeApp:run                        # 桌面端（内置服务端）
-./gradlew :composeApp:assembleDebug              # Android APK
-./gradlew :composeApp:packageMsi                 # 桌面安装包（Windows）
-```
-
-桌面端默认自己起服务端；连远程服务器用：
-
-```bash
-./gradlew :composeApp:run --args="--remote http://192.168.1.10:8096 --token <token>"
-```
-
-
 ## 目录结构
 
 ```
-shared/      KMP：DTO 与 REST 客户端（jvm / android）
-core/        KMP（jvm / android）：WebDAV、扫描、命名解析、刮削、SQLite、流媒体、图片缓存、同步
-             里面没有 HTTP 服务端。桌面端与 Android 端直接调它，所以它们不必为了跟自己说话
-             而开一个端口
-server/      core 的 HTTP 外壳：路由与访问令牌。桌面端与 Android 端并不需要它
-server-app/  独立服务端的启动器，只有一个 main()
+shared/      KMP：DTO（jvm / android）
+core/        KMP（jvm / android）：WebDAV、扫描、命名解析、刮削、SQLite、容器探测、
+             图片缓存、播放会话、跨端同步。没有 HTTP 服务端，UI 直接调它
 composeApp/  Compose Multiplatform 客户端（androidMain / desktopMain）
+             src/app 同时注册进两个 JVM target——:core 的源码也是这么编的，
+             所以 UI 能直接看见它，不必为「只有一个实现的接口」再加一层
 docs/        架构说明与实测记录
 
-两个模块的共享源码都放在 `src/core`，**不能**放 `src/main`——传统 Android DSL 下那也是
-AGP 自己的 main 源集，重复注册会让 `compileDebugKotlinAndroid` 一直报 UP-TO-DATE，
-APK 里带的是旧代码。
+共享源码放在 `src/core`（客户端是 `src/app`），**不能**放 `src/main`——传统 Android DSL
+下那也是 AGP 自己的 main 源集，重复注册会让 `compileDebugKotlinAndroid` 一直报
+UP-TO-DATE，APK 里带的是旧代码。
 
 `core` 的两个 target 编译同一份源码。唯一真正有平台差异的是 SQL 驱动
 （JDBC / Android SQLite），它是注入进 `ServerContext` 的，所以既不需要 expect/actual，
@@ -330,7 +314,7 @@ APK 里带的是旧代码。
 
 ## 已知限制
 
-- **外置播放器的进度是推算值**：正常播放时误差在秒级（有 Matroska 索引时），但服务端看不到暂停，
+- **外置播放器的进度是推算值**：正常播放时误差在秒级（有 Matroska 索引时），但看不到暂停，
   长时间暂停后的进度会偏大。够用来续播，不能当精确计时。
 - **暂无 iOS target**：`shared` 的结构已经允许加 `iosArm64/iosSimulatorArm64`，但需要 macOS 才能构建。
 - **AGP 9 兼容**：目前用 `android.builtInKotlin=false` + `android.newDsl=false` 保留经典 KMP 布局，

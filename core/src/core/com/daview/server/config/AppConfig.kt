@@ -4,7 +4,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.SecureRandom
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.io.path.createDirectories
@@ -49,15 +48,12 @@ data class SyncConfig(
 @Serializable
 data class AppConfig(
     val serverName: String = "DAView",
-    val port: Int = 8096,
-    val host: String = "0.0.0.0",
-    val accessToken: String = "",
     val storage: StorageConfig = StorageConfig(),
     val scraper: ScraperConfig = ScraperConfig(),
     /**
-     * Stream external players through the server so playback position can be
-     * derived from the byte offsets they request. Off means a plain redirect,
-     * which is faster but reports no progress.
+     * Read external players through the local pipe so playback position can be
+     * derived from the byte offsets they request. Off hands them the storage
+     * link instead, which is faster but reports no progress.
      */
     val trackExternalPlayers: Boolean = true,
     /**
@@ -93,9 +89,6 @@ class ConfigStore(val dataDir: Path) {
             AppConfig()
         }
         val withEnv = base.copy(
-            port = env("DAVIEW_PORT")?.toIntOrNull() ?: base.port,
-            host = env("DAVIEW_HOST") ?: base.host,
-            accessToken = env("DAVIEW_TOKEN") ?: base.accessToken.ifBlank { generateToken() },
             storage = base.storage.copy(
                 url = env("DAVIEW_WEBDAV_URL") ?: base.storage.url,
                 username = env("DAVIEW_WEBDAV_USER") ?: base.storage.username,
@@ -107,7 +100,7 @@ class ConfigStore(val dataDir: Path) {
                 bangumiToken = env("DAVIEW_BANGUMI_TOKEN") ?: base.scraper.bangumiToken
             )
         )
-        if (!file.exists() || withEnv.accessToken != base.accessToken) persist(withEnv)
+        if (!file.exists()) persist(withEnv)
         return withEnv
     }
 
@@ -128,12 +121,6 @@ class ConfigStore(val dataDir: Path) {
     private fun env(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() }
 
     companion object {
-        fun generateToken(): String {
-            val bytes = ByteArray(24)
-            SecureRandom().nextBytes(bytes)
-            return bytes.joinToString("") { "%02x".format(it) }
-        }
-
         fun defaultDataDir(): Path {
             System.getenv("DAVIEW_DATA")?.takeIf { it.isNotBlank() }?.let { return Path.of(it) }
             val local = System.getenv("LOCALAPPDATA")

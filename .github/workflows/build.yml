@@ -97,9 +97,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       # The release variant, unsigned. `isMinifyEnabled` stays off in the Gradle
-      # build on purpose: the app embeds the ktor/sqlite server core and relies
-      # on kotlinx.serialization reflection, and R8 without a curated keystore of
-      # keep rules strips those at runtime. Signing is done as a separate step
+      # build on purpose: the app embeds the scanning/scraping/SQLite core and
+      # relies on kotlinx.serialization reflection, and R8 without a curated set
+      # of keep rules strips those at runtime. Signing is done as a separate step
       # below, so this artifact is the input to signing, not a shippable APK.
       - run: ./gradlew :composeApp:assembleRelease
 
