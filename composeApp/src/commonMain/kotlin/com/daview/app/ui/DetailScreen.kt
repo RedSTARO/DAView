@@ -472,10 +472,11 @@ private fun SeasonEpisodesRow(state: AppState, current: MediaItemDto, episodes: 
         initialFirstVisibleItemIndex = episodes.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
     )
     // Walking to the next episode reuses this row rather than building a new
-    // one, so it has to be told to slide again. Keying on the list as well
-    // covers the gap where the item has changed but its siblings have not
-    // arrived yet; an equal list compares equal, so a refresh re-anchors nothing.
-    LaunchedEffect(current.id, episodes) {
+    // one, so it has to be told to slide again. The second key names which list
+    // this is, not what is in it: crossing into another season re-anchors, while
+    // marking an episode watched rebuilds the list without moving the row out
+    // from under someone who had scrolled it.
+    LaunchedEffect(current.id, episodes.firstOrNull()?.id) {
         episodes.indexOfFirst { it.id == current.id }
             .takeIf { it >= 0 }
             ?.let { listState.scrollToItem(it) }
