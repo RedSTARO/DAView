@@ -68,6 +68,17 @@ fun Application.module(context: ServerContext) {
         allowCredentials = true
     }
     install(StatusPages) {
+        // The facade reports failures in its own terms; only the mapping onto
+        // status codes is about HTTP, so it lives here rather than in every
+        // handler.
+        exception<com.daview.server.api.MediaFacade.FacadeException> { call, cause ->
+            val status = when (cause.failure) {
+                com.daview.server.api.MediaFacade.Failure.NOT_FOUND -> HttpStatusCode.NotFound
+                com.daview.server.api.MediaFacade.Failure.INVALID -> HttpStatusCode.BadRequest
+                com.daview.server.api.MediaFacade.Failure.UPSTREAM -> HttpStatusCode.BadGateway
+            }
+            call.respond(status, ApiError(cause.message, cause.detail))
+        }
         exception<com.daview.server.storage.WebDavException> { call, cause ->
             // Logged, not just answered: a bare 502 at the player end says
             // nothing about which request to the storage failed or why.
