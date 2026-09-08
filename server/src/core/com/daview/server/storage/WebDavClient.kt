@@ -269,20 +269,45 @@ class WebDavClient(private val config: StorageConfig) {
     }
 
     /** Bytes of a file the app wrote, or null when it is not there yet. */
-    fun readIfPresent(relativePath: String, limit: Long = 32L * 1024 * 1024): ByteArray? {
+    fun readIfPresent(relativePath: String, limit: Long = 32L * 1024 * 1024): ByteArray? =
+        read(relativePath, limit).bytes
+
+    /**
+     * Same read, but says which kind of nothing came back.
+     *
+     * A caller that is about to replace the file has to tell "it is not there"
+     * from "I could not find out": `PUT` writes the whole file, so treating a
+     * timeout as an empty share would overwrite what every other device wrote.
+     */
+    fun read(relativePath: String, limit: Long = 32L * 1024 * 1024): ReadResult {
         val request = request(absoluteUrl(relativePath)).get().build()
-        val response = runCatching { http.newCall(request).execute() }.getOrElse { return null }
+        val response = runCatching { http.newCall(request).execute() }
+            .getOrElse { return ReadResult(error = it.message ?: it::class.simpleName) }
         response.use {
             // A signed CDN redirect is how this gateway serves file bodies.
             if (it.code in 300..399) {
-                val location = it.header("Location") ?: return null
-                return openRangeAt(location, 0, limit - 1, useAuth = false)
-                    .use { range -> range.stream.readBytes() }
+                val location = it.header("Location")
+                    ?: return ReadResult(error = "${it.code} 跳转但没有 Location")
+                return runCatching {
+                    ReadResult(
+                        bytes = openRangeAt(location, 0, limit - 1, useAuth = false)
+                            .use { range -> range.stream.readBytes() }
+                    )
+                }.getOrElse { cause -> ReadResult(error = cause.message ?: cause::class.simpleName) }
             }
-            if (!it.isSuccessful) return null
-            return it.body.bytes()
+            if (it.code == 404 || it.code == 410) return ReadResult(missing = true)
+            if (!it.isSuccessful) return ReadResult(error = "HTTP ${it.code}")
+            return ReadResult(bytes = it.body.bytes())
         }
     }
+
+    class ReadResult(
+        val bytes: ByteArray? = null,
+        /** The share answered, and the file is not there. */
+        val missing: Boolean = false,
+        /** Set when the share could not be asked at all. */
+        val error: String? = null
+    )
 
     private fun encodeSegment(segment: String): String =
         java.net.URLEncoder.encode(segment, StandardCharsets.UTF_8)

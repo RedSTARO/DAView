@@ -446,6 +446,23 @@ data class BackupUserDataDto(
     val updatedAt: Long = 0
 )
 
+/**
+ * A scrape entry the user chose by hand, keyed by item id like the watch state.
+ *
+ * It travels separately from the catalogue because it is the one piece of
+ * scrape data that is a decision rather than a derivation: every device can
+ * rebuild titles and artwork by scraping, but none of them can rediscover that
+ * this folder is *that* entry — that is exactly the judgement automatic
+ * matching got wrong. A few dozen bytes each, against 4 MB for the catalogue.
+ */
+@Serializable
+data class BackupPinDto(
+    val itemId: String,
+    val provider: MetadataProvider,
+    val providerId: String,
+    val updatedAt: Long = 0
+)
+
 @Serializable
 data class BackupFileDto(
     val format: String = BACKUP_FORMAT,
@@ -457,6 +474,7 @@ data class BackupFileDto(
     val settings: BackupSettingsDto? = null,
     val libraries: List<LibraryDto> = emptyList(),
     val userData: List<BackupUserDataDto> = emptyList(),
+    val pins: List<BackupPinDto> = emptyList(),
     val items: List<BackupItemDto> = emptyList()
 )
 
@@ -466,6 +484,7 @@ data class BackupSummaryDto(
     val libraries: Int = 0,
     val items: Int = 0,
     val userData: Int = 0,
+    val pins: Int = 0,
     val containsSecrets: Boolean = false,
     val createdAt: Long = 0
 )

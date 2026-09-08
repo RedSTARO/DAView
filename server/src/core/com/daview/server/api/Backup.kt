@@ -7,10 +7,12 @@ import com.daview.shared.model.BACKUP_FORMAT
 import com.daview.shared.model.BACKUP_VERSION
 import com.daview.shared.model.BackupFileDto
 import com.daview.shared.model.BackupItemDto
+import com.daview.shared.model.BackupPinDto
 import com.daview.shared.model.BackupSettingsDto
 import com.daview.shared.model.BackupSummaryDto
 import com.daview.shared.model.BackupUserDataDto
 import com.daview.shared.model.LibraryDto
+import com.daview.shared.model.MetadataProvider
 import com.daview.shared.model.ScraperSettingsDto
 import com.daview.shared.model.StorageSettingsDto
 import com.daview.shared.model.UserDataDto
@@ -32,6 +34,8 @@ data class BackupOptions(
     val libraries: Boolean = true,
     val items: Boolean = true,
     val userData: Boolean = true,
+    /** Entries the user pinned by hand. Tiny, and not reproducible by scraping. */
+    val pins: Boolean = true,
     /** Include the WebDAV password and the scraper API keys. Off by default. */
     val secrets: Boolean = false
 )
@@ -93,6 +97,15 @@ suspend fun ApplicationCall.respondBackup(context: ServerContext, options: Backu
                 )
             )
         }
+        if (options.pins) {
+            emit(",\"pins\":")
+            emit(
+                backupJson.encodeToString(
+                    ListSerializer(BackupPinDto.serializer()),
+                    context.repository.allPins().mapNotNull { it.toBackup() }
+                )
+            )
+        }
         if (options.items) {
             emit(",\"items\":[")
             var offset = 0
@@ -133,6 +146,7 @@ fun buildBackup(context: ServerContext, options: BackupOptions): String {
         userData = if (options.userData) {
             context.repository.allUserData().map { BackupUserDataDto(it.itemId, it.data, it.updatedAt) }
         } else emptyList(),
+        pins = if (options.pins) context.repository.allPins().mapNotNull { it.toBackup() } else emptyList(),
         items = if (options.items) {
             context.repository.itemRecordsPage(Int.MAX_VALUE, 0).map { it.toBackup() }
         } else emptyList()
@@ -183,6 +197,24 @@ fun applyBackup(
     }
 
     backup.libraries.forEach { context.repository.upsertLibrary(it) }
+
+    // Pins land before the items, so an item restored in the same file already
+    // finds its correction in place. Newer wins, same as the watch state — the
+    // two are both decisions the user made at a point in time.
+    var mergedPins = 0
+    backup.pins.forEach { row ->
+        if (row.providerId.isBlank() || row.provider == MetadataProvider.NONE) return@forEach
+        val local = context.repository.pin(row.itemId)
+        if (local != null && local.updatedAt >= row.updatedAt) return@forEach
+        context.repository.savePin(
+            itemId = row.itemId,
+            provider = row.provider.name,
+            providerId = row.providerId,
+            updatedAt = row.updatedAt.takeIf { it > 0 } ?: System.currentTimeMillis()
+        )
+        mergedPins++
+    }
+
     backup.items.chunked(ITEM_PAGE).forEach { chunk ->
         context.repository.upsertItems(chunk.map { it.toRecord() })
     }
@@ -203,6 +235,7 @@ fun applyBackup(
         libraries = backup.libraries.size,
         items = backup.items.size,
         userData = mergedUserData,
+        pins = mergedPins,
         containsSecrets = backup.containsSecrets,
         createdAt = backup.createdAt
     )
@@ -231,6 +264,12 @@ internal fun ServerContext.backupSettings(secrets: Boolean) = BackupSettingsDto(
     trackExternalPlayers = config.trackExternalPlayers,
     externalSessionIdleTimeoutSec = config.externalSessionIdleTimeoutSec
 )
+
+/** Null for a provider this build does not know, which is skipped rather than guessed at. */
+internal fun com.daview.server.db.PinRow.toBackup(): BackupPinDto? {
+    val known = MetadataProvider.entries.firstOrNull { it.name == provider } ?: return null
+    return BackupPinDto(itemId = itemId, provider = known, providerId = providerId, updatedAt = updatedAt)
+}
 
 /** The item as stored, minus the watch state — that travels in its own section. */
 internal fun ItemRecord.toBackup() = BackupItemDto(

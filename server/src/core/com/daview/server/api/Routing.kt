@@ -4,6 +4,7 @@ import com.daview.server.DAVIEW_VERSION
 import com.daview.server.ServerContext
 import com.daview.server.config.StorageConfig
 import com.daview.server.db.Repository
+import com.daview.server.library.Scanner
 import com.daview.server.storage.WebDavException
 import com.daview.shared.model.*
 import io.ktor.http.CacheControl
@@ -28,7 +29,6 @@ import io.ktor.server.routing.route
 import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.util.UUID
 
 private const val STREAM_BUFFER = 256 * 1024
 
@@ -125,7 +125,11 @@ fun Route.apiRoutes(context: ServerContext) {
         call.requireAuth(context) ?: return@post
         val incoming = call.receive<LibraryDto>()
         val library = incoming.copy(
-            id = incoming.id.ifBlank { UUID.randomUUID().toString().replace("-", "").take(12) },
+            // Derived from the path, not random: another device pointed at the
+            // same folder has to reach the same id by itself, or the item ids
+            // built on top of it — and every watch record keyed by them — will
+            // not line up across the sync file.
+            id = incoming.id.ifBlank { Scanner.libraryId(incoming.path) },
             name = incoming.name.ifBlank { incoming.path.trim('/').substringAfterLast('/') },
             providerOrder = incoming.providerOrder.ifEmpty { context.metadata.defaultOrder(incoming.kind) }
         )
@@ -188,6 +192,9 @@ fun Route.apiRoutes(context: ServerContext) {
                 libraries = flag("libraries", true),
                 items = flag("items", true),
                 userData = flag("userdata", true),
+                // Not tied to the catalogue switch: a few dozen bytes each, and
+                // the one piece of scrape data a rescan cannot reproduce.
+                pins = flag("pins", true),
                 secrets = flag("secrets", false)
             )
         )

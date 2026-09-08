@@ -348,10 +348,25 @@ class Scanner(
         const val EXTERNAL_STREAM_BASE = 1000
 
         /** Stable, collision-resistant id derived from the library and the path. */
-        fun itemId(libraryId: String, path: String): String {
-            val digest = MessageDigest.getInstance("SHA-1")
-                .digest("$libraryId|$path".toByteArray(Charsets.UTF_8))
-            return digest.take(12).joinToString("") { "%02x".format(it) }
-        }
+        fun itemId(libraryId: String, path: String): String = digest("$libraryId|$path")
+
+        /**
+         * Derived from the path rather than drawn at random, because two devices
+         * that scan the same share have to arrive at the same id on their own.
+         * Item ids hang off the library id, so a random one would give every
+         * device its own set of item ids and the watch state would never line up
+         * — and the sync file would carry the same folder twice.
+         */
+        fun libraryId(path: String): String = digest("library|" + normalisePath(path))
+
+        /** Trailing slashes and case are not part of what a folder *is*. */
+        private fun normalisePath(path: String): String =
+            "/" + path.trim().trim('/').lowercase()
+
+        private fun digest(value: String): String =
+            MessageDigest.getInstance("SHA-1")
+                .digest(value.toByteArray(Charsets.UTF_8))
+                .take(12)
+                .joinToString("") { "%02x".format(it) }
     }
 }

@@ -80,7 +80,18 @@ class MetadataService(
         // but only with an id they already have (TMDB hands over a TVDB id, for
         // instance) — never with a search, since a search is exactly what
         // produced the wrong match the user is correcting.
-        val locked = item.lockedProvider
+        //
+        // The pin table is consulted whenever the row itself carries none: sync
+        // brings corrections over from other devices, and one can easily land
+        // before this device has ever scanned the item it belongs to.
+        val storedPin = if (item.lockedProvider == null) repository.pin(item.id) else null
+        val pinnedProvider = storedPin?.let { row ->
+            MetadataProvider.entries.firstOrNull { it.name == row.provider }
+        }
+        if (pinnedProvider != null) {
+            providerIds[pinnedProvider.name.lowercase()] = storedPin.providerId
+        }
+        val locked = item.lockedProvider ?: pinnedProvider
         val effectiveOrder =
             if (locked == null) order else listOf(locked) + order.filter { it != locked }
 
@@ -158,6 +169,9 @@ class MetadataService(
                     backdropUrl = metadata.backdropUrl ?: item.backdropUrl,
                     logoUrl = metadata.logoUrl ?: item.logoUrl,
                     providerIds = providerIds,
+                    // A pin that arrived from another device has to land on the
+                    // row too, or the next scrape would search again and undo it.
+                    lockedProvider = locked,
                     scrapeStatus = status
                 ),
                 scrapedAt = now
@@ -235,7 +249,11 @@ class MetadataService(
         )
         if (item.kind == ItemKind.SERIES) resetEpisodes(item.id)
         val applied = enrichItem(base, listOf(provider) + order.filter { it != provider }, config)
-        return if (applied) repository.item(item.id) else null
+        if (!applied) return null
+        // Recorded outside the item as well, so it survives into the sync file
+        // and the other devices stop re-matching this folder on their own.
+        repository.savePin(item.id, provider.name, id)
+        return repository.item(item.id)
     }
 
     /**

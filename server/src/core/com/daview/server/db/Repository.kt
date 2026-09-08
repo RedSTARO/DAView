@@ -25,6 +25,17 @@ private val providerListSerializer = ListSerializer(MetadataProvider.serializer(
 /** A watch-state row with the timestamp the API does not expose. */
 data class UserDataRow(val itemId: String, val data: UserDataDto, val updatedAt: Long)
 
+/**
+ * A hand-picked scrape entry. The provider is stored as the enum name so an
+ * unknown value from a newer build can be skipped rather than crashing the read.
+ */
+data class PinRow(
+    val itemId: String,
+    val provider: String,
+    val providerId: String,
+    val updatedAt: Long
+)
+
 /** Row shape for [items], including bookkeeping columns the API never exposes. */
 data class ItemRecord(
     val dto: MediaItemDto,
@@ -408,6 +419,66 @@ class Repository(private val db: Database) {
                     )
                 }
             }
+    }
+
+    // ------------------------------------------------------------ scrape pins
+
+    /**
+     * Every entry the user pinned by hand.
+     *
+     * Kept in its own table rather than read back off `items` so a pin can
+     * arrive before the item does: a device that has not scanned yet still has
+     * somewhere to put one, and the scan then finds it waiting.
+     */
+    fun allPins(): List<PinRow> = db.read { connection ->
+        connection.statement("SELECT * FROM scrape_pins ORDER BY item_id").useQuery { rs ->
+            rs.map {
+                PinRow(
+                    itemId = it.requireString("item_id"),
+                    provider = it.requireString("provider"),
+                    providerId = it.requireString("provider_id"),
+                    updatedAt = it.getLongOrNull("updated_at") ?: 0L
+                )
+            }
+        }
+    }
+
+    fun pin(itemId: String): PinRow? = db.read { connection ->
+        connection.statement("SELECT * FROM scrape_pins WHERE item_id = ?")
+            .apply { setString(1, itemId) }
+            .useQuery {
+                if (!it.next()) null
+                else PinRow(
+                    itemId = it.requireString("item_id"),
+                    provider = it.requireString("provider"),
+                    providerId = it.requireString("provider_id"),
+                    updatedAt = it.getLongOrNull("updated_at") ?: 0L
+                )
+            }
+    }
+
+    fun savePin(
+        itemId: String,
+        provider: String,
+        providerId: String,
+        updatedAt: Long = System.currentTimeMillis()
+    ) = db.transaction { connection ->
+        connection.statement(
+            """
+            INSERT INTO scrape_pins(item_id, provider, provider_id, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(item_id) DO UPDATE SET
+                provider = excluded.provider,
+                provider_id = excluded.provider_id,
+                updated_at = excluded.updated_at
+            """.trimIndent()
+        ).use {
+            it.setString(1, itemId)
+            it.setString(2, provider)
+            it.setString(3, providerId)
+            it.setLong(4, updatedAt)
+            it.executeUpdate()
+        }
     }
 
     /**

@@ -137,6 +137,21 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                 // rescan, and so the scanner can re-apply it after one.
                 "ALTER TABLE items ADD COLUMN merged_into TEXT",
                 "CREATE INDEX IF NOT EXISTS idx_items_merged ON items(merged_into)"
+            ),
+            listOf(
+                // The entry the user chose by hand, kept outside `items` on
+                // purpose: it has to survive a device that has not scanned yet.
+                // Sync carries these rows, so a correction made on one device
+                // lands here before the item it belongs to even exists, and is
+                // waiting when the scan creates it.
+                """
+                CREATE TABLE IF NOT EXISTS scrape_pins (
+                    item_id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL DEFAULT 0
+                )
+                """.trimIndent()
             )
         )
     }
