@@ -28,6 +28,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
 import com.daview.app.data.PlaybackController
+import com.daview.app.data.Screen
 import com.daview.app.platform.PlatformInfo
 import com.daview.app.platform.copyToClipboard
 import com.daview.app.platform.openUrl
@@ -94,8 +95,20 @@ fun ExternalPlaybackPanel(state: AppState, playback: PlaybackController) {
                     color = MaterialTheme.colorScheme.secondary
                 )
                 Spacer(Modifier.height(4.dp))
+                // The show used to be glued to the episode title with a middot;
+                // on its own line it can be a link without splitting a sentence.
+                info.item.seriesName?.let { name ->
+                    LinkText(
+                        name,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.secondary,
+                        onClick = info.item.seriesId?.let { id ->
+                            { state.navigate(Screen.Detail(id)) }
+                        }
+                    )
+                }
                 Text(
-                    info.item.seriesName?.let { "$it · ${info.item.name}" } ?: info.item.name,
+                    info.item.name,
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,

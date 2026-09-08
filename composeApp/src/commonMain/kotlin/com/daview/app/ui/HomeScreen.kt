@@ -66,8 +66,17 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 40.dp)
     ) {
-        hero?.let {
-            item { HeroBanner(it, onPlay = { playback.playInternalOrExternal(it) }) { state.navigate(Screen.Detail(it.id)) } }
+        hero?.let { heroItem ->
+            val openSeries: (() -> Unit)? = heroItem.seriesId?.let { id ->
+                { state.navigate(Screen.Detail(id)) }
+            }
+            item {
+                HeroBanner(
+                    heroItem,
+                    onPlay = { playback.playInternalOrExternal(heroItem) },
+                    onSeries = openSeries
+                ) { state.navigate(Screen.Detail(heroItem.id)) }
+            }
         }
 
         item { LibraryShortcuts(state.libraries) { state.navigate(Screen.Library(it.id)) } }
@@ -110,7 +119,12 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
 }
 
 @Composable
-private fun HeroBanner(item: MediaItemDto, onPlay: () -> Unit, onOpen: () -> Unit) {
+private fun HeroBanner(
+    item: MediaItemDto,
+    onPlay: () -> Unit,
+    onSeries: (() -> Unit)?,
+    onOpen: () -> Unit
+) {
     Box(
         Modifier
             .fillMaxWidth()
@@ -139,8 +153,13 @@ private fun HeroBanner(item: MediaItemDto, onPlay: () -> Unit, onOpen: () -> Uni
         Column(
             Modifier.align(Alignment.BottomStart).padding(24.dp)
         ) {
-            item.seriesName?.let {
-                Text(it, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+            item.seriesName?.let { name ->
+                LinkText(
+                    name,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.secondary,
+                    onClick = onSeries
+                )
             }
             Text(
                 text = item.name,

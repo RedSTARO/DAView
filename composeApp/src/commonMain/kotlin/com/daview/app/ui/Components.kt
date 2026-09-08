@@ -40,8 +40,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
@@ -249,6 +253,54 @@ fun EmptyState(title: String, description: String, action: @Composable (() -> Un
             it()
         }
     }
+}
+
+/**
+ * A name that stands for something with a page of its own — the series above an
+ * episode, the library behind a card. Colour carries the affordance, because
+ * nothing else in the app is underlined at rest; the underline and the hand
+ * cursor only show on hover, which is all desktop and web need. A null
+ * [onClick] renders plain text, so an item that never learned its parent's id
+ * reads as a label instead of a link that goes nowhere.
+ */
+@Composable
+fun LinkText(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.bodyMedium,
+    color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    fontWeight: FontWeight? = null,
+    maxLines: Int = 1,
+    onClick: (() -> Unit)? = null
+) {
+    if (onClick == null) {
+        Text(
+            text = text,
+            modifier = modifier,
+            style = style,
+            color = color,
+            fontWeight = fontWeight,
+            maxLines = maxLines,
+            overflow = TextOverflow.Ellipsis
+        )
+        return
+    }
+
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    Text(
+        text = text,
+        modifier = modifier
+            .hoverable(interaction)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        style = style,
+        color = MaterialTheme.colorScheme.primary,
+        fontWeight = fontWeight,
+        textDecoration = if (hovered) TextDecoration.Underline else null,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis
+    )
 }
 
 @Composable

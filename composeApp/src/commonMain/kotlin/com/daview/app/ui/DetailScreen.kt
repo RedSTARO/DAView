@@ -172,6 +172,12 @@ private fun watchedLabel(item: MediaItemDto): String = when {
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun DetailHeader(state: AppState, playback: PlaybackController, item: MediaItemDto) {
+    // A season or an episode names the show it belongs to; the show itself has
+    // no parent to point at, so the label stays plain text there.
+    val openSeries: (() -> Unit)? = item.seriesId?.let { id ->
+        { state.navigate(Screen.Detail(id)) }
+    }
+
     Box(Modifier.fillMaxWidth().heightIn(min = 320.dp)) {
         // The band is only as tall as the column beside the poster, and that
         // height is not known until the column has been measured.
@@ -217,8 +223,13 @@ private fun DetailHeader(state: AppState, playback: PlaybackController, item: Me
             }
 
             Column(Modifier.weight(1f)) {
-                item.seriesName?.let {
-                    Text(it, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary)
+                item.seriesName?.let { name ->
+                    LinkText(
+                        name,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.secondary,
+                        onClick = openSeries
+                    )
                 }
                 Text(item.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 item.originalName?.takeIf { it != item.name }?.let {

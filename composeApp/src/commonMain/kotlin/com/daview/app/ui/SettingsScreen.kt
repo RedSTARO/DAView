@@ -49,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
+import com.daview.app.data.Screen
 import com.daview.app.platform.PlatformInfo
 import com.daview.app.platform.copyToClipboard
 import com.daview.app.platform.openUrl
@@ -109,7 +110,12 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(library.name, style = MaterialTheme.typography.titleMedium)
+                    LinkText(
+                        library.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        onClick = { state.navigate(Screen.Library(library.id)) }
+                    )
                     Text(
                         "${kindLabel(library.kind)} · ${library.path} · ${library.itemCount} 项",
                         style = MaterialTheme.typography.bodySmall,
