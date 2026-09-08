@@ -52,13 +52,24 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      # jpackage builds the MSI through WiX and refuses to start without it.
-      # Recent runner images no longer ship WiX 3, and jpackage does not accept
-      # WiX 4/5, so it is pinned here.
-      - name: 安装 WiX Toolset 3
+      # jpackage builds the MSI through WiX and refuses to start without it, and
+      # it only accepts WiX 3.x. The runner image ships some 3.x already, so
+      # install only when it is missing and always put whatever is there on PATH
+      # (pinning a version makes choco fail against a newer one).
+      - name: 准备 WiX Toolset 3
         run: |
-          choco install wixtoolset --version=3.11.2 --no-progress -y
-          "C:\Program Files (x86)\WiX Toolset v3.11\bin" >> $env:GITHUB_PATH
+          function Find-Wix {
+            Get-ChildItem "C:\Program Files (x86)" -Filter "WiX Toolset v3.*" -Directory -ErrorAction SilentlyContinue |
+              Sort-Object Name -Descending | Select-Object -First 1
+          }
+          $wix = Find-Wix
+          if (-not $wix) {
+            choco install wixtoolset --no-progress -y
+            $wix = Find-Wix
+          }
+          if (-not $wix) { throw "WiX Toolset 3 not found after install" }
+          Write-Host "using $($wix.FullName)"
+          "$($wix.FullName)\bin" >> $env:GITHUB_PATH
 
       - uses: gradle/actions/setup-gradle@v4
 
@@ -84,12 +95,11 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      # compileSdk is 37 (Coil 3.6 requires it). Installing it explicitly means a
-      # missing platform fails here with an obvious message instead of inside AGP.
+      # compileSdk is 37, which the whole Compose 1.12 / Material3 1.5 stack
+      # requires. Google publishes it as android-37.0, not android-37 — the bare
+      # name does not exist in the repository and sdkmanager fails on it.
       - name: 安装 compile SDK
-        run: sdkmanager --install "platforms;android-${{ env.COMPILE_SDK }}"
-        env:
-          COMPILE_SDK: "37"
+        run: sdkmanager --install "platforms;android-37.0"
 
       - uses: gradle/actions/setup-gradle@v4
 
