@@ -239,9 +239,13 @@ class AppState(private val scope: CoroutineScope) {
             detailChildren = if (item.kind == ItemKind.SERIES || item.kind == ItemKind.SEASON) {
                 api.children(itemId)
             } else emptyList()
-            val firstSeason = detailChildren.firstOrNull { it.kind == ItemKind.SEASON }
-            detailSeasonId = firstSeason?.id
-            detailEpisodes = firstSeason?.let { api.children(it.id) } ?: emptyList()
+            // An episode has no children of its own. What its page wants is the
+            // rest of the run it sits in, and that hangs off its season — the
+            // same list a series page shows for the season it has selected.
+            val seasonId = detailChildren.firstOrNull { it.kind == ItemKind.SEASON }?.id
+                ?: item.parentId?.takeIf { item.kind == ItemKind.EPISODE }
+            detailSeasonId = seasonId
+            detailEpisodes = seasonId?.let { api.children(it) } ?: emptyList()
         } finally {
             detailLoading = false
         }

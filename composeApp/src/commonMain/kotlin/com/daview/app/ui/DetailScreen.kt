@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -47,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -144,6 +146,10 @@ fun DetailScreen(state: AppState, playback: PlaybackController) {
                     state.togglePlayed(episode)
                 }
             }
+        }
+
+        if (item.kind == ItemKind.EPISODE && state.detailEpisodes.isNotEmpty()) {
+            item { SeasonEpisodesRow(state, item, state.detailEpisodes) }
         }
 
         if (relatedMovies.isNotEmpty()) {
@@ -453,6 +459,54 @@ private fun InfoRow(label: String, value: String) {
 private fun pathUnder(path: String, base: String?): String {
     if (base.isNullOrBlank()) return path
     return path.removePrefix(base.trimEnd('/') + "/")
+}
+
+/**
+ * The rest of the run, laid sideways under one episode's page, opened at the
+ * episode you are on. A series page gets the vertical list instead; here the
+ * page is about a single file and this is the way out of it.
+ */
+@Composable
+private fun SeasonEpisodesRow(state: AppState, current: MediaItemDto, episodes: List<MediaItemDto>) {
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = episodes.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
+    )
+    // Walking to the next episode reuses this row rather than building a new
+    // one, so it has to be told to slide again. Keying on the list as well
+    // covers the gap where the item has changed but its siblings have not
+    // arrived yet; an equal list compares equal, so a refresh re-anchors nothing.
+    LaunchedEffect(current.id, episodes) {
+        episodes.indexOfFirst { it.id == current.id }
+            .takeIf { it >= 0 }
+            ?.let { listState.scrollToItem(it) }
+    }
+
+    Column(Modifier.fillMaxWidth()) {
+        SectionHeader(current.parentIndexNumber?.let { "第 $it 季" } ?: "本季剧集") {
+            Text(
+                "${episodes.size} 集",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        LazyRow(
+            state = listState,
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            items(episodes, key = { it.id }) { episode ->
+                // Every tile in the row is the same show, so the series name the
+                // card usually leads with says nothing; the number does.
+                PosterCard(
+                    episode,
+                    width = 232.dp,
+                    title = episode.episodeLabel ?: episode.name,
+                    subtitle = episode.name
+                ) { state.navigate(Screen.Detail(episode.id)) }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+    }
 }
 
 @Composable

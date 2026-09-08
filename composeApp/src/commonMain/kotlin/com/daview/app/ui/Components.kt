@@ -102,6 +102,9 @@ fun PosterCard(
     modifier: Modifier = Modifier,
     width: androidx.compose.ui.unit.Dp = 152.dp,
     showProgress: Boolean = true,
+    /** Overrides the two lines under the tile. Both default to what the item says. */
+    title: String? = null,
+    subtitle: String? = null,
     onClick: () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -188,14 +191,14 @@ fun PosterCard(
 
         Spacer(Modifier.height(8.dp))
         Text(
-            text = item.seriesName?.takeIf { item.kind == ItemKind.EPISODE } ?: item.name,
+            text = title ?: item.seriesName?.takeIf { item.kind == ItemKind.EPISODE } ?: item.name,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
         Text(
-            text = subtitleFor(item),
+            text = subtitle ?: subtitleFor(item),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
