@@ -67,7 +67,7 @@ class Scanner(
         }
 
         progress.report("saving", total, total, "写入数据库")
-        repository.upsertItems(records)
+        repository.upsertScannedItems(records)
 
         val seen = records.map { it.dto.id }.toSet()
         val stale = repository.idsInLibrary(library.id) - seen

@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.OpenInNew
@@ -205,6 +206,11 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
     val target = if (item.isPlayable) item else state.detailEpisodes.firstOrNull { !it.userData.played }
         ?: state.detailEpisodes.firstOrNull()
     var menuOpen by remember { mutableStateOf(false) }
+    var identifyOpen by remember { mutableStateOf(false) }
+
+    if (identifyOpen) {
+        IdentifyDialog(state, item, onDismiss = { identifyOpen = false })
+    }
 
     Column {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -268,6 +274,18 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
                         Icons.Filled.Check,
                         contentDescription = "已观看",
                         tint = if (item.userData.played) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            // Only whole films and series carry scraped metadata, so only they
+            // can be re-pointed at a different entry.
+            if (item.kind == ItemKind.MOVIE || item.kind == ItemKind.SERIES) {
+                IconButton(onClick = { identifyOpen = true }) {
+                    Icon(
+                        Icons.Filled.Edit,
+                        contentDescription = "手动指定刮削条目",
+                        tint = if (item.lockedProvider != null) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }

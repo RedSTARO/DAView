@@ -18,15 +18,17 @@ import kotlin.math.max
  * Provider order is per-library; the first provider that returns a confident
  * match wins, and later providers only fill in fields the winner left empty.
  */
-class MetadataService(private val repository: Repository) {
-
-    private val log = LoggerFactory.getLogger(MetadataService::class.java)
-
+class MetadataService(
+    private val repository: Repository,
+    /** Overridden in tests; production always uses the real three. */
     private val scrapers: Map<MetadataProvider, MetadataScraper> = mapOf(
         MetadataProvider.TMDB to TmdbScraper(repository),
         MetadataProvider.TVDB to TvdbScraper(repository),
         MetadataProvider.BANGUMI to BangumiScraper(repository)
     )
+) {
+
+    private val log = LoggerFactory.getLogger(MetadataService::class.java)
 
     fun availableProviders(config: ScraperConfig): List<MetadataProvider> =
         scrapers.filterValues { it.isConfigured(config) }.keys.toList()
@@ -73,14 +75,23 @@ class MetadataService(private val repository: Repository) {
         var merged: ScrapedMetadata? = null
         val providerIds = item.providerIds.toMutableMap()
 
-        for (provider in order) {
+        // The provider the user pinned by hand goes first. The others still run,
+        // but only with an id they already have (TMDB hands over a TVDB id, for
+        // instance) — never with a search, since a search is exactly what
+        // produced the wrong match the user is correcting.
+        val locked = item.lockedProvider
+        val effectiveOrder =
+            if (locked == null) order else listOf(locked) + order.filter { it != locked }
+
+        for (provider in effectiveOrder) {
             val scraper = scrapers[provider] ?: continue
             if (!scraper.isConfigured(config)) continue
 
             val pinnedId = providerIds[provider.name.lowercase()]
-            val candidateId = pinnedId ?: run {
-                val candidates = scraper.search(item.name, item.year, kind, config)
-                bestMatch(item, candidates)?.providerId
+            val candidateId = when {
+                pinnedId != null -> pinnedId
+                locked != null -> null
+                else -> bestMatch(item, scraper.search(item.name, item.year, kind, config))?.providerId
             } ?: continue
 
             val details = scraper.details(candidateId, kind, config) ?: continue
@@ -123,6 +134,113 @@ class MetadataService(private val repository: Repository) {
         return true
     }
 
+    // ------------------------------------------------------------ manual identify
+
+    /**
+     * Raw hits from one provider, for the dialog where the user picks the right
+     * entry themselves. Deliberately unfiltered: [bestMatch] and its year rule
+     * are what rejected the correct answer in the first place.
+     */
+    fun searchProvider(
+        provider: MetadataProvider,
+        query: String,
+        year: Int?,
+        kind: ItemKind,
+        config: ScraperConfig
+    ): List<ScrapeCandidate> {
+        val scraper = scrapers[provider] ?: return emptyList()
+        if (!scraper.isConfigured(config)) return emptyList()
+        if (query.isBlank()) return emptyList()
+        return scraper.searchManual(query.trim(), year, kind, config)
+    }
+
+    /**
+     * Pins [providerId] on [item] and rebuilds its metadata around that source.
+     * Returns the stored item, or null when the id does not resolve — a typo
+     * must not wipe metadata that is already correct.
+     */
+    fun identify(
+        item: MediaItemDto,
+        provider: MetadataProvider,
+        providerId: String,
+        order: List<MetadataProvider>,
+        config: ScraperConfig
+    ): MediaItemDto? {
+        val scraper = scrapers[provider] ?: return null
+        if (!scraper.isConfigured(config)) return null
+        val id = providerId.trim()
+        if (id.isBlank()) return null
+        val kind = if (item.kind == ItemKind.MOVIE) ItemKind.MOVIE else ItemKind.SERIES
+        scraper.details(id, kind, config) ?: return null
+
+        val base = stripScrapedFields(item).copy(
+            providerIds = mapOf(provider.name.lowercase() to id),
+            lockedProvider = provider
+        )
+        if (item.kind == ItemKind.SERIES) resetEpisodes(item.id)
+        val applied = enrichItem(base, listOf(provider) + order.filter { it != provider }, config)
+        return if (applied) repository.item(item.id) else null
+    }
+
+    /**
+     * The title as the scanner read it off the folder. That is what the user
+     * should be searching with, because the stored name may well be the title
+     * of the wrong match.
+     */
+    fun folderTitle(item: MediaItemDto): NameParser.TitleInfo {
+        val path = item.path?.trimEnd('/')?.takeIf { it.isNotBlank() }
+            ?: return NameParser.parseTitle(item.name)
+        val raw = when {
+            item.kind == ItemKind.SERIES -> path.substringAfterLast('/')
+            // A film nested inside a series folder was named after its file;
+            // a top-level one after its own folder. Mirrors Scanner.
+            item.parentId != null -> path.substringAfterLast('/').substringBeforeLast('.')
+            else -> path.substringBeforeLast('/').substringAfterLast('/')
+        }
+        return NameParser.parseTitle(raw.ifBlank { item.name })
+    }
+
+    /** Everything a scraper wrote. What the files told us stays. */
+    private fun stripScrapedFields(item: MediaItemDto) = item.copy(
+        originalName = null,
+        overview = null,
+        premiereDate = null,
+        communityRating = null,
+        officialRating = null,
+        genres = emptyList(),
+        studios = emptyList(),
+        people = emptyList(),
+        posterUrl = null,
+        backdropUrl = null,
+        logoUrl = null
+    )
+
+    /**
+     * Episodes the new series does not cover would otherwise keep the titles and
+     * stills of the wrong one, so they go back to their file names first.
+     */
+    private fun resetEpisodes(seriesId: String) {
+        val episodes = repository.episodesOfSeries(seriesId)
+        if (episodes.isEmpty()) return
+        val updates = episodes.mapNotNull { episode ->
+            val record = repository.itemRecord(episode.id) ?: return@mapNotNull null
+            val parsed = episode.path?.substringAfterLast('/')
+                ?.let { NameParser.parseEpisode(it, episode.parentIndexNumber) }
+            record.copy(
+                dto = episode.copy(
+                    name = parsed?.title?.takeIf { it.isNotBlank() }
+                        ?: "第 ${episode.indexNumber ?: 1} 集",
+                    overview = null,
+                    premiereDate = null,
+                    communityRating = null,
+                    posterUrl = null
+                ),
+                scrapedAt = null
+            )
+        }
+        repository.upsertItems(updates)
+    }
+
     private fun applyEpisodeMetadata(
         series: MediaItemDto,
         providerIds: Map<String, String>,
@@ -147,7 +265,10 @@ class MetadataService(private val repository: Repository) {
             val season = episode.parentIndexNumber ?: 1
             val number = episode.indexNumber ?: return@mapNotNull null
             val match = bySeasonEpisode[season to number]
-                ?: (if (singleSeason) bySeasonEpisode[scraped.first().season to number] else null)
+                // Providers that number a show as one season let us fall back on
+                // the episode number alone — but not for specials, or every
+                // special ends up wearing episode 1's title.
+                ?: (if (singleSeason && season != 0) bySeasonEpisode[scraped.first().season to number] else null)
                 ?: return@mapNotNull null
             val record = repository.itemRecord(episode.id) ?: return@mapNotNull null
             record.copy(

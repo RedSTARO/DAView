@@ -158,6 +158,10 @@ class Database(dataDir: Path) : AutoCloseable {
                     fetched_at INTEGER NOT NULL
                 )
                 """.trimIndent()
+            ),
+            listOf(
+                // Holds the provider the user pinned by hand for this item.
+                "ALTER TABLE items ADD COLUMN locked_provider TEXT"
             )
         )
     }

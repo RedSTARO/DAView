@@ -106,10 +106,21 @@ class Repository(private val db: Database) {
 
     // ------------------------------------------------------------ items
 
-    fun upsertItems(records: List<ItemRecord>) {
+    fun upsertItems(records: List<ItemRecord>) = writeItems(records, UPSERT_ITEM)
+
+    fun upsertItem(record: ItemRecord) = upsertItems(listOf(record))
+
+    /**
+     * Write path for the scanner. Columns the scraper owns are left alone once
+     * an item has been scraped, so a rescan re-checks files and paths without
+     * throwing away titles, artwork or a manually pinned provider id.
+     */
+    fun upsertScannedItems(records: List<ItemRecord>) = writeItems(records, UPSERT_SCANNED_ITEM)
+
+    private fun writeItems(records: List<ItemRecord>, sql: String) {
         if (records.isEmpty()) return
         db.transaction { connection ->
-            connection.prepareStatement(UPSERT_ITEM).use { statement ->
+            connection.prepareStatement(sql).use { statement ->
                 records.forEach { record ->
                     bindItem(statement, record)
                     statement.addBatch()
@@ -118,8 +129,6 @@ class Repository(private val db: Database) {
             }
         }
     }
-
-    fun upsertItem(record: ItemRecord) = upsertItems(listOf(record))
 
     fun item(id: String): MediaItemDto? = db.read { connection ->
         connection.prepareStatement("$SELECT_ITEM WHERE i.id = ?")
@@ -434,6 +443,7 @@ class Repository(private val db: Database) {
         statement.setString(++i, dto.backdropUrl)
         statement.setString(++i, dto.logoUrl)
         statement.setString(++i, json.encodeToString(stringMapSerializer, dto.providerIds))
+        statement.setString(++i, dto.lockedProvider?.name)
         statement.setString(++i, dto.path)
         dto.sizeBytes?.let { statement.setLong(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
         statement.setString(++i, json.encodeToString(streamListSerializer, dto.mediaStreams))
@@ -471,6 +481,8 @@ class Repository(private val db: Database) {
         logoUrl = rs.getString("logo_url"),
         providerIds = runCatching { json.decodeFromString(stringMapSerializer, rs.getString("provider_ids")) }
             .getOrDefault(emptyMap()),
+        lockedProvider = rs.getString("locked_provider")
+            ?.let { name -> MetadataProvider.entries.firstOrNull { it.name == name } },
         childCount = rs.getIntOrNull("child_count"),
         path = rs.getString("path"),
         sizeBytes = rs.getLongOrNull("size_bytes"),
@@ -518,13 +530,19 @@ class Repository(private val db: Database) {
             LEFT JOIN user_data u ON u.item_id = i.id
         """
 
-        const val UPSERT_ITEM = """
-            INSERT INTO items(
+        const val ITEM_COLUMNS = """
                 id, library_id, kind, parent_id, series_id, name, original_name, sort_name, overview,
                 year, premiere_date, runtime_ms, community_rating, official_rating, genres, studios, people,
                 index_number, parent_index_number, poster_url, backdrop_url, logo_url, provider_ids,
-                path, size_bytes, media_streams, date_created, date_modified, etag, scraped_at, probed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                locked_provider, path, size_bytes, media_streams, date_created, date_modified, etag,
+                scraped_at, probed_at
+        """
+
+        const val ITEM_PLACEHOLDERS =
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
+
+        const val UPSERT_ITEM = """
+            INSERT INTO items($ITEM_COLUMNS) VALUES ($ITEM_PLACEHOLDERS)
             ON CONFLICT(id) DO UPDATE SET
                 library_id = excluded.library_id, kind = excluded.kind, parent_id = excluded.parent_id,
                 series_id = excluded.series_id, name = excluded.name, original_name = excluded.original_name,
@@ -534,9 +552,48 @@ class Repository(private val db: Database) {
                 genres = excluded.genres, studios = excluded.studios, people = excluded.people,
                 index_number = excluded.index_number, parent_index_number = excluded.parent_index_number,
                 poster_url = excluded.poster_url, backdrop_url = excluded.backdrop_url, logo_url = excluded.logo_url,
-                provider_ids = excluded.provider_ids, path = excluded.path, size_bytes = excluded.size_bytes,
+                provider_ids = excluded.provider_ids, locked_provider = excluded.locked_provider,
+                path = excluded.path, size_bytes = excluded.size_bytes,
                 media_streams = excluded.media_streams, date_modified = excluded.date_modified,
                 etag = excluded.etag, scraped_at = excluded.scraped_at, probed_at = excluded.probed_at
+        """
+
+        /**
+         * The scanner only knows what the file names say, so on an item that has
+         * already been scraped it may update file-derived columns only. Everything
+         * the scraper wrote stays put, including `scraped_at` and `locked_provider`,
+         * which are deliberately absent from the SET list.
+         */
+        const val UPSERT_SCANNED_ITEM = """
+            INSERT INTO items($ITEM_COLUMNS) VALUES ($ITEM_PLACEHOLDERS)
+            ON CONFLICT(id) DO UPDATE SET
+                library_id = excluded.library_id, kind = excluded.kind, parent_id = excluded.parent_id,
+                series_id = excluded.series_id,
+                name = CASE WHEN items.scraped_at IS NULL THEN excluded.name ELSE items.name END,
+                original_name = CASE WHEN items.scraped_at IS NULL
+                    THEN excluded.original_name ELSE items.original_name END,
+                sort_name = CASE WHEN items.scraped_at IS NULL THEN excluded.sort_name ELSE items.sort_name END,
+                overview = CASE WHEN items.scraped_at IS NULL THEN excluded.overview ELSE items.overview END,
+                year = CASE WHEN items.scraped_at IS NULL THEN excluded.year ELSE items.year END,
+                premiere_date = CASE WHEN items.scraped_at IS NULL
+                    THEN excluded.premiere_date ELSE items.premiere_date END,
+                community_rating = CASE WHEN items.scraped_at IS NULL
+                    THEN excluded.community_rating ELSE items.community_rating END,
+                official_rating = CASE WHEN items.scraped_at IS NULL
+                    THEN excluded.official_rating ELSE items.official_rating END,
+                genres = CASE WHEN items.scraped_at IS NULL THEN excluded.genres ELSE items.genres END,
+                studios = CASE WHEN items.scraped_at IS NULL THEN excluded.studios ELSE items.studios END,
+                people = CASE WHEN items.scraped_at IS NULL THEN excluded.people ELSE items.people END,
+                poster_url = CASE WHEN items.scraped_at IS NULL THEN excluded.poster_url ELSE items.poster_url END,
+                backdrop_url = CASE WHEN items.scraped_at IS NULL
+                    THEN excluded.backdrop_url ELSE items.backdrop_url END,
+                logo_url = CASE WHEN items.scraped_at IS NULL THEN excluded.logo_url ELSE items.logo_url END,
+                provider_ids = CASE WHEN items.scraped_at IS NULL
+                    THEN excluded.provider_ids ELSE items.provider_ids END,
+                index_number = excluded.index_number, parent_index_number = excluded.parent_index_number,
+                path = excluded.path, size_bytes = excluded.size_bytes,
+                media_streams = excluded.media_streams, date_modified = excluded.date_modified,
+                etag = excluded.etag, probed_at = excluded.probed_at
         """
     }
 }

@@ -127,6 +127,28 @@ class DaViewClient(
 
     suspend fun children(id: String): List<MediaItemDto> = http.get(url("/api/items/$id/children")).body()
 
+    /** What the manual identify dialog needs: parsed folder title and usable sources. */
+    suspend fun identifyContext(itemId: String): IdentifyContextDto =
+        http.get(url("/api/items/$itemId/identify")).body()
+
+    /** Unfiltered hits from one provider, for the user to pick from. */
+    suspend fun identifySearch(
+        itemId: String,
+        provider: MetadataProvider,
+        query: String,
+        year: Int? = null
+    ): List<ScrapeCandidateDto> = http.get(url("/api/items/$itemId/identify/search")) {
+        parameter("provider", provider.name.lowercase())
+        parameter("query", query)
+        year?.let { parameter("year", it) }
+    }.body()
+
+    /** Pins a provider id on an item and re-scrapes it from that entry. */
+    suspend fun identify(itemId: String, provider: MetadataProvider, providerId: String): MediaItemDto =
+        http.post(url("/api/items/$itemId/identify")) {
+            setBody(IdentifyRequest(provider = provider, providerId = providerId))
+        }.body()
+
     suspend fun resume(limit: Int = 20): List<MediaItemDto> =
         http.get(url("/api/home/resume")) { parameter("limit", limit) }.body()
 

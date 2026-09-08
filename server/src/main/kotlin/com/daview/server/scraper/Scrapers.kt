@@ -74,6 +74,15 @@ interface MetadataScraper {
     val provider: MetadataProvider
     fun isConfigured(config: ScraperConfig): Boolean
     fun search(title: String, year: Int?, kind: ItemKind, config: ScraperConfig): List<ScrapeCandidate>
+
+    /**
+     * Lookup for the manual identify dialog. Defaults to [search]; a provider
+     * overrides it when automatic matching needs a narrower query than a person
+     * who has already chosen that provider on purpose.
+     */
+    fun searchManual(title: String, year: Int?, kind: ItemKind, config: ScraperConfig): List<ScrapeCandidate> =
+        search(title, year, kind, config)
+
     fun details(providerId: String, kind: ItemKind, config: ScraperConfig): ScrapedMetadata?
     fun episodes(providerId: String, config: ScraperConfig): List<ScrapedEpisode> = emptyList()
 }
@@ -408,13 +417,31 @@ class BangumiScraper(repository: Repository?) : HttpScraper(repository), Metadat
         if (config.bangumiToken.isBlank()) emptyMap()
         else mapOf("Authorization" to "Bearer ${config.bangumiToken}")
 
-    override fun search(title: String, year: Int?, kind: ItemKind, config: ScraperConfig): List<ScrapeCandidate> {
+    override fun search(title: String, year: Int?, kind: ItemKind, config: ScraperConfig): List<ScrapeCandidate> =
+        query(title, config, animeOnly = true)
+
+    /**
+     * Manual lookups drop the type filter. Automatic matching needs it — without
+     * it a same-titled game or live-action show wins, which is what dragged the
+     * match rate down to 34% — but once the user has picked bangumi.tv by hand,
+     * hiding everything that is not anime just makes the dialog look broken.
+     */
+    override fun searchManual(
+        title: String,
+        year: Int?,
+        kind: ItemKind,
+        config: ScraperConfig
+    ): List<ScrapeCandidate> = query(title, config, animeOnly = false)
+
+    private fun query(title: String, config: ScraperConfig, animeOnly: Boolean): List<ScrapeCandidate> {
         val body = buildJsonObject {
             put("keyword", title)
             put("sort", "match")
-            put("filter", buildJsonObject {
-                put("type", kotlinx.serialization.json.buildJsonArray { add(JsonPrimitive(SUBJECT_TYPE_ANIME)) })
-            })
+            if (animeOnly) {
+                put("filter", buildJsonObject {
+                    put("type", kotlinx.serialization.json.buildJsonArray { add(JsonPrimitive(SUBJECT_TYPE_ANIME)) })
+                })
+            }
         }
         val response = postJson("$BASE/v0/search/subjects?limit=10", body, headers(config)).obj
         val results = response?.get("data")?.jsonArray ?: return emptyList()

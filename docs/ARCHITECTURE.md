@@ -125,10 +125,47 @@ seek，重新锚定。读取指针总是领先画面，所以 `onBytesRead` 修�
 外加 `scrape_cache` 缓存刮削 API 的原始响应。所有写操作走一条连接 + 短事务，
 避免 `SQLITE_BUSY`；`migrations` 是一个版本号驱动的语句数组。
 
+`items` 有两条写入路径，区别只在 `ON CONFLICT` 上：
+
+| 语句 | 谁用 | 冲突时怎么写 |
+| --- | --- | --- |
+| `UPSERT_ITEM` | 刮削、探测、手动指定 | 整行覆盖 |
+| `UPSERT_SCANNED_ITEM` | 扫描器 | `scraped_at` 非空时，只更新文件相关列 |
+
+分开的原因是扫描器只知道文件名。合成一条的话，每次重新扫描都会把刮削结果连同
+`scraped_at` 一起抹掉——于是整库重刮，手动指定的 id 也一起没了。
+
 条目 ID 是 `SHA-1(libraryId + "|" + path)` 的前 12 字节，因此重复扫描是幂等的，
 文件没动过 ID 就不会变，进度也不会丢。
 
-## 7. 客户端
+## 7. 手动指定刮削条目
+
+自动匹配的失败模式是有限的几种：同名不同作、文件夹缺年份、源站排序把别的版本放在前面。
+`bestMatch` 的阈值只能压低错误率，压不到零，所以留了一条手动通道。
+
+```
+GET  /api/items/{id}/identify           → 文件夹原名 + 可用源 + 当前 id
+GET  /api/items/{id}/identify/search    → 原始候选（不过滤年份、不算相似度）
+POST /api/items/{id}/identify           → 钉住 provider + id 并重建元数据
+```
+
+三个约束是这个功能能用的前提：
+
+1. **搜索框的默认词取自文件夹，不是当前标题。** 刮错的条目标题就是错的，
+   拿它去搜只会再错一次。`MetadataService.folderTitle()` 按 Scanner 的同一套规则
+   反推：剧集取目录名，顶层电影取上一级目录名，剧集内嵌的电影取文件名。
+2. **换条目要先清空上一个匹配写的字段。** `enrichItem` 的合并规则是
+   `新值 ?: 旧值`，新条目没有的字段会留着旧的——标题换了、演职人员还是上一部的。
+   所以 `identify` 先 `stripScrapedFields`，剧集还要把分集标题退回文件名。
+3. **钉住之后任何源都不再搜索。** `items.locked_provider` 存下选择；
+   `enrichItem` 看到它就把该源排到最前，其余源只在**已经有 id** 时才取数据
+   （TMDB 的 `external_ids` 会顺手给出 tvdb id），一律不再 `search()`。
+   这条有单元测试守着：`IdentifyTest.a pinned item is never searched again`。
+
+海报地址还带了一个版本号（`/api/images/{id}/primary?v=...`，由远端 URL 算出）。
+不带的话条目地址不变，重新指定之后客户端会继续显示自己缓存里的旧海报。
+
+## 8. 客户端
 
 `shared` 只放 DTO 与 `DaViewClient`（Ktor client，引擎由各平台的 artifact 决定，
 `HttpClient()` 无参构造自动选取）。
@@ -144,8 +181,18 @@ seek，重新锚定。读取指针总是领先画面，所以 `onBytesRead` 修�
 
 ### 网页端的字体问题
 
-Compose for Web 把整个界面画进一个 canvas，Skia 只认识应用自己注册的字体，
-所以中文默认是方框。做过的尝试与结果：
+**结论先写**：现在的构建**不需要**服务端发字体，中文能正常显示——但**首屏那一帧是方框**，
+触发一次重新布局（改窗口大小、切页面、列表重绘）之后就恢复正常。实测环境是 Windows +
+Chromium，宿主机装有中日韩字体；抓包确认 `platformNeedsCjkFont = false` 时页面根本没有
+请求 `/api/font/cjk`，方框也照样在重排后消失。也就是说字形一直是有的，问题出在
+首帧排版时字体尚未就绪、而之后没有任何东西让文本重新测量。
+
+绕过它需要在启动后主动制造一次重排（例如首帧后把根布局的 padding 从 1dp 改成 0dp）。
+这是在给上游渲染器打补丁，所以默认没有加。
+
+下面这张表记录的是**另一件事**：曾经试图把服务器上的字体注入进去，五种方式全部无效。
+既然不注入也能显示中文，这条路已经没有必要走；但那个结论本身仍然成立——
+`platform.Font(identity, bytes)` 在 wasm 上不会被字体解析器接受。
 
 | 尝试 | 结果 |
 | --- | --- |
@@ -156,7 +203,8 @@ Compose for Web 把整个界面画进一个 canvas，Skia 只认识应用自己�
 | `FontFamily.Resolver.preload(family)` 之后再用 | 仍是方框 |
 
 代码保留在 `UiFont.*.kt` 与 `/api/font/cjk`，但 `platformNeedsCjkFont` 在 wasm 上设为
-`false`，避免每次冷启动白白下载 10 MB。桌面端与 Android 端走平台字体管理器，不受影响。
+`false`：既然不注入字体也能渲染中文，每次冷启动下 10 MB 就是纯浪费。
+桌面端与 Android 端走平台字体管理器，不受影响。
 
 **下次从哪儿接着试**：`androidx.compose.ui.text.platform.Font(identity, bytes)` 是
 skiko/JVM 的便利构造，wasm 渲染器并没有把它接进字体解析器——这与上面五种尝试的

@@ -215,6 +215,88 @@ fun Route.apiRoutes(context: ServerContext) {
         call.respond(context.repository.setPlayed(call.parameters["id"].orEmpty(), value))
     }
 
+    // ------------------------------------------------------------ manual identify
+
+    /**
+     * Scraping picks the wrong entry now and then. These three endpoints let the
+     * user say which entry is right: look up candidates, or paste the provider's
+     * own id straight from its site.
+     */
+    get("/api/items/{id}/identify") {
+        call.requireAuth(context) ?: return@get
+        val item = context.identifiable(call) ?: return@get
+        val parsed = context.metadata.folderTitle(item)
+        call.respond(
+            IdentifyContextDto(
+                itemId = item.id,
+                kind = item.kind,
+                defaultQuery = parsed.title,
+                defaultYear = parsed.year ?: item.year,
+                providers = context.metadata.availableProviders(context.config.scraper),
+                providerIds = item.providerIds,
+                lockedProvider = item.lockedProvider
+            )
+        )
+    }
+
+    get("/api/items/{id}/identify/search") {
+        call.requireAuth(context) ?: return@get
+        val item = context.identifiable(call) ?: return@get
+        val provider = call.request.queryParameters["provider"]
+        val parsed = provider?.let { value -> MetadataProvider.entries.firstOrNull { it.name.equals(value, true) } }
+        if (parsed == null || parsed == MetadataProvider.NONE) {
+            call.respond(HttpStatusCode.BadRequest, ApiError("未知的刮削源"))
+            return@get
+        }
+        val query = call.request.queryParameters["query"]?.takeIf { it.isNotBlank() }
+            ?: context.metadata.folderTitle(item).title
+        val year = call.request.queryParameters["year"]?.toIntOrNull()
+        val kind = if (item.kind == ItemKind.MOVIE) ItemKind.MOVIE else ItemKind.SERIES
+        val candidates = withContext(Dispatchers.IO) {
+            context.metadata.searchProvider(parsed, query, year, kind, context.scraperConfigFor(item))
+        }
+        call.respond(
+            candidates.map {
+                ScrapeCandidateDto(
+                    provider = parsed,
+                    providerId = it.providerId,
+                    title = it.title,
+                    originalTitle = it.originalTitle,
+                    year = it.year,
+                    overview = it.overview?.take(400),
+                    posterUrl = it.posterUrl
+                )
+            }
+        )
+    }
+
+    post("/api/items/{id}/identify") {
+        call.requireAuth(context) ?: return@post
+        val item = context.identifiable(call) ?: return@post
+        val request = call.receive<IdentifyRequest>()
+        if (request.provider == MetadataProvider.NONE || request.providerId.isBlank()) {
+            call.respond(HttpStatusCode.BadRequest, ApiError("需要刮削源与条目 id"))
+            return@post
+        }
+        val updated = withContext(Dispatchers.IO) {
+            context.metadata.identify(
+                item = item,
+                provider = request.provider,
+                providerId = request.providerId,
+                order = context.providerOrderFor(item),
+                config = context.scraperConfigFor(item)
+            )
+        }
+        if (updated == null) {
+            call.respond(
+                HttpStatusCode.BadGateway,
+                ApiError("刮削失败", "${request.provider.displayName} 上没有 id ${request.providerId.trim()}，或该源未配置密钥")
+            )
+            return@post
+        }
+        call.respond(updated.withAssetUrls(call))
+    }
+
     // ------------------------------------------------------------ home rows
 
     get("/api/home/resume") {
@@ -450,6 +532,29 @@ fun Route.apiRoutes(context: ServerContext) {
 
 // ---------------------------------------------------------------- helpers
 
+/** The item named by the route, once it is one that can carry scraped metadata. */
+private suspend fun ServerContext.identifiable(call: ApplicationCall): MediaItemDto? {
+    val item = repository.item(call.parameters["id"].orEmpty())
+    if (item == null) {
+        call.respond(HttpStatusCode.NotFound, ApiError("条目不存在"))
+        return null
+    }
+    if (item.kind != ItemKind.MOVIE && item.kind != ItemKind.SERIES) {
+        call.respond(HttpStatusCode.BadRequest, ApiError("只有电影和剧集可以手动指定刮削条目"))
+        return null
+    }
+    return item
+}
+
+/** Scraper credentials, with the language of the library the item belongs to. */
+private fun ServerContext.scraperConfigFor(item: MediaItemDto) =
+    config.scraper.copy(language = repository.library(item.libraryId)?.language ?: config.scraper.language)
+
+private fun ServerContext.providerOrderFor(item: MediaItemDto): List<MetadataProvider> {
+    val library = repository.library(item.libraryId) ?: return emptyList()
+    return library.providerOrder.ifEmpty { metadata.defaultOrder(library.kind) }
+}
+
 private fun encodePathSegment(value: String): String =
     java.net.URLEncoder.encode(value, Charsets.UTF_8)
         .replace("+", "%20")
@@ -472,13 +577,22 @@ private fun pickDefaultSubtitle(item: MediaItemDto): Int? {
 private fun MediaItemDto.withAssetUrls(call: ApplicationCall): MediaItemDto {
     val base = call.externalBase()
     val token = call.attributes.getOrNull(AccessTokenKey).orEmpty()
-    val suffix = if (token.isBlank()) "" else "?token=$token"
+    // The endpoint URL is stable per item, so re-identifying an item would leave
+    // every client showing the old poster from its own cache. The version is
+    // derived from the remote URL, which changes exactly when the artwork does.
+    fun endpoint(type: String, remote: String): String {
+        val tokenPart = if (token.isBlank()) "" else "&token=$token"
+        return "$base/api/images/$id/$type?v=${imageVersion(remote)}$tokenPart"
+    }
     return copy(
-        posterUrl = posterUrl?.let { "$base/api/images/$id/primary$suffix" },
-        backdropUrl = backdropUrl?.let { "$base/api/images/$id/backdrop$suffix" },
-        logoUrl = logoUrl?.let { "$base/api/images/$id/logo$suffix" }
+        posterUrl = posterUrl?.let { endpoint("primary", it) },
+        backdropUrl = backdropUrl?.let { endpoint("backdrop", it) },
+        logoUrl = logoUrl?.let { endpoint("logo", it) }
     )
 }
+
+private fun imageVersion(remoteUrl: String): String =
+    (remoteUrl.hashCode().toLong() and 0xffffffffL).toString(16)
 
 private fun ApplicationCall.externalBase(): String {
     val forwardedProto = request.header("X-Forwarded-Proto")

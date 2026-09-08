@@ -35,7 +35,24 @@ enum class MetadataProvider {
     @SerialName("tmdb") TMDB,
     @SerialName("tvdb") TVDB,
     @SerialName("bangumi") BANGUMI,
-    @SerialName("none") NONE
+    @SerialName("none") NONE;
+
+    val displayName: String
+        get() = when (this) {
+            TMDB -> "TMDB"
+            TVDB -> "TheTVDB"
+            BANGUMI -> "bangumi.tv"
+            NONE -> "不刮削"
+        }
+
+    /** Where the numeric id sits in that site's own URLs, shown next to the input. */
+    val idHint: String
+        get() = when (this) {
+            TMDB -> "themoviedb.org/movie/<id> 或 /tv/<id>"
+            TVDB -> "thetvdb.com 条目的数字 id"
+            BANGUMI -> "bgm.tv/subject/<id>"
+            NONE -> ""
+        }
 }
 
 @Serializable
@@ -124,6 +141,11 @@ data class MediaItemDto(
     val backdropUrl: String? = null,
     val logoUrl: String? = null,
     val providerIds: Map<String, String> = emptyMap(),
+    /**
+     * Set when the user pinned an id by hand. Scraping then reuses that id and
+     * never searches again, so a rescan cannot undo the correction.
+     */
+    val lockedProvider: MetadataProvider? = null,
     val childCount: Int? = null,
     val path: String? = null,
     val sizeBytes: Long? = null,
@@ -145,6 +167,40 @@ data class ItemPage(
     val items: List<MediaItemDto>,
     val total: Int,
     val offset: Int
+)
+
+// ---------------------------------------------------------------- manual identify
+
+/** One search hit from a metadata provider, shown as-is for the user to choose. */
+@Serializable
+data class ScrapeCandidateDto(
+    val provider: MetadataProvider,
+    val providerId: String,
+    val title: String,
+    val originalTitle: String? = null,
+    val year: Int? = null,
+    val overview: String? = null,
+    val posterUrl: String? = null
+)
+
+/** What the client needs to open the identify dialog for one item. */
+@Serializable
+data class IdentifyContextDto(
+    val itemId: String,
+    val kind: ItemKind,
+    /** Title parsed from the folder name, i.e. before any scraper renamed it. */
+    val defaultQuery: String,
+    val defaultYear: Int? = null,
+    /** Providers with usable credentials on this server. */
+    val providers: List<MetadataProvider> = emptyList(),
+    val providerIds: Map<String, String> = emptyMap(),
+    val lockedProvider: MetadataProvider? = null
+)
+
+@Serializable
+data class IdentifyRequest(
+    val provider: MetadataProvider,
+    val providerId: String
 )
 
 // ---------------------------------------------------------------- playback
