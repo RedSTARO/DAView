@@ -7,6 +7,7 @@ import com.daview.shared.model.PlayerKind
 import com.daview.shared.model.SessionStateDto
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -129,6 +130,7 @@ class PlaybackService(
     }
 
     private val sessions = ConcurrentHashMap<String, Session>()
+    private val endListeners = CopyOnWriteArrayList<(String) -> Unit>()
 
     private val ticker = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "daview-playback-tick").apply { isDaemon = true }
@@ -232,7 +234,26 @@ class PlaybackService(
             session.anchorPositionMs = positionMs
         }
         persist(session, finished = true)
+        notifyEnded(session.id)
         return session
+    }
+
+    /**
+     * Told whenever a session ends, however it ended. The byte pipe listens here.
+     *
+     * Not every ending comes through [stop]: an external player usually cannot be
+     * observed from this process at all, so the way its session normally ends is
+     * the idle timeout in [tick]. Hanging the pipe off [stop] alone left the
+     * socket listening for the rest of the process's life in exactly the common
+     * case.
+     */
+    fun onSessionEnded(listener: (String) -> Unit) {
+        endListeners += listener
+    }
+
+    private fun notifyEnded(sessionId: String) {
+        // A listener that throws must not take the ticker thread down with it.
+        endListeners.forEach { listener -> runCatching { listener(sessionId) } }
     }
 
     fun activeSessions(): List<SessionStateDto> = sessions.values.map { it.toDto() }
@@ -261,6 +282,7 @@ class PlaybackService(
                 log.info("外部播放会话 {} 空闲超时，按 {} ms 记录进度", session.id, session.positionMs())
                 sessions.remove(session.id)
                 persist(session, finished = true)
+                notifyEnded(session.id)
             } else if (session.isExternal) {
                 persist(session, finished = false)
             }

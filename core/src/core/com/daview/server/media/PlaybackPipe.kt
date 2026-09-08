@@ -48,6 +48,15 @@ class PlaybackPipe(
     /** Sessions currently pointed at this pipe. It closes when the set empties. */
     private val sessions = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+    init {
+        // The screen that started an external player is not a reliable place to
+        // learn that it ended: on Android the process cannot be watched at all,
+        // so the session is retired by its idle timeout rather than by anyone
+        // calling stop. Taking the end from the session tracker itself means the
+        // socket goes down on every route out, not just the one the UI drives.
+        playback.onSessionEnded(::release)
+    }
+
     /**
      * Starts the pipe if it is not already up and returns an address for
      * [sessionId]. The session id is in the path and is the only thing that

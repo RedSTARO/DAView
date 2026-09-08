@@ -3,6 +3,9 @@ package com.daview.server.media
 import com.daview.server.db.Database
 import com.daview.server.db.JdbcSqlDatabase
 import com.daview.server.db.Repository
+import com.daview.shared.model.ItemKind
+import com.daview.shared.model.MediaItemDto
+import com.daview.shared.model.PlayerKind
 import java.net.HttpURLConnection
 import java.net.URI
 import kotlin.io.path.createTempDirectory
@@ -23,7 +26,10 @@ class PlaybackPipeTest {
     private val database = Database(JdbcSqlDatabase(dir))
     private val repository = Repository(database)
     private val streams = StreamService({ null }, repository)
-    private val playback = PlaybackService(repository, streams) { 300 }
+
+    /** Read on every tick, so a test can retire a session by shortening it. */
+    private var idleTimeoutSec = 300
+    private val playback = PlaybackService(repository, streams) { idleTimeoutSec }
     private val pipe = PlaybackPipe(repository, streams, playback)
 
     @AfterTest
@@ -108,6 +114,29 @@ class PlaybackPipeTest {
         val subtitle = pipe.subtitleUrlFor("session-1", "item-1", 1000)
         pipe.release("session-1")
         assertTrue(runCatching { status(subtitle) }.isFailure, "expected the port to be closed")
+    }
+
+    /**
+     * The common ending for an external player is not someone pressing stop: on
+     * Android the player runs in another process that cannot be watched, so the
+     * session goes away on its idle timeout and nothing in the UI is told. If
+     * only an explicit stop closed the pipe, the socket would then stay up for
+     * the life of the process — which is the whole thing this refactor removed.
+     */
+    @Test
+    fun `a session retired by its idle timeout closes the socket`() {
+        val item = MediaItemDto(id = "item-1", libraryId = "lib-1", kind = ItemKind.MOVIE, name = "Film")
+        val session = playback.start(item, PlayerKind.POTPLAYER, "test", 0, null, null)
+        val url = pipe.urlFor(session.id, item.id, "a.mkv", redirect = false)
+        assertEquals(404, status(url), "expected the pipe to be answering before the timeout")
+
+        // The ticker sweeps every two seconds; nothing here calls stop().
+        idleTimeoutSec = 0
+        val closed = generateSequence { runCatching { status(url) }.isFailure }
+            .take(150)
+            .onEach { if (!it) Thread.sleep(100) }
+            .any { it }
+        assertTrue(closed, "expected the port to be closed once the session was retired")
     }
 
     @Test

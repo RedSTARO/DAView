@@ -373,8 +373,9 @@ class MediaFacade(private val context: ServerContext) {
 
     fun stopPlayback(request: PlaybackStopRequest) {
         context.playback.stop(request.sessionId, request.positionMs.takeIf { it >= 0 })
-        // Closes the local byte pipe once nothing is playing through it. Harmless
-        // for a session that never used one.
+        // Stopping already tells the pipe, and so does an idle timeout. This is
+        // here for the session the tracker no longer holds — it has been retired
+        // under us — and is harmless for one that never used a pipe.
         context.pipe.release(request.sessionId)
     }
 
