@@ -35,6 +35,7 @@ class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
 
     val streams = StreamService({ dav }, repository)
     val playback = PlaybackService(repository, streams) { config.externalSessionIdleTimeoutSec }
+    val pipe = com.daview.server.media.PlaybackPipe(repository, streams, playback)
     val scans = ScanService(repository, metadata, streams, { dav }, { config })
     val sync = com.daview.server.sync.SyncService(this) { dav }
 
@@ -56,6 +57,7 @@ class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
         if (config.storage.configured) WebDavClient(config.storage) else null
 
     override fun close() {
+        pipe.close()
         sync.close()
         database.close()
     }

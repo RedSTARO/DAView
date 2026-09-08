@@ -360,6 +360,9 @@ class MediaFacade(private val context: ServerContext) {
 
     fun stopPlayback(request: PlaybackStopRequest) {
         context.playback.stop(request.sessionId, request.positionMs.takeIf { it >= 0 })
+        // Closes the local byte pipe once nothing is playing through it. Harmless
+        // for a session that never used one.
+        context.pipe.release(request.sessionId)
     }
 
     fun sessions(): List<SessionStateDto> = context.playback.activeSessions()

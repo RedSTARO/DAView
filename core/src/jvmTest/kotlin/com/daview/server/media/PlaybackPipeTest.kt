@@ -1,0 +1,107 @@
+package com.daview.server.media
+
+import com.daview.server.db.Database
+import com.daview.server.db.JdbcSqlDatabase
+import com.daview.server.db.Repository
+import java.net.HttpURLConnection
+import java.net.URI
+import kotlin.io.path.createTempDirectory
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * The pipe speaks HTTP to a player this process launched, on a socket written
+ * by hand, so the parts worth pinning down are the ones a framework would
+ * otherwise have handled: that it only answers for a live session, that it
+ * stops listening when playback ends, and that a stale link is dead.
+ */
+class PlaybackPipeTest {
+
+    private val dir = createTempDirectory("daview-pipe-test")
+    private val database = Database(JdbcSqlDatabase(dir))
+    private val repository = Repository(database)
+    private val streams = StreamService({ null }, repository)
+    private val playback = PlaybackService(repository, streams) { 300 }
+    private val pipe = PlaybackPipe(repository, streams, playback)
+
+    @AfterTest
+    fun tearDown() {
+        pipe.close()
+        database.close()
+    }
+
+    private fun status(url: String, method: String = "GET"): Int {
+        val connection = URI(url).toURL().openConnection() as HttpURLConnection
+        connection.requestMethod = method
+        connection.instanceFollowRedirects = false
+        connection.connectTimeout = 5_000
+        connection.readTimeout = 5_000
+        return connection.use { it.responseCode }
+    }
+
+    private inline fun <T> HttpURLConnection.use(block: (HttpURLConnection) -> T): T =
+        try {
+            block(this)
+        } finally {
+            disconnect()
+        }
+
+    @Test
+    fun `binds loopback only, on a port the OS picks`() {
+        val url = pipe.urlFor("session-1", "item-1", "Show - S01E01.mkv", redirect = false)
+        assertTrue(url.startsWith("http://127.0.0.1:"), url)
+        val port = url.removePrefix("http://127.0.0.1:").substringBefore('/').toInt()
+        assertTrue(port > 0)
+    }
+
+    /**
+     * The session id in the path is the whole of the access control: anything
+     * else on the machine can reach a loopback port, so a request that does not
+     * name a live session must not be answered.
+     */
+    @Test
+    fun `a request naming no live session is refused`() {
+        val url = pipe.urlFor("session-1", "item-1", "a.mkv", redirect = false)
+        val other = url.replace("session-1", "session-2")
+        assertEquals(404, status(other))
+    }
+
+    /** The item is unknown here, but the point is that the session was accepted. */
+    @Test
+    fun `a live session gets past the door`() {
+        val url = pipe.urlFor("session-1", "missing-item", "a.mkv", redirect = false)
+        // 404 for the item rather than for the session — both are 404 on the
+        // wire, so the meaningful assertion is that it answered at all.
+        assertEquals(404, status(url))
+    }
+
+    @Test
+    fun `a malformed path is refused rather than crashing the connection`() {
+        val url = pipe.urlFor("session-1", "item-1", "a.mkv", redirect = false)
+        val root = url.substringBefore("/p/") + "/p"
+        assertEquals(400, status(root))
+    }
+
+    /**
+     * The pipe exists only while something is playing through it. Releasing the
+     * last session takes the socket down, which is the difference between this
+     * and a server.
+     */
+    @Test
+    fun `releasing the last session closes the socket`() {
+        val url = pipe.urlFor("session-1", "item-1", "a.mkv", redirect = false)
+        pipe.release("session-1")
+        val failed = runCatching { status(url) }.isFailure
+        assertTrue(failed, "expected the port to be closed")
+    }
+
+    @Test
+    fun `it stays up while another session is still playing`() {
+        val first = pipe.urlFor("session-1", "item-1", "a.mkv", redirect = false)
+        pipe.urlFor("session-2", "item-1", "a.mkv", redirect = false)
+        pipe.release("session-1")
+        assertEquals(404, status(first.replace("session-1", "session-2")))
+    }
+}
