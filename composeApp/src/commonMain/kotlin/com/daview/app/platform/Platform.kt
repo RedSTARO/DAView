@@ -48,6 +48,16 @@ expect fun openUrl(url: String)
 
 expect fun copyToClipboard(text: String)
 
+/**
+ * Opens the platform's file chooser and returns the file's text, or null when
+ * the user backed out.
+ *
+ * Needed because "put the file somewhere and press import" has no meaning on
+ * Android: the app's data directory sits under `filesDir`, where the user
+ * cannot put anything without root.
+ */
+expect suspend fun pickTextFile(): String?
+
 /** Simple string key/value persistence backed by whatever the platform offers. */
 interface SettingsStore {
     fun getString(key: String): String?

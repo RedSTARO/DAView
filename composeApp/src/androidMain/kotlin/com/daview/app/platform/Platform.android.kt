@@ -73,6 +73,9 @@ actual fun openUrl(url: String) {
     }
 }
 
+/** Storage Access Framework, which is the only way an Android app may read a file the user chose. */
+actual suspend fun pickTextFile(): String? = AndroidFilePicker.pick()
+
 actual fun copyToClipboard(text: String) {
     if (!AndroidContextHolder.isInitialised) return
     val manager = AndroidContextHolder.context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager

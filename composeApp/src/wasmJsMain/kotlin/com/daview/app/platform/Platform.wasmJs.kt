@@ -93,6 +93,50 @@ actual fun openUrl(url: String) = jsOpen(url)
 
 actual fun copyToClipboard(text: String) = jsCopy(text)
 
+/**
+ * A hidden `<input type="file">`, read through FileReader. The result lands in a
+ * global the Kotlin side polls, because a `js(...)` bridge cannot hand back a
+ * callback. Both the load and the cancel event are wired, so backing out of the
+ * chooser ends the wait instead of hanging it.
+ */
+private fun jsPickStart() {
+    js(
+        "(function(){ window.__daviewPick = undefined;" +
+            "var i = document.createElement('input'); i.type='file'; i.accept='.json,application/json';" +
+            "i.onchange = function(){ var f = i.files && i.files[0];" +
+            "  if (!f) { window.__daviewPick = null; return }" +
+            "  var r = new FileReader();" +
+            "  r.onload = function(){ window.__daviewPick = String(r.result) };" +
+            "  r.onerror = function(){ window.__daviewPick = null };" +
+            "  r.readAsText(f) };" +
+            "i.oncancel = function(){ window.__daviewPick = null };" +
+            "i.click() })()"
+    )
+}
+
+/** `pending`, `cancelled`, or the file's text. */
+private fun jsPickPoll(): String =
+    js(
+        "(function(){ if (window.__daviewPick === undefined) return 'pending';" +
+            "var v = window.__daviewPick; window.__daviewPick = undefined;" +
+            "return v === null ? 'cancelled' : ('ok:' + v) })()"
+    )
+
+actual suspend fun pickTextFile(): String? {
+    jsPickStart()
+    // No deadline: the chooser is a modal the user may sit in for a while.
+    while (true) {
+        kotlinx.coroutines.delay(200)
+        val state = jsPickPoll()
+        when {
+            state == "pending" -> continue
+            state == "cancelled" -> return null
+            state.startsWith("ok:") -> return state.removePrefix("ok:")
+            else -> return null
+        }
+    }
+}
+
 actual fun createSettingsStore(): SettingsStore = object : SettingsStore {
     override fun getString(key: String): String? = jsLocalStorageGet("daview.$key").takeIf { it.isNotEmpty() }
     override fun putString(key: String, value: String?) {

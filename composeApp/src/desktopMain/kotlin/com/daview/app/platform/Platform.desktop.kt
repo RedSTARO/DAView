@@ -1,5 +1,7 @@
 package com.daview.app.platform
 
+import java.awt.FileDialog
+import java.awt.Frame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -125,6 +127,22 @@ actual fun openUrl(url: String) {
         if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
             Desktop.getDesktop().browse(URI.create(url))
         }
+    }
+}
+
+/**
+ * AWT's own dialog rather than Swing's JFileChooser: it is the platform chooser
+ * on Windows and macOS, and it needs no look-and-feel setup.
+ */
+actual suspend fun pickTextFile(): String? = withContext(Dispatchers.Main) {
+    val dialog = FileDialog(null as Frame?, "选择备份文件", FileDialog.LOAD).apply {
+        setFilenameFilter { _, name -> name.endsWith(".json", ignoreCase = true) }
+        isVisible = true
+    }
+    val directory = dialog.directory
+    val file = dialog.file ?: return@withContext null
+    withContext(Dispatchers.IO) {
+        runCatching { File(directory, file).readText() }.getOrNull()
     }
 }
 

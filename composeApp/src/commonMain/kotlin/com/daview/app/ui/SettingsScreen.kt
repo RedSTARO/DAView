@@ -52,6 +52,7 @@ import com.daview.app.data.AppState
 import com.daview.app.platform.PlatformInfo
 import com.daview.app.platform.copyToClipboard
 import com.daview.app.platform.openUrl
+import com.daview.app.platform.pickTextFile
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.LibraryKind
 import com.daview.shared.model.ScraperSettingsDto
@@ -446,7 +447,7 @@ private fun BackupSection(state: AppState) {
         Spacer(Modifier.height(8.dp))
         Text(
             "导出一个 JSON：服务器设置、媒体库定义、观看进度（位置 / 已看 / 收藏 / 音轨字幕选择），" +
-                "以及可选的整份刮削结果。在新机器上把它放进服务端数据目录、命名为 import.json，再点「导入」。",
+                "以及可选的整份刮削结果。在新机器上点「导入」选中这个文件即可。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -506,11 +507,15 @@ private fun BackupSection(state: AppState) {
                 onClick = {
                     val api = state.client ?: return@FilledTonalButton
                     scope.launch {
-                        busy = true
                         error = null
                         message = null
+                        // The chooser runs before the busy flag so the progress
+                        // bar does not sit there while the user browses.
+                        val content = runCatching { pickTextFile() }.getOrNull()
+                        if (content.isNullOrBlank()) return@launch
+                        busy = true
                         try {
-                            val summary = api.importBackupFromDataDir()
+                            val summary = api.importBackup(content)
                             message = "已导入：媒体库 ${summary.libraries} 个、条目 ${summary.items} 项、" +
                                 "观看记录 ${summary.userData} 条" +
                                 (if (summary.settingsApplied) "，设置已应用" else "")
@@ -523,7 +528,7 @@ private fun BackupSection(state: AppState) {
                         }
                     }
                 }
-            ) { Text("导入") }
+            ) { Text("导入…") }
         }
 
         if (busy) {

@@ -16,6 +16,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.TextContent
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
@@ -206,7 +207,18 @@ class DaViewClient(
             "&items=$items&userdata=$userData&secrets=$secrets"
     )
 
-    /** Imports the backup the user placed in the server's data directory. */
+    /**
+     * Imports a backup the user picked with the platform file chooser.
+     *
+     * The text goes out as the raw body: passing it through the serializer would
+     * encode the document as a JSON string rather than send it as JSON.
+     */
+    suspend fun importBackup(json: String): BackupSummaryDto =
+        http.post(url("/api/backup/import")) {
+            setBody(TextContent(json, ContentType.Application.Json))
+        }.body()
+
+    /** Imports the backup file sitting in the server's data directory, for headless restores. */
     suspend fun importBackupFromDataDir(): BackupSummaryDto =
         http.post(url("/api/backup/import")) { parameter("source", "datadir") }.body()
 
