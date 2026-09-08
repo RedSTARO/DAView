@@ -276,6 +276,13 @@ class Repository(private val db: Database) {
         ).apply { setString(1, libraryId); setInt(2, limit) }.useQuery { it.map(::readItem) }
     }
 
+    /** One page of the whole catalogue, ordered so paging is stable. Used by the backup export. */
+    fun itemRecordsPage(limit: Int, offset: Int): List<ItemRecord> = db.read { connection ->
+        connection.prepareStatement("$SELECT_ITEM ORDER BY i.id LIMIT ? OFFSET ?")
+            .apply { setInt(1, limit); setInt(2, offset) }
+            .useQuery { it.map(::readItemRecord) }
+    }
+
     fun totalItemCount(): Int = db.read { connection ->
         connection.prepareStatement("SELECT COUNT(*) FROM items").useQuery { if (it.next()) it.getInt(1) else 0 }
     }
@@ -286,6 +293,45 @@ class Repository(private val db: Database) {
         connection.prepareStatement("SELECT * FROM user_data WHERE item_id = ?")
             .apply { setString(1, itemId) }
             .useQuery { if (it.next()) readUserData(it, null) else UserDataDto() }
+    }
+
+    /** Every watch-state row, for the backup export. */
+    fun allUserData(): List<Pair<String, UserDataDto>> = db.read { connection ->
+        connection.prepareStatement("SELECT * FROM user_data ORDER BY item_id")
+            .useQuery { rs -> rs.map { it.getString("item_id") to readUserData(it, null) } }
+    }
+
+    /**
+     * Writes a watch-state row exactly as given. Unlike [saveProgress] it does
+     * not re-derive `played` or bump the play count: restoring a backup must
+     * reproduce what was there, not re-interpret it.
+     */
+    fun restoreUserData(itemId: String, data: UserDataDto) = db.transaction { connection ->
+        connection.prepareStatement(
+            """
+            INSERT INTO user_data(item_id, position_ms, played, play_count, favorite,
+                                  last_played_at, audio_stream_index, subtitle_stream_index, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(item_id) DO UPDATE SET
+                position_ms = excluded.position_ms, played = excluded.played,
+                play_count = excluded.play_count, favorite = excluded.favorite,
+                last_played_at = excluded.last_played_at,
+                audio_stream_index = excluded.audio_stream_index,
+                subtitle_stream_index = excluded.subtitle_stream_index,
+                updated_at = excluded.updated_at
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, itemId)
+            statement.setLong(2, data.positionMs)
+            statement.setInt(3, if (data.played) 1 else 0)
+            statement.setInt(4, data.playCount)
+            statement.setInt(5, if (data.favorite) 1 else 0)
+            data.lastPlayedAt?.let { statement.setLong(6, it) } ?: statement.setNull(6, java.sql.Types.INTEGER)
+            data.audioStreamIndex?.let { statement.setInt(7, it) } ?: statement.setNull(7, java.sql.Types.INTEGER)
+            data.subtitleStreamIndex?.let { statement.setInt(8, it) } ?: statement.setNull(8, java.sql.Types.INTEGER)
+            statement.setLong(9, System.currentTimeMillis())
+            statement.executeUpdate()
+        }
     }
 
     fun saveProgress(

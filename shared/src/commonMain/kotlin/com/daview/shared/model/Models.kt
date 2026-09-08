@@ -333,6 +333,68 @@ data class ServerInfoDto(
     val itemCount: Int
 )
 
+// ---------------------------------------------------------------- backup
+
+const val BACKUP_FORMAT = "daview-backup"
+const val BACKUP_VERSION = 1
+
+/**
+ * Server configuration as it travels between installations. Secrets are only
+ * filled in when the export explicitly asked for them; an empty string means
+ * "keep whatever the importing server already has".
+ */
+@Serializable
+data class BackupSettingsDto(
+    val serverName: String = "DAView",
+    val storage: StorageSettingsDto = StorageSettingsDto(),
+    val scraper: ScraperSettingsDto = ScraperSettingsDto(),
+    val trackExternalPlayers: Boolean = true,
+    val externalSessionIdleTimeoutSec: Int = 300
+)
+
+/** One catalogue row plus the bookkeeping the API normally hides. */
+@Serializable
+data class BackupItemDto(
+    val item: MediaItemDto,
+    val dateCreated: Long = 0,
+    val dateModified: Long = 0,
+    val etag: String? = null,
+    val scrapedAt: Long? = null,
+    val probedAt: Long? = null
+)
+
+/** Watch state, keyed by item id. Item ids are derived from library id + path,
+ *  so they line up again on the other machine as long as the libraries match. */
+@Serializable
+data class BackupUserDataDto(
+    val itemId: String,
+    val data: UserDataDto
+)
+
+@Serializable
+data class BackupFileDto(
+    val format: String = BACKUP_FORMAT,
+    val version: Int = BACKUP_VERSION,
+    val createdAt: Long = 0,
+    val serverVersion: String = "",
+    /** True when credentials are inside; the file is then as sensitive as they are. */
+    val containsSecrets: Boolean = false,
+    val settings: BackupSettingsDto? = null,
+    val libraries: List<LibraryDto> = emptyList(),
+    val userData: List<BackupUserDataDto> = emptyList(),
+    val items: List<BackupItemDto> = emptyList()
+)
+
+@Serializable
+data class BackupSummaryDto(
+    val settingsApplied: Boolean = false,
+    val libraries: Int = 0,
+    val items: Int = 0,
+    val userData: Int = 0,
+    val containsSecrets: Boolean = false,
+    val createdAt: Long = 0
+)
+
 @Serializable
 data class ApiError(val error: String, val detail: String? = null)
 

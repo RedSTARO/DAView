@@ -23,3 +23,7 @@ server.config.json
 # OS
 .DS_Store
 Thumbs.db
+
+# JVM crash dumps
+hs_err_pid*.log
+replay_pid*.log

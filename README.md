@@ -88,6 +88,65 @@ GET  /api/items/{id}/identify/search    # ?provider=&query=&year=，原始候选
 POST /api/items/{id}/identify           # {"provider":"bangumi","providerId":"49278"}
 ```
 
+## 备份与迁移
+
+换机器时要带走的东西有三样：服务器设置、媒体库定义、观看进度。手动指定的刮削 id
+存在条目里，所以想连它一起带走就得包含刮削数据。
+
+```
+GET  /api/backup/export?settings=&libraries=&items=&userdata=&secrets=
+POST /api/backup/import                      # 请求体就是备份文件
+POST /api/backup/import?source=datadir       # 读数据目录下的 import.json
+```
+
+客户端「设置 → 备份与迁移」里有导出 / 复制地址 / 导入三个按钮，两个开关控制
+「包含刮削数据」与「包含凭据」。**不用文件选择器**，所以桌面、网页、Android 行为一致：
+
+1. 在旧机器上点「导出」，浏览器下载 `daview-backup-<时间>.json`
+2. 把文件放进新机器的数据目录，命名为 `import.json`
+3. 在新机器上点「导入」
+
+命令行同样可以：
+
+```bash
+curl -o backup.json "http://old:8096/api/backup/export?token=<token>"
+```
+
+```bash
+curl -X POST -H "Content-Type: application/json" --data-binary @backup.json "http://new:8096/api/backup/import?token=<token>"
+```
+
+几个约束：
+
+- **凭据默认不导出**。WebDAV 账号、密码、TMDB / TheTVDB / bangumi 的 Key 只有
+  `secrets=true` 时才写进文件——那是一个要在机器之间搬运的明文文件。
+  账号和密码一样算凭据（这个网盘的账号就是手机号）。
+- **导入时空的凭据表示「保留目标机器已有的」**，所以不含凭据的备份不会把新机器上
+  已经填好的 Key 清掉。
+- 导出是**流式**写出的：3246 个条目 4.1 MB，服务端堆只有 384 MB 也不会撑爆。
+- 条目 id 是 `SHA-1(库 id + 路径)`，所以只要库定义一起带过去，观看进度就能重新对上。
+  只导设置和进度、不导刮削数据也可以，代价是新机器要重新扫描一遍。
+
+## 持续集成
+
+`.github/workflows/build.yml`：推送到 master / main、开 PR 或手动触发时跑三件事。
+
+| Job | 平台 | 产物 |
+| --- | --- | --- |
+| `test` | ubuntu | `:server:test`，报告作为 artifact |
+| `msi` | windows | `composeApp/build/compose/binaries/main/msi/*.msi` |
+| `apk` | ubuntu | `composeApp/build/outputs/apk/debug/*.apk` |
+
+打 `v*` 标签时多跑一个 `release` job，把 MSI 与 APK 传到对应的 GitHub Release。
+
+两个不显然的地方：
+
+- **MSI 需要 WiX Toolset 3**。jpackage 用它生成 MSI，且不接受 WiX 4/5；
+  新的 runner 镜像不再预装，所以 workflow 里用 choco 装了 3.11.2。
+- **APK 是 debug 版**。没有密钥库的 release 包是未签名的，装不上。要出 release：
+  把密钥库 base64 后存进仓库 secret，在 `composeApp/build.gradle.kts` 里加
+  `signingConfigs`，再把 job 换成 `assembleRelease`。
+
 ## 外置播放器的进度同步是怎么做的
 
 PotPlayer 不会向任何人汇报播放位置——实测过：

@@ -50,6 +50,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
 import com.daview.app.platform.PlatformInfo
+import com.daview.app.platform.copyToClipboard
+import com.daview.app.platform.openUrl
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.LibraryKind
 import com.daview.shared.model.ScraperSettingsDto
@@ -83,6 +85,7 @@ fun SettingsScreen(state: AppState) {
         item { HorizontalDivider(Modifier.padding(20.dp)) }
         item { StorageSection(state) }
         item { ScraperSection(state) }
+        item { BackupSection(state) }
         item { ClientSection(state) }
     }
 
@@ -262,6 +265,122 @@ private fun ClientSection(state: AppState) {
         Spacer(Modifier.height(12.dp))
         FilledTonalButton(onClick = { state.disconnect() }) { Text("断开连接") }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+/**
+ * Migration is two steps: download the file here, drop it into the new server's
+ * data directory as `import.json`, press import there. No file picker is
+ * involved, which keeps it identical on desktop, web and Android.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun BackupSection(state: AppState) {
+    val scope = rememberCoroutineScope()
+    var includeItems by remember { mutableStateOf(true) }
+    var includeSecrets by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Column(Modifier.padding(horizontal = 20.dp)) {
+        Text("备份与迁移", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "导出一个 JSON：服务器设置、媒体库定义、观看进度（位置 / 已看 / 收藏 / 音轨字幕选择），" +
+                "以及可选的整份刮削结果。在新机器上把它放进服务端数据目录、命名为 import.json，再点「导入」。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ToggleButton(checked = includeItems, onCheckedChange = { includeItems = it }) {
+                Text("包含刮削数据")
+            }
+            ToggleButton(checked = includeSecrets, onCheckedChange = { includeSecrets = it }) {
+                Text("包含凭据")
+            }
+        }
+        if (includeSecrets) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "文件里会明文带上 WebDAV 密码与 API Key。不勾选的话，导入方保留自己已有的凭据。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        if (!includeItems) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "不含刮削数据时文件只有几十 KB，但新服务端需要重新扫描一遍；" +
+                    "手动指定的刮削 id 也在刮削数据里。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                enabled = state.client != null && !busy,
+                onClick = {
+                    val api = state.client ?: return@Button
+                    val url = api.backupUrl(items = includeItems, secrets = includeSecrets)
+                    openUrl(url)
+                    error = null
+                    message = "已打开下载地址"
+                }
+            ) { Text("导出") }
+
+            FilledTonalButton(
+                enabled = state.client != null && !busy,
+                onClick = {
+                    val api = state.client ?: return@FilledTonalButton
+                    copyToClipboard(api.backupUrl(items = includeItems, secrets = includeSecrets))
+                    error = null
+                    message = "下载地址已复制，可以用 curl -o backup.json 取"
+                }
+            ) { Text("复制地址") }
+
+            FilledTonalButton(
+                enabled = state.client != null && !busy,
+                onClick = {
+                    val api = state.client ?: return@FilledTonalButton
+                    scope.launch {
+                        busy = true
+                        error = null
+                        message = null
+                        try {
+                            val summary = api.importBackupFromDataDir()
+                            message = "已导入：媒体库 ${summary.libraries} 个、条目 ${summary.items} 项、" +
+                                "观看记录 ${summary.userData} 条" +
+                                (if (summary.settingsApplied) "，设置已应用" else "")
+                            state.refreshLibraries()
+                            state.loadServerSettings()
+                        } catch (e: Throwable) {
+                            error = e.message ?: "导入失败"
+                        } finally {
+                            busy = false
+                        }
+                    }
+                }
+            ) { Text("导入") }
+        }
+
+        if (busy) {
+            Spacer(Modifier.height(8.dp))
+            LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+        }
+        message?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+        error?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        Spacer(Modifier.height(20.dp))
     }
 }
 

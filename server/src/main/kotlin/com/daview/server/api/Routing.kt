@@ -32,6 +32,9 @@ import java.util.UUID
 
 private const val STREAM_BUFFER = 256 * 1024
 
+/** What `source=datadir` looks for inside the data directory. */
+const val IMPORT_FILE_NAME = "import.json"
+
 fun Route.apiRoutes(context: ServerContext) {
 
     // ------------------------------------------------------------ server info
@@ -163,6 +166,63 @@ fun Route.apiRoutes(context: ServerContext) {
     get("/api/scan/status") {
         call.requireAuth(context) ?: return@get
         call.respond(context.scans.status())
+    }
+
+    // ------------------------------------------------------------ backup
+
+    /**
+     * Migration in two calls: download the file here, POST it to the new
+     * server. Credentials stay out unless `secrets=true` is asked for, because
+     * the result is a plain file the user is about to move between machines.
+     */
+    get("/api/backup/export") {
+        call.requireAuth(context) ?: return@get
+        val params = call.request.queryParameters
+        fun flag(name: String, default: Boolean) = params[name]?.toBooleanStrictOrNull() ?: default
+        call.respondBackup(
+            context,
+            BackupOptions(
+                settings = flag("settings", true),
+                libraries = flag("libraries", true),
+                items = flag("items", true),
+                userData = flag("userdata", true),
+                secrets = flag("secrets", false)
+            )
+        )
+    }
+
+    post("/api/backup/import") {
+        call.requireAuth(context) ?: return@post
+        // `source=datadir` reads <data>/import.json, so the clients need no file
+        // picker: on the new machine the file is copied in next to the database.
+        val backup = if (call.request.queryParameters["source"] == "datadir") {
+            val file = context.configStore.dataDir.resolve(IMPORT_FILE_NAME)
+            if (!java.nio.file.Files.exists(file)) {
+                call.respond(
+                    HttpStatusCode.NotFound,
+                    ApiError("没有找到备份文件", "把备份文件放到数据目录并命名为 $IMPORT_FILE_NAME：$file")
+                )
+                return@post
+            }
+            val text = withContext(Dispatchers.IO) { java.nio.file.Files.readString(file) }
+            runCatching { com.daview.shared.api.DaViewJson.decodeFromString(BackupFileDto.serializer(), text) }
+                .getOrElse {
+                    call.respond(HttpStatusCode.BadRequest, ApiError("备份文件解析失败", it.message))
+                    return@post
+                }
+        } else {
+            runCatching { call.receive<BackupFileDto>() }.getOrElse {
+                call.respond(HttpStatusCode.BadRequest, ApiError("备份内容解析失败", it.message))
+                return@post
+            }
+        }
+
+        val summary = runCatching { withContext(Dispatchers.IO) { applyBackup(context, backup) } }
+            .getOrElse {
+                call.respond(HttpStatusCode.BadRequest, ApiError("导入失败", it.message))
+                return@post
+            }
+        call.respond(summary)
     }
 
     // ------------------------------------------------------------ items

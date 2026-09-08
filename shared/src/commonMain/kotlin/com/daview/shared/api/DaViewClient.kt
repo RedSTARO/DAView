@@ -180,6 +180,26 @@ class DaViewClient(
 
     suspend fun sessions(): List<SessionStateDto> = http.get(url("/api/playback/sessions")).body()
 
+    /**
+     * Download URL for a backup, token inline so a browser or the OS handler can
+     * fetch it directly. [secrets] puts the WebDAV password and the scraper API
+     * keys into the file in plain text.
+     */
+    fun backupUrl(
+        settings: Boolean = true,
+        libraries: Boolean = true,
+        items: Boolean = true,
+        userData: Boolean = true,
+        secrets: Boolean = false
+    ): String = assetUrl(
+        "/api/backup/export?settings=$settings&libraries=$libraries" +
+            "&items=$items&userdata=$userData&secrets=$secrets"
+    )
+
+    /** Imports the backup the user placed in the server's data directory. */
+    suspend fun importBackupFromDataDir(): BackupSummaryDto =
+        http.post(url("/api/backup/import")) { parameter("source", "datadir") }.body()
+
     /** Raw bytes from an endpoint, used for the web client's font download. */
     suspend fun fetchBytes(path: String): ByteArray? = runCatching {
         val response = http.get(url(path))
