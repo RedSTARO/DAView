@@ -20,8 +20,15 @@ jobs:
   test:
     name: 服务端测试
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      commit_msg: ${{ steps.meta.outputs.commit_msg }}
+      commit_count: ${{ steps.meta.outputs.commit_count }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-java@v4
         with:
@@ -32,6 +39,32 @@ jobs:
 
       - run: ./gradlew :server:jvmTest
 
+      # There is no dynamic version scheme in the Gradle build, so the human
+      # label for artifacts and release notes is resolved here: the tag name for
+      # a tag build, otherwise `git describe` (nearest tag + commits + short sha)
+      # or a bare short sha when no tag exists yet.
+      - name: 解析版本信息
+        id: meta
+        run: |
+          git fetch --force --tags >/dev/null 2>&1 || true
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="$(git describe --tags --always 2>/dev/null || git rev-parse --short HEAD)"
+          fi
+          latest_tag="$(git tag --sort=-creatordate | head -n1)"
+          if [ -z "$latest_tag" ]; then
+            count="$(git rev-list --count HEAD)"
+          else
+            count="$(git rev-list --count "${latest_tag}..HEAD")"
+          fi
+          {
+            echo "version=$version"
+            echo "short_sha=$(git rev-parse --short HEAD)"
+            echo "commit_msg=$(git log -1 --pretty=%s)"
+            echo "commit_count=$count"
+          } >> "$GITHUB_OUTPUT"
+
       - name: 上传测试报告
         if: always()
         uses: actions/upload-artifact@v4
@@ -40,10 +73,125 @@ jobs:
           path: server/build/reports/tests/jvmTest
           if-no-files-found: ignore
 
-  msi:
-    name: 桌面端 MSI
+  # ─── Android ────────────────────────────────────────────────────────────────
+  build-android:
+    name: Android APK
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v3
+
+      # compileSdk is 37, which the whole Compose 1.12 / Material3 1.5 stack
+      # requires. Google publishes it as android-37.0, not android-37 — the bare
+      # name does not exist in the repository and sdkmanager fails on it.
+      - name: 安装 compile SDK
+        run: sdkmanager --install "platforms;android-37.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The release variant, unsigned. `isMinifyEnabled` stays off in the Gradle
+      # build on purpose: the app embeds the ktor/sqlite server core and relies
+      # on kotlinx.serialization reflection, and R8 without a curated keystore of
+      # keep rules strips those at runtime. Signing is done as a separate step
+      # below, so this artifact is the input to signing, not a shippable APK.
+      - run: ./gradlew :composeApp:assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DAView-apk-unsigned
+          path: composeApp/build/outputs/apk/release/*-release-unsigned.apk
+          if-no-files-found: error
+
+  # Signs the release APK. Runs only on master/main and tag pushes, where the
+  # signing secrets are available; pull requests (including forks) build the
+  # unsigned APK above and stop there.
+  sign-android:
+    name: 签名 Android Release
+    needs: [test, build-android]
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/master' ||
+       github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DAView-apk-unsigned
+          path: unsigned
+
+      - name: Sign APK
+        id: sign
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: unsigned
+          signingKeyBase64: ${{ secrets.SIGNING_KEY_BASE64 }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: "34.0.0"
+
+      - name: 重命名已签名 APK
+        run: |
+          mkdir -p signed
+          mv "${{ steps.sign.outputs.signedReleaseFile }}" "signed/DAView-${VERSION}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DAView-apk-signed
+          path: signed/DAView-${{ needs.test.outputs.version }}.apk
+          if-no-files-found: error
+
+  # ─── Web · Wasm ─────────────────────────────────────────────────────────────
+  build-web:
+    name: Web · Wasm
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: ./gradlew :composeApp:wasmJsBrowserDistribution
+
+      - name: 打包 Web 产物
+        run: |
+          mkdir -p dist
+          (
+            cd composeApp/build/dist/wasmJs/productionExecutable
+            zip -qr "$GITHUB_WORKSPACE/dist/DAView-${VERSION}-web.zip" .
+          )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DAView-web
+          path: dist/DAView-${{ needs.test.outputs.version }}-web.zip
+          if-no-files-found: error
+
+  # ─── Desktop · Windows ──────────────────────────────────────────────────────
+  build-desktop-windows:
+    name: 桌面端 · Windows (.msi)
     needs: test
     runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -75,16 +223,25 @@ jobs:
 
       - run: ./gradlew :composeApp:packageMsi
 
+      - name: 重命名 MSI
+        run: |
+          $pkg = Get-ChildItem composeApp/build/compose/binaries/main/msi -Filter *.msi | Select-Object -First 1
+          if (-not $pkg) { throw "MSI package was not produced." }
+          Move-Item -LiteralPath $pkg.FullName -Destination (Join-Path $pkg.DirectoryName "DAView-$env:VERSION.msi")
+
       - uses: actions/upload-artifact@v4
         with:
           name: DAView-msi
-          path: composeApp/build/compose/binaries/main/msi/*.msi
+          path: composeApp/build/compose/binaries/main/msi/DAView-${{ needs.test.outputs.version }}.msi
           if-no-files-found: error
 
-  apk:
-    name: Android APK
+  # ─── Desktop · Linux ────────────────────────────────────────────────────────
+  build-desktop-linux:
+    name: 桌面端 · Linux (.deb)
     needs: test
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -93,46 +250,247 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - uses: android-actions/setup-android@v3
-
-      # compileSdk is 37, which the whole Compose 1.12 / Material3 1.5 stack
-      # requires. Google publishes it as android-37.0, not android-37 — the bare
-      # name does not exist in the repository and sdkmanager fails on it.
-      - name: 安装 compile SDK
-        run: sdkmanager --install "platforms;android-37.0"
-
       - uses: gradle/actions/setup-gradle@v4
 
-      # Debug rather than release: a release APK without a keystore comes out
-      # unsigned and will not install. See README for wiring up signing keys.
-      - run: ./gradlew :composeApp:assembleDebug
+      - run: ./gradlew :composeApp:packageDeb
+
+      - name: 重命名 deb
+        run: |
+          pkg=$(find composeApp/build/compose/binaries/main/deb -name '*.deb' -print -quit)
+          test -n "$pkg"
+          mv "$pkg" "$(dirname "$pkg")/DAView-${VERSION}.deb"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DAView-apk
-          path: composeApp/build/outputs/apk/debug/*.apk
+          name: DAView-deb
+          path: composeApp/build/compose/binaries/main/deb/DAView-${{ needs.test.outputs.version }}.deb
           if-no-files-found: error
 
-  release:
-    name: 发布到 Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [msi, apk]
+  # ─── Desktop · macOS ────────────────────────────────────────────────────────
+  build-desktop-macos:
+    name: 桌面端 · macOS (.dmg)
+    needs: test
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: ./gradlew :composeApp:packageDmg
+
+      - name: 重命名 dmg
+        run: |
+          pkg=$(find composeApp/build/compose/binaries/main/dmg -name '*.dmg' -print -quit)
+          test -n "$pkg"
+          mv "$pkg" "$(dirname "$pkg")/DAView-${VERSION}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DAView-dmg
+          path: composeApp/build/compose/binaries/main/dmg/DAView-${{ needs.test.outputs.version }}.dmg
+          if-no-files-found: error
+
+  # ─── Telegram 通知（每次 master/tag 推送，汇总所有产物状态）──────────────────
+  notify-telegram:
+    name: Telegram 通知
+    needs:
+      - test
+      - build-android
+      - sign-android
+      - build-web
+      - build-desktop-windows
+      - build-desktop-linux
+      - build-desktop-macos
+    if: >-
+      always() && github.event_name == 'push' &&
+      (github.ref == 'refs/heads/master' ||
+       github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: dist
+          merge-multiple: true
 
-      - name: 上传安装包
+      - name: 推送到 Telegram
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          VERSION: ${{ needs.test.outputs.version }}
+          COMMIT_MSG: ${{ needs.test.outputs.commit_msg }}
+          SHORT_SHA: ${{ needs.test.outputs.short_sha }}
+          COMMIT_COUNT: ${{ needs.test.outputs.commit_count }}
+          REF: ${{ github.ref_name }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"
-          gh release upload "$GITHUB_REF_NAME" \
-            artifacts/DAView-msi/*.msi \
-            artifacts/DAView-apk/*.apk \
-            --clobber
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets not set — skipping."
+            exit 0
+          fi
+
+          # Prefer the signed APK; fall back to none (unsigned is never sent).
+          APK=$(find dist -name 'DAView-*.apk' ! -name '*unsigned*' -print -quit)
+          DEB=$(find dist -name '*.deb' -print -quit)
+          MSI=$(find dist -name '*.msi' -print -quit)
+          DMG=$(find dist -name '*.dmg' -print -quit)
+          WEB=$(find dist -name 'DAView-*-web.zip' -print -quit)
+
+          # ✅ when the file exists, ❌ otherwise.
+          status() { [ -n "$1" ] && [ -f "$1" ] && printf '✅' || printf '❌'; }
+
+          MSG=$(printf '%s' "$COMMIT_MSG" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+
+          CAPTION=$(printf '<b>DAView</b>  ·  <code>%s</code>\n\n📝 %s\n🔖 <code>%s</code>  ·  <code>%s</code>  ·  +%s commits\n\n──────────────────\n🤖 Android  %s  APK (attached)\n🐧 Linux    %s  .deb\n🪟 Windows  %s  .msi\n🍎 macOS    %s  .dmg\n🌐 Web      %s  .zip\n\n<i>桌面端与 Web 产物见 CI artifacts。</i>' \
+            "$REF" "$MSG" "$VERSION" "$SHORT_SHA" "$COMMIT_COUNT" \
+            "$(status "$APK")" "$(status "$DEB")" "$(status "$MSI")" "$(status "$DMG")" "$(status "$WEB")")
+
+          API="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}"
+
+          if [ -n "$APK" ] && [ -f "$APK" ]; then
+            # Desktop packages bundle the JVM and exceed Telegram's 50 MB bot-API
+            # limit; only the APK is uploaded. Desktop status is in the caption.
+            CAPTION_FILE=$(mktemp)
+            printf '%s' "$CAPTION" > "$CAPTION_FILE"
+            curl -sS -X POST "${API}/sendDocument" \
+              -F chat_id="${TELEGRAM_CHAT_ID}" \
+              -F "document=@${APK}" \
+              -F "caption=<${CAPTION_FILE}" \
+              -F parse_mode=HTML
+            rm -f "$CAPTION_FILE"
+          else
+            curl -sS -X POST "${API}/sendMessage" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -n --arg c "$TELEGRAM_CHAT_ID" --arg t "$CAPTION" \
+                '{"chat_id":$c,"text":$t,"parse_mode":"HTML"}')"
+          fi
+
+  # ─── GitHub Release（仅 tag）────────────────────────────────────────────────
+  release:
+    name: 发布到 Release
+    needs:
+      - test
+      - sign-android
+      - build-web
+      - build-desktop-windows
+      - build-desktop-linux
+      - build-desktop-macos
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      log: ${{ steps.changelog.outputs.log }}
+      count: ${{ steps.changelog.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 生成更新日志
+        id: changelog
+        run: |
+          git fetch --force --tags
+          current="${{ github.ref_name }}"
+          previous=$(git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --abbrev=0 "${current}^" 2>/dev/null || true)
+          if [ -z "$previous" ]; then
+            log=$(git log --oneline "$current")
+            count=$(git rev-list --count "$current")
+          else
+            log=$(git log --oneline "${previous}..${current}")
+            count=$(git rev-list --count "${previous}..${current}")
+          fi
+          {
+            echo "log<<EOF"
+            echo "$log"
+            echo "EOF"
+            echo "count=$count"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 下载全部产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 移除未签名 APK
+        run: rm -f dist/*unsigned*.apk
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "DAView ${{ needs.test.outputs.version }}"
+          # Explicit globs, so the test-report artifact merged into dist/ is not
+          # attached. The unsigned APK is named composeApp-release-unsigned.apk
+          # and does not match DAView-*.apk, so only the signed APK is uploaded.
+          files: |
+            dist/DAView-*.apk
+            dist/DAView-*.deb
+            dist/DAView-*.msi
+            dist/DAView-*.dmg
+            dist/DAView-*-web.zip
+          body: |
+            🎉 **DAView ${{ needs.test.outputs.version }}**
+
+            📦 **${{ steps.changelog.outputs.count }} commits since last release**
+            ```
+            ${{ steps.changelog.outputs.log }}
+            ```
+
+            | Platform | File |
+            |----------|------|
+            | Android | `DAView-${{ needs.test.outputs.version }}.apk` |
+            | Linux | `DAView-${{ needs.test.outputs.version }}.deb` |
+            | Windows | `DAView-${{ needs.test.outputs.version }}.msi` |
+            | macOS | `DAView-${{ needs.test.outputs.version }}.dmg` |
+            | Web | `DAView-${{ needs.test.outputs.version }}-web.zip` |
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ─── 邮件通知（仅 tag release）──────────────────────────────────────────────
+  # Sends a release announcement over Gmail SMTP. Skips itself cleanly when the
+  # mail secrets are absent, so the pipeline never fails for a missing password.
+  notify-email:
+    name: 邮件通知（Release）
+    needs: [test, release]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+    steps:
+      - name: 发送发布邮件
+        if: ${{ env.MAIL_PASSWORD != '' }}
+        uses: dawidd6/action-send-mail@v4
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "🎉 DAView ${{ needs.test.outputs.version }} 已发布"
+          to: ${{ secrets.MAIL_TO }}
+          from: DAView CI <${{ secrets.MAIL_USERNAME }}>
+          html_body: |
+            <h2>DAView ${{ needs.test.outputs.version }}</h2>
+            <p><b>${{ needs.release.outputs.count }}</b> commits since the last release.</p>
+            <pre style="background:#f6f8fa;padding:12px;border-radius:6px;white-space:pre-wrap">${{ needs.release.outputs.log }}</pre>
+            <p>
+              📦 <a href="https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}">
+              Download the installers and web bundle on the release page</a>.
+            </p>
+            <table cellpadding="6" style="border-collapse:collapse">
+              <tr><td>🤖 Android</td><td><code>DAView-${{ needs.test.outputs.version }}.apk</code></td></tr>
+              <tr><td>🐧 Linux</td><td><code>DAView-${{ needs.test.outputs.version }}.deb</code></td></tr>
+              <tr><td>🪟 Windows</td><td><code>DAView-${{ needs.test.outputs.version }}.msi</code></td></tr>
+              <tr><td>🍎 macOS</td><td><code>DAView-${{ needs.test.outputs.version }}.dmg</code></td></tr>
+              <tr><td>🌐 Web</td><td><code>DAView-${{ needs.test.outputs.version }}-web.zip</code></td></tr>
+            </table>
