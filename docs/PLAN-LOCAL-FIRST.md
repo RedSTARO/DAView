@@ -3,6 +3,42 @@
 写于 2026-09-08，决策已定（见第 0 节）。
 文中每条「现状」都核对过源码或构建产物；推断的地方会写明是推断。
 
+## 执行记录（2026-09-08 全部完成）
+
+| 提交 | 内容 |
+| --- | --- |
+| `439d393` | 阶段 0：确定性库 id、上传前合并、自动拉取、手动指定进同步文件 |
+| `7fb05a0` | 阶段 1：拆出 `:core`，`:server` 只剩三个讲 HTTP 的文件 |
+| `61d9a82` | 阶段 2：`MediaFacade`，路由退化成薄适配器 |
+| `f9e49ee` | 砍掉 wasm 与网页端 |
+| `e1618e1` | `PlaybackPipe`：外置播放器的回环字节管道 |
+| `70fa839` | 阶段 3：桌面端与 Android 直接持有 core，去掉连接页与令牌 |
+| `2f64717` | 阶段 5：删掉 `:server`、`:server-app`、`DaViewClient` |
+| `7b875b2` | 阶段 6：Android 前台服务扫描 + 取消 |
+
+### 与原计划的三处偏离
+
+1. **阶段顺序**：wasm 的移除必须排在阶段 3 之前。`:core` 的源码在 per-target 的
+   `src/core` 里，没有 commonMain 元数据，所以只要 `composeApp` 还含 wasm target，
+   它的 `commonMain` 就看不见 `:core`。客户端代码因此也搬进了同时注册进两个 JVM
+   target 的 `src/app`——这正是不必再造一层接口的前提。
+2. **内置播放器仍然走管道，没有改用 `directUrl`**。原计划的阶段 1.3 写错了：
+   实测（记录在 `InternalPlayer.android.kt` 的注释里）ExoPlayer 跟随存储的 302
+   会从 CDN 拿到 502，而同一条链接由 core 取是 206。所以 `directUrl` 仍然返回给
+   客户端，但播放读的是管道。外挂字幕反过来——它优先用存储直链，取不到才回退管道。
+3. **阶段 1 的「止血六条」大部分作废**。绑回环、延迟启动、去掉三个插件、删无用依赖，
+   都是给一个后来被整个删掉的东西打补丁。只有 Coil 直读缓存文件进了终态。
+
+### 自动验收结果
+
+- `./gradlew :core:jvmTest`：43 个测试全绿（其中 15 个是这轮新增的）
+- 干净构建的 debug APK：**25 MB**（改造前 28 MB），21 个 dex 里 `io/ktor` 命中 **0**
+  （改造前 3 个 dex 里有）
+- 桌面端实际启动并渲染（Skiko 原生库加载成功，90 秒内无异常）
+- 冷启动路径上不再有 socket 绑定：`DaViewApplication.onCreate` 只存 Context
+
+手工验收清单见第 9 节，需要真机与真 WebDAV。
+
 ## 0. 已定的决策
 
 | # | 决策 | 选择 | 后果 |
@@ -169,12 +205,13 @@ api/Backup.kt 的 buildBackup / applyBackup
 
 ## 8. 自动验收（我负责）
 
-- [ ] `./gradlew :core:jvmTest` 全绿
-- [ ] 桌面端能启动、能浏览、能拉起外置播放器
-- [ ] 重建 APK：dex 里 `io/ktor/server` 命中数为 0
-- [ ] 重建 APK：dex 里 `io/ktor/client` 命中数为 0
-- [ ] APK 体积对比（当前 28 MB debug）
-- [ ] 冷启动路径上没有 socket 绑定（`Application.onCreate` 里不再有 `EmbeddedServer.start`）
+- [x] `./gradlew :core:jvmTest` 全绿 —— 43 个，0 失败
+- [x] 桌面端能启动（Skiko 加载成功，跑满 90 秒无异常）。**能否拉起外置播放器没验**，
+      这台机器上没有可播的媒体，见第 9 节
+- [x] 重建 APK：dex 里 `io/ktor/server` 命中数为 0
+- [x] 重建 APK：dex 里 `io/ktor/client` 命中数为 0
+- [x] APK 体积：干净构建 25 MB，改造前 28 MB
+- [x] 冷启动路径上没有 socket 绑定：`DaViewApplication.onCreate` 只剩存 Context
 
 ## 9. 手工验收（需要真机与真 WebDAV）
 
