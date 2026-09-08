@@ -385,9 +385,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    outputs:
-      log: ${{ steps.changelog.outputs.log }}
-      count: ${{ steps.changelog.outputs.count }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -455,42 +452,3 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # ─── 邮件通知（仅 tag release）──────────────────────────────────────────────
-  # Sends a release announcement over Gmail SMTP. Skips itself cleanly when the
-  # mail secrets are absent, so the pipeline never fails for a missing password.
-  notify-email:
-    name: 邮件通知（Release）
-    needs: [test, release]
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    env:
-      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
-    steps:
-      - name: 发送发布邮件
-        if: ${{ env.MAIL_PASSWORD != '' }}
-        uses: dawidd6/action-send-mail@v4
-        with:
-          server_address: smtp.gmail.com
-          server_port: 465
-          secure: true
-          username: ${{ secrets.MAIL_USERNAME }}
-          password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "🎉 DAView ${{ needs.test.outputs.version }} 已发布"
-          to: ${{ secrets.MAIL_TO }}
-          from: DAView CI <${{ secrets.MAIL_USERNAME }}>
-          html_body: |
-            <h2>DAView ${{ needs.test.outputs.version }}</h2>
-            <p><b>${{ needs.release.outputs.count }}</b> commits since the last release.</p>
-            <pre style="background:#f6f8fa;padding:12px;border-radius:6px;white-space:pre-wrap">${{ needs.release.outputs.log }}</pre>
-            <p>
-              📦 <a href="https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}">
-              Download the installers and web bundle on the release page</a>.
-            </p>
-            <table cellpadding="6" style="border-collapse:collapse">
-              <tr><td>🤖 Android</td><td><code>DAView-${{ needs.test.outputs.version }}.apk</code></td></tr>
-              <tr><td>🐧 Linux</td><td><code>DAView-${{ needs.test.outputs.version }}.deb</code></td></tr>
-              <tr><td>🪟 Windows</td><td><code>DAView-${{ needs.test.outputs.version }}.msi</code></td></tr>
-              <tr><td>🍎 macOS</td><td><code>DAView-${{ needs.test.outputs.version }}.dmg</code></td></tr>
-              <tr><td>🌐 Web</td><td><code>DAView-${{ needs.test.outputs.version }}-web.zip</code></td></tr>
-            </table>
