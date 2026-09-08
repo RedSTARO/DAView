@@ -133,11 +133,6 @@ fun ExternalPlaybackPanel(state: AppState, playback: PlaybackController) {
 
                 Spacer(Modifier.height(22.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (PlatformInfo.isWeb) {
-                        Button(onClick = { openUrl(info.directUrl ?: info.streamUrl) }) {
-                            Text("在浏览器中播放")
-                        }
-                    }
                     FilledTonalButton(onClick = { copyToClipboard(info.streamUrl) }) {
                         Text("复制播放地址")
                     }

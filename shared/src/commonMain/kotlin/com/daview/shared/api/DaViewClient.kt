@@ -241,12 +241,6 @@ class DaViewClient(
     suspend fun importBackupFromDataDir(): BackupSummaryDto =
         http.post(url("/api/backup/import")) { parameter("source", "datadir") }.body()
 
-    /** Raw bytes from an endpoint, used for the web client's font download. */
-    suspend fun fetchBytes(path: String): ByteArray? = runCatching {
-        val response = http.get(url(path))
-        if (response.status.value in 200..299) response.body<ByteArray>() else null
-    }.getOrNull()
-
     /** Returns true when the base URL answers and the token is accepted. */
     suspend fun ping(): Boolean = runCatching {
         val response = http.get(url("/api/info"))

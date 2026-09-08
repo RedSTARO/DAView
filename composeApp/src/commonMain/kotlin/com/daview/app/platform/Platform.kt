@@ -32,7 +32,6 @@ expect object PlatformInfo {
     val name: String
     val isDesktop: Boolean
     val isAndroid: Boolean
-    val isWeb: Boolean
 
     /** True where an in-app player exists (Android today). */
     val hasInternalPlayer: Boolean

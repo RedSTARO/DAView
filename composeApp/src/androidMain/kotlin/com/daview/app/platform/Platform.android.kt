@@ -18,7 +18,6 @@ actual object PlatformInfo {
     actual val name: String = "Android ${Build.VERSION.RELEASE}"
     actual val isDesktop: Boolean = false
     actual val isAndroid: Boolean = true
-    actual val isWeb: Boolean = false
     actual val hasInternalPlayer: Boolean = true
 }
 

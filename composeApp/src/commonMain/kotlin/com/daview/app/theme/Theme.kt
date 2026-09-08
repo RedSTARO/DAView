@@ -136,17 +136,13 @@ val LocalDarkTheme = staticCompositionLocalOf { true }
 @Composable
 fun DaViewTheme(
     darkTheme: Boolean = true,
-    fontFamily: androidx.compose.ui.text.font.FontFamily? = null,
     content: @Composable () -> Unit
 ) {
-    val typography = androidx.compose.material3.Typography()
-        .let { base -> fontFamily?.let { base.withFontFamily(it) } ?: base }
     androidx.compose.runtime.CompositionLocalProvider(LocalDarkTheme provides darkTheme) {
         MaterialExpressiveTheme(
             colorScheme = if (darkTheme) DaViewDarkColors else DaViewLightColors,
             shapes = DaViewShapes,
             motionScheme = MotionScheme.expressive(),
-            typography = typography,
             content = content
         )
     }

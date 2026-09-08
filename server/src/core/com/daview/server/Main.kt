@@ -10,7 +10,6 @@ import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.engine.EmbeddedServer
-import io.ktor.server.http.content.staticFiles
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.plugins.calllogging.CallLogging
@@ -23,7 +22,6 @@ import io.ktor.server.routing.routing
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
-import java.io.File
 
 /**
  * Builds the HTTP server. The desktop and Android apps call this directly so
@@ -96,14 +94,6 @@ fun Application.module(context: ServerContext) {
         apiRoutes(context)
 
         get("/health") { call.respond(mapOf("status" to "ok")) }
-
-        // The compiled web client, when it has been built.
-        val webDir = System.getenv("DAVIEW_WEB_DIR")?.let { File(it) }
-            ?: File("composeApp/build/dist/wasmJs/productionExecutable")
-        if (webDir.isDirectory) {
-            staticFiles("/", webDir) { default("index.html") }
-            LoggerFactory.getLogger("DAView").info("Web 客户端目录: {}", webDir.absolutePath)
-        }
     }
 }
 

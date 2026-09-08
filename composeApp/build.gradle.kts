@@ -1,5 +1,4 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
-import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -23,16 +22,6 @@ kotlin {
         compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
     }
 
-    @OptIn(ExperimentalWasmDsl::class)
-    wasmJs {
-        outputModuleName = "daview"
-        browser {
-            commonWebpackConfig {
-                outputFileName = "daview.js"
-            }
-        }
-        binaries.executable()
-    }
 
     sourceSets {
         commonMain.dependencies {
@@ -69,9 +58,6 @@ kotlin {
             implementation(project(":server"))
         }
 
-        wasmJsMain.dependencies {
-            implementation(libs.ktor.client.js)
-        }
     }
 }
 

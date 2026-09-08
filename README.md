@@ -1,45 +1,41 @@
 # DAView
 
 一个自托管的媒体库应用：扫描 WebDAV 上的影视目录，在本地生成刮削数据库，
-记录播放进度与音轨 / 字幕选择，并在桌面与网页端把播放交给 PotPlayer 等外置播放器
-——同时仍然把进度同步回服务器。
+记录播放进度与音轨 / 字幕选择，并把播放交给 PotPlayer 等外置播放器
+——同时仍然把进度记回来。
 
-技术栈：**Kotlin Multiplatform + Compose Multiplatform + Material 3 Expressive**，
-后端是同一个仓库里的 **Ktor** 服务。
+技术栈：**Kotlin Multiplatform + Compose Multiplatform + Material 3 Expressive**。
+桌面端与 Android 端各自跑一份 core，设备之间只通过存储上的一个同步文件对齐。
 
 ```
 桌面端 / Android：core 跑在应用进程里，不需要另一台服务器
 ┌─────────────────────────────────────┐   WebDAV / CDN 直链
 │ 应用进程                             │ ──────────────────▶ 存储
-│  UI ──HTTP(127.0.0.1)──▶ server core │
-│                扫描 · 刮削 · SQLite   │
-└─────────────────────────────────────┘
-
-网页端：浏览器发不出带凭据的跨域 PROPFIND，只能连一台服务端
-┌────────────┐   REST + 流媒体   ┌──────────────┐
-│  Web(wasm) │ ────────────────▶ │ 桌面端或独立  │ ──────────────────▶ 存储
-└────────────┘                   │ 服务端        │
-                                 └──────────────┘
+│  UI ──HTTP(127.0.0.1)──▶ server core │                      │
+│                扫描 · 刮削 · SQLite   │                      │
+└─────────────────────────────────────┘                      │
+              ▲                                              │
+              └────── 观看进度 / 媒体库定义 / 手动指定 ◀───────┘
+                      （存储上的一个同步文件）
 ```
 
-桌面端与 Android 端**不依赖任何独立后端**：`:server` 是一个 KMP 模块（jvm + android），
-两端都在自己的进程里启动它。仍然走 HTTP，只是走 127.0.0.1——这样三端共用同一套客户端
-代码，也才能把地址交给外置播放器和图片加载器（它们没法接收一个 Kotlin 对象）。
+> 那一跳 `127.0.0.1` 正在被拆掉，见 [docs/PLAN-LOCAL-FIRST.md](docs/PLAN-LOCAL-FIRST.md)。
+> 网页端已经移除：它是唯一必须有一台服务器才能活的形态。
 
 跨设备的状态一致由 WebDAV 上的一个同步文件解决（见「跨端同步」），而不是靠共用服务器。
 
-## 为什么是「客户端 + 服务器」而不是纯客户端
+## 为什么每台设备各跑一份 core
 
-这不是偏好，是被两个实测结论逼出来的（针对 `webdav.123pan.cn`）：
+针对 `webdav.123pan.cn` 的实测结论决定了能做什么、不能做什么：
 
 | 实测 | 结果 | 影响 |
 | --- | --- | --- |
-| 浏览器跨域 `PROPFIND` | 预检返回 `401`，无任何 `Access-Control-Allow-*` | 网页端**不可能**直连 WebDAV，必须有服务端代理 |
-| `MKCOL` / `PUT` / `DELETE` | `403`，`Allow:` 头里也没有写方法 | 无法把数据库或进度写回网盘，跨端同步必须有服务端 |
-| `GET` 文件 | `302` 跳转到签名 CDN 直链，支持 `Range`，`Access-Control-Allow-Origin: *`，有效期约 76 小时，且**不绑定 IP** | 播放可以直连 CDN，服务器不必转发字节 |
+| `MKCOL` / `PUT` / `DELETE` | `403`，`Allow:` 头里也没有写方法 | 视网盘而定，可能整个是只读的；同步开关会先试写一次再决定 |
+| `GET` 文件 | `302` 跳转到签名 CDN 直链，支持 `Range`，`Access-Control-Allow-Origin: *`，有效期约 76 小时，且**不绑定 IP** | 播放可以直连 CDN，字节不必经过任何中间层 |
+| 浏览器跨域 `PROPFIND` | 预检返回 `401`，无任何 `Access-Control-Allow-*` | 浏览器**不可能**直连 WebDAV。网页端因此必须有一台常驻服务器，这也是它被移除的原因 |
 
-所以：服务端负责扫描、刮削、数据库、进度与鉴权；客户端只是 UI。
-桌面端默认**在同一进程内启动服务端**，因此单独运行桌面版就是完整可用的。
+原生端没有这个限制：Android 和桌面都是原生 HTTP 客户端，直连 WebDAV 没有跨域一说。
+所以每台设备自己扫描、自己刮削、自己存库，谁也不依赖谁开着。
 
 ## 功能
 
@@ -80,7 +76,6 @@
 **播放**
 - Android：Media3 / ExoPlayer 内置播放器，可切换音轨与字幕（含外挂字幕）
 - 桌面：PotPlayer / VLC / mpv / IINA，自动探测安装路径
-- 网页：`potplayer://` 协议交给本机 PotPlayer，或在浏览器标签页里直接播放
 - 断点续播、已看标记（超过 90% 自动标记已看）、收藏、继续观看 / 接下来 / 最近添加
 - 剧集 / 季 / 单集的详情页都显示观看状态，并且都能手动标记已看 / 未看。
   剧集和季自己没有可播放的内容，所以它们的状态**由下面的分集算出来**
@@ -134,8 +129,7 @@ POST /api/backup/import?source=datadir       # 读数据目录下的 import.json
 1. 在旧机器上点「导出」，浏览器下载 `daview-backup-<时间>.json`
 2. 在新机器上点「导入…」，用系统文件选择器选中它
 
-导入走的是平台自己的文件选择器（Android 的 SAF、桌面的 AWT 对话框、网页的
-`<input type=file>`），而不是「把文件放进数据目录」——**Android 的数据目录在
+导入走的是平台自己的文件选择器（Android 的 SAF、桌面的 AWT 对话框），而不是「把文件放进数据目录」——**Android 的数据目录在
 `filesDir` 下，用户根本放不进东西**，那条路在手机上不成立。
 
 `?source=datadir` 仍然保留，读数据目录里的 `import.json`，用于无界面的服务端恢复。
@@ -242,8 +236,6 @@ PotPlayer 不会向任何人汇报播放位置——实测过：
 界面会明确标注进度来源（`播放器上报` / `索引推算` / `时钟推算`），不会假装它是精确值。
 
 PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--start-time`，mpv 用 `--start`。
-网页端则走 `potplayer://` 协议——实测 PotPlayer 会剥掉协议前缀、保留完整查询串并向该地址取流，
-所以从浏览器交接出去的播放同样会被服务端跟踪。
 
 ### 这条链路的实测结果
 
@@ -278,13 +270,12 @@ PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--
 DAVIEW_DATA=./run server-app/build/install/server-app/bin/server-app
 ```
 
-> 独立服务端只有网页端需要。桌面端和 Android 端自己就带着 core。
+> 独立服务端不是必需的：桌面端和 Android 端自己就带着 core。
 
-首次启动会在日志里打印访问令牌与网页地址：
+首次启动会在日志里打印访问令牌：
 
 ```
 访问令牌: 3f9c…
-Web 客户端: http://127.0.0.1:8096/?token=3f9c…
 ```
 
 存储与 API Key 可以在客户端「设置」里填，也可以用环境变量（适合容器部署）：
@@ -297,7 +288,6 @@ DAVIEW_TMDB_KEY=...
 DAVIEW_TVDB_KEY=...
 DAVIEW_TOKEN=...            # 固定访问令牌，不填则自动生成
 DAVIEW_DATA=./run           # 数据目录（config.json + daview.db + 图片缓存）
-DAVIEW_WEB_DIR=...          # 网页客户端目录，默认取 composeApp 的构建产物
 ```
 
 > 凭据只写在数据目录下的 `config.json`，该目录已在 `.gitignore` 中。
@@ -306,7 +296,6 @@ DAVIEW_WEB_DIR=...          # 网页客户端目录，默认取 composeApp 的�
 
 ```bash
 ./gradlew :composeApp:run                        # 桌面端（内置服务端）
-./gradlew :composeApp:wasmJsBrowserDistribution  # 网页端 → composeApp/build/dist/wasmJs/productionExecutable
 ./gradlew :composeApp:assembleDebug              # Android APK
 ./gradlew :composeApp:packageMsi                 # 桌面安装包（Windows）
 ```
@@ -317,18 +306,17 @@ DAVIEW_WEB_DIR=...          # 网页客户端目录，默认取 composeApp 的�
 ./gradlew :composeApp:run --args="--remote http://192.168.1.10:8096 --token <token>"
 ```
 
-网页端由服务端托管，因此同源、没有跨域问题。
 
 ## 目录结构
 
 ```
-shared/      KMP：DTO 与 REST 客户端（jvm / android / wasmJs）
+shared/      KMP：DTO 与 REST 客户端（jvm / android）
 core/        KMP（jvm / android）：WebDAV、扫描、命名解析、刮削、SQLite、流媒体、图片缓存、同步
              里面没有 HTTP 服务端。桌面端与 Android 端直接调它，所以它们不必为了跟自己说话
              而开一个端口
-server/      core 的 HTTP 外壳：路由、访问令牌、托管网页客户端的静态文件。只有网页端需要它
+server/      core 的 HTTP 外壳：路由与访问令牌。桌面端与 Android 端并不需要它
 server-app/  独立服务端的启动器，只有一个 main()
-composeApp/  Compose Multiplatform 客户端（androidMain / desktopMain / wasmJsMain）
+composeApp/  Compose Multiplatform 客户端（androidMain / desktopMain）
 docs/        架构说明与实测记录
 
 两个模块的共享源码都放在 `src/core`，**不能**放 `src/main`——传统 Android DSL 下那也是
@@ -342,16 +330,6 @@ APK 里带的是旧代码。
 
 ## 已知限制
 
-- **网页端不能内嵌播放 mkv**：浏览器不解 Matroska。网页端提供 `potplayer://` 交接与
-  「在浏览器中播放」（对 mp4 有效），进度依然由服务端跟踪。
-- **网页端首屏的中文是方框，任何一次重新布局之后就正常**：实测（Windows + Chromium，
-  宿主机装有中日韩字体）页面刚加载完那一帧里中文渲染成方框，但只要触发一次重新布局
-  ——改窗口大小、切换页面、列表重绘——同一段文字就正常显示，**并且不需要下载任何字体**
-  （`platformNeedsCjkFont` 现在是 `false`，抓包确认没有请求 `/api/font/cjk`）。
-  所以这不是「没有字体」，是首帧排版时字体还没就绪、之后又没人让它重排。
-  已知的绕法是启动后主动触发一次重排（例如首帧后把根布局的 padding 从 1dp 改回 0dp），
-  属于给上游渲染器打补丁，目前没有加。在没有装中日韩字体的机器上会怎样没有测过。
-  **桌面端与 Android 端不受影响**，它们走系统字体管理器。
 - **外置播放器的进度是推算值**：正常播放时误差在秒级（有 Matroska 索引时），但服务端看不到暂停，
   长时间暂停后的进度会偏大。够用来续播，不能当精确计时。
 - **暂无 iOS target**：`shared` 的结构已经允许加 `iosArm64/iosSimulatorArm64`，但需要 macOS 才能构建。

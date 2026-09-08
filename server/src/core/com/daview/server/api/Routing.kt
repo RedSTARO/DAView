@@ -415,22 +415,6 @@ fun Route.apiRoutes(context: ServerContext) {
         }
     }
 
-    /**
-     * Compose for Web renders into a canvas and has no access to the system
-     * fonts, so CJK text comes out as tofu unless a font is supplied. The
-     * server hands over one it finds on its own machine rather than bundling a
-     * ~10 MB font in the repository.
-     */
-    get("/api/font/cjk") {
-        call.requireAuth(context) ?: return@get
-        val font = com.daview.server.media.SystemFonts.cjkFont()
-        if (font == null) {
-            call.respond(HttpStatusCode.NotFound, ApiError("服务器上没有找到中日韩字体"))
-            return@get
-        }
-        call.response.header(HttpHeaders.CacheControl, "public, max-age=31536000, immutable")
-        call.respondFile(font.toFile())
-    }
 
     get("/api/images/{id}/{type}") {
         call.requireAuth(context) ?: return@get

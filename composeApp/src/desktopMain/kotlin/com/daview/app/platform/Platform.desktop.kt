@@ -16,7 +16,6 @@ actual object PlatformInfo {
     actual val name: String = System.getProperty("os.name") ?: "Desktop"
     actual val isDesktop: Boolean = true
     actual val isAndroid: Boolean = false
-    actual val isWeb: Boolean = false
     actual val hasInternalPlayer: Boolean = false
 }
 
