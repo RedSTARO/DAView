@@ -37,8 +37,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -50,6 +53,8 @@ import com.daview.app.data.AppState
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import com.daview.app.theme.DaViewTheme
+import com.daview.app.theme.createFontFamily
+import com.daview.app.theme.platformNeedsCjkFont
 import com.daview.shared.model.LibraryKind
 import com.daview.app.ui.ConnectScreen
 import com.daview.app.ui.DetailScreen
@@ -60,6 +65,7 @@ import com.daview.app.ui.SearchScreen
 import com.daview.app.ui.SettingsScreen
 import kotlinx.coroutines.delay
 
+@OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
 @Composable
 fun App() {
     val scope = rememberCoroutineScope()
@@ -73,8 +79,23 @@ fun App() {
             .build()
     }
 
+    var uiFontFamily by remember { mutableStateOf<androidx.compose.ui.text.font.FontFamily?>(null) }
+    val fontResolver = androidx.compose.ui.platform.LocalFontFamilyResolver.current
+
     LaunchedEffect(Unit) {
         state.tryAutoConnect()
+    }
+
+    // Compose for Web has no system fonts, so Chinese renders as tofu until a
+    // font is installed. The server supplies one from its own machine.
+    LaunchedEffect(state.client) {
+        val api = state.client
+        if (!platformNeedsCjkFont || api == null || uiFontFamily != null) return@LaunchedEffect
+        val family = api.fetchBytes("/api/font/cjk")?.let { createFontFamily(it) } ?: return@LaunchedEffect
+        // Compose resolves fonts asynchronously on web; without preloading, the
+        // first (and only) resolution falls back to the built-in Latin face.
+        runCatching { fontResolver.preload(family) }
+        uiFontFamily = family
     }
 
     LaunchedEffect(state.toast) {
@@ -84,7 +105,7 @@ fun App() {
         }
     }
 
-    DaViewTheme(darkTheme = state.darkTheme) {
+    DaViewTheme(darkTheme = state.darkTheme, fontFamily = uiFontFamily) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             if (state.current is Screen.Connect) {
                 ConnectScreen(state)
@@ -158,14 +179,14 @@ private fun TopRow(state: AppState) {
 
 @Composable
 private fun railColors() = NavigationRailItemDefaults.colors(
-    selectedIndicatorColor = MaterialTheme.colorScheme.primaryContainer,
+    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
     selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
     selectedTextColor = MaterialTheme.colorScheme.primary
 )
 
 @Composable
 private fun barColors() = NavigationBarItemDefaults.colors(
-    selectedIndicatorColor = MaterialTheme.colorScheme.primaryContainer,
+    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
     selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
     selectedTextColor = MaterialTheme.colorScheme.primary
 )

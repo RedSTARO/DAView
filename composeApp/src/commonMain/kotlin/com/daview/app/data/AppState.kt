@@ -52,7 +52,8 @@ class AppState(private val scope: CoroutineScope) {
     )
     var token by mutableStateOf(settings.getString(KEY_TOKEN) ?: ambientToken() ?: "")
 
-    var client: DaViewClient? = null
+    // Snapshot-backed: screens and LaunchedEffects key off the connection.
+    var client by mutableStateOf<DaViewClient?>(null)
         private set
 
     var connecting by mutableStateOf(false)

@@ -27,8 +27,8 @@ val DaViewDarkColors: ColorScheme = ColorScheme(
     inversePrimary = Violet,
     secondary = Color(0xFFFFC98A),
     onSecondary = Color(0xFF4A2800),
-    secondaryContainer = Color(0xFF693C00),
-    onSecondaryContainer = Color(0xFFFFDDB8),
+    secondaryContainer = Color(0xFF322D42),
+    onSecondaryContainer = Color(0xFFDED5F2),
     tertiary = Color(0xFF7DD8C0),
     onTertiary = Color(0xFF00382C),
     tertiaryContainer = Color(0xFF005141),
@@ -78,8 +78,8 @@ val DaViewLightColors: ColorScheme = ColorScheme(
     inversePrimary = Color(0xFFC9BCFF),
     secondary = Color(0xFF8A5000),
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFFFDDB8),
-    onSecondaryContainer = Color(0xFF2A1700),
+    secondaryContainer = Color(0xFFE8E1F7),
+    onSecondaryContainer = Color(0xFF2B2740),
     tertiary = Color(0xFF006A56),
     onTertiary = Color.White,
     tertiaryContainer = Color(0xFF9AF4DC),
@@ -134,12 +134,19 @@ val LocalDarkTheme = staticCompositionLocalOf { true }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun DaViewTheme(darkTheme: Boolean = true, content: @Composable () -> Unit) {
+fun DaViewTheme(
+    darkTheme: Boolean = true,
+    fontFamily: androidx.compose.ui.text.font.FontFamily? = null,
+    content: @Composable () -> Unit
+) {
+    val typography = androidx.compose.material3.Typography()
+        .let { base -> fontFamily?.let { base.withFontFamily(it) } ?: base }
     androidx.compose.runtime.CompositionLocalProvider(LocalDarkTheme provides darkTheme) {
         MaterialExpressiveTheme(
             colorScheme = if (darkTheme) DaViewDarkColors else DaViewLightColors,
             shapes = DaViewShapes,
             motionScheme = MotionScheme.expressive(),
+            typography = typography,
             content = content
         )
     }

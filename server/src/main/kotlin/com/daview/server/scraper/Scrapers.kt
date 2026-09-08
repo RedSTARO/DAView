@@ -9,6 +9,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
@@ -33,7 +34,9 @@ data class ScrapeCandidate(
     val year: Int?,
     val overview: String?,
     val posterUrl: String?,
-    val score: Double = 0.0
+    val score: Double = 0.0,
+    /** Position in the provider's own relevance ranking, 0 = best. */
+    val rank: Int = 0
 )
 
 data class ScrapedMetadata(
@@ -172,12 +175,13 @@ class TmdbScraper(repository: Repository?) : HttpScraper(repository), MetadataSc
             "&query=${encode(title)}&language=${config.language}&include_adult=false$yearParam"
         val results = getJson(url, cacheKey = "tmdb:search:$endpoint:$title:$year:${config.language}")
             .obj?.get("results")?.jsonArray ?: return emptyList()
-        return results.mapNotNull { element ->
-            val item = element as? JsonObject ?: return@mapNotNull null
+        return results.mapIndexedNotNull { index, element ->
+            val item = element as? JsonObject ?: return@mapIndexedNotNull null
             val date = item.str(if (kind == ItemKind.MOVIE) "release_date" else "first_air_date")
             ScrapeCandidate(
-                providerId = item.int("id")?.toString() ?: return@mapNotNull null,
-                title = item.str(if (kind == ItemKind.MOVIE) "title" else "name") ?: return@mapNotNull null,
+                rank = index,
+                providerId = item.int("id")?.toString() ?: return@mapIndexedNotNull null,
+                title = item.str(if (kind == ItemKind.MOVIE) "title" else "name") ?: return@mapIndexedNotNull null,
                 originalTitle = item.str(if (kind == ItemKind.MOVIE) "original_title" else "original_name"),
                 year = date?.take(4)?.toIntOrNull(),
                 overview = item.str("overview"),
@@ -305,11 +309,13 @@ class TvdbScraper(repository: Repository?) : HttpScraper(repository), MetadataSc
             (year?.let { "&year=$it" } ?: "") + "&limit=10"
         val results = getJson(url, headers, cacheKey = "tvdb:search:$type:$title:$year").obj
             ?.get("data")?.jsonArray ?: return emptyList()
-        return results.mapNotNull { element ->
-            val item = element as? JsonObject ?: return@mapNotNull null
+        return results.mapIndexedNotNull { index, element ->
+            val item = element as? JsonObject ?: return@mapIndexedNotNull null
             ScrapeCandidate(
-                providerId = item.str("tvdb_id") ?: item.str("id")?.substringAfterLast('-') ?: return@mapNotNull null,
-                title = item.str("name") ?: return@mapNotNull null,
+                rank = index,
+                providerId = item.str("tvdb_id") ?: item.str("id")?.substringAfterLast('-')
+                    ?: return@mapIndexedNotNull null,
+                title = item.str("name") ?: return@mapIndexedNotNull null,
                 originalTitle = item.str("name"),
                 year = item.str("year")?.toIntOrNull(),
                 overview = item.str("overview"),
@@ -406,15 +412,20 @@ class BangumiScraper(repository: Repository?) : HttpScraper(repository), Metadat
         val body = buildJsonObject {
             put("keyword", title)
             put("sort", "match")
+            put("filter", buildJsonObject {
+                put("type", kotlinx.serialization.json.buildJsonArray { add(JsonPrimitive(SUBJECT_TYPE_ANIME)) })
+            })
         }
         val response = postJson("$BASE/v0/search/subjects?limit=10", body, headers(config)).obj
         val results = response?.get("data")?.jsonArray ?: return emptyList()
-        return results.mapNotNull { element ->
-            val item = element as? JsonObject ?: return@mapNotNull null
+        return results.mapIndexedNotNull { index, element ->
+            val item = element as? JsonObject ?: return@mapIndexedNotNull null
             val date = item.str("date")
             ScrapeCandidate(
-                providerId = item.int("id")?.toString() ?: return@mapNotNull null,
-                title = item.str("name_cn")?.takeIf { it.isNotBlank() } ?: item.str("name") ?: return@mapNotNull null,
+                rank = index,
+                providerId = item.int("id")?.toString() ?: return@mapIndexedNotNull null,
+                title = item.str("name_cn")?.takeIf { it.isNotBlank() } ?: item.str("name")
+                    ?: return@mapIndexedNotNull null,
                 originalTitle = item.str("name"),
                 year = date?.take(4)?.toIntOrNull(),
                 overview = item.str("summary"),
@@ -485,6 +496,9 @@ class BangumiScraper(repository: Repository?) : HttpScraper(repository), Metadat
 
     private companion object {
         const val BASE = "https://api.bgm.tv"
+
+        /** bangumi.tv subject types: 1 书籍, 2 动画, 3 音乐, 4 游戏, 6 三次元. */
+        const val SUBJECT_TYPE_ANIME = 2
     }
 }
 

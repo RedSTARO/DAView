@@ -7,8 +7,11 @@ import com.daview.shared.model.PlayerKind
 import com.daview.shared.model.SessionStateDto
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
+import kotlin.math.min
 
 /**
  * Tracks what is playing where.
@@ -21,7 +24,10 @@ import kotlin.math.abs
  *    pins playback to a byte offset. With a Matroska cue index that maps to an
  *    exact timestamp; without one it falls back to a linear byte ratio.
  *  - between those requests the position advances with the wall clock, which is
- *    correct while the player runs at 1x and drifts only while paused.
+ *    correct while the player runs at 1x.
+ *  - when the bytes flow through the server, how far the player has downloaded
+ *    is an upper bound on where the picture can be, which stops the clock from
+ *    running away while playback is paused.
  *
  * The result is good enough to resume from, and it is always labelled as an
  * estimate so the UI can say so.
@@ -53,18 +59,55 @@ class PlaybackService(
         @Volatile var reportedPositionMs: Long? = null
         @Volatile var paused: Boolean = false
         @Volatile var lastActivity: Long = System.currentTimeMillis()
-        @Volatile var maxByteOffset: Long = 0
         @Volatile var cueIndex: MkvProbe.CueIndex? = null
-        @Volatile var stopped: Boolean = false
+
+        /** Range offset waiting to be confirmed as a real playback position. */
+        @Volatile var pendingAnchorOffset: Long? = null
+        @Volatile var pendingAnchorAt: Long = 0
+
+        /** Highest byte actually streamed to the player through this server. */
+        @Volatile var streamFrontier: Long = 0
+
+        /**
+         * True once bytes have flowed through the proxy since the last anchor.
+         * Redirect-mode sessions never set it, so the download ceiling — which
+         * would otherwise freeze the clock — simply does not apply to them.
+         */
+        @Volatile var frontierValid: Boolean = false
 
         val isExternal: Boolean get() = player != PlayerKind.INTERNAL
+
+        /** Byte offset to timestamp, exact with a cue index and linear without one. */
+        fun timeAtByte(byteOffset: Long): Long? {
+            cueIndex?.timeAtOrBefore(byteOffset)?.let { return it }
+            val size = fileSize ?: return null
+            val runtime = runtimeMs ?: return null
+            if (size <= 0 || runtime <= 0) return null
+            return (byteOffset.toDouble() / size.toDouble() * runtime.toDouble()).toLong()
+        }
+
+        /**
+         * A byte offset near the very end of the file is a container index read
+         * (Matroska `Cues`, a tail `moov`), not playback. Anchoring on it would
+         * jump the position to the end of the film and mark it watched.
+         */
+        fun isMetadataRead(byteOffset: Long): Boolean {
+            val size = fileSize ?: return false
+            return byteOffset > size - TAIL_GUARD_BYTES
+        }
 
         /** Current position: reported when the player tells us, estimated otherwise. */
         fun positionMs(): Long {
             reportedPositionMs?.let { return it }
-            val runtime = runtimeMs
             val elapsed = if (paused) 0 else System.currentTimeMillis() - anchorWallClock
-            val estimated = anchorPositionMs + elapsed
+            var estimated = anchorPositionMs + elapsed
+            // Playback cannot be past what the player has actually downloaded.
+            if (frontierValid && streamFrontier > 0) {
+                timeAtByte(streamFrontier)?.let { ceiling ->
+                    estimated = min(estimated, maxOf(ceiling, anchorPositionMs))
+                }
+            }
+            val runtime = runtimeMs
             return if (runtime != null && runtime > 0) estimated.coerceIn(0, runtime) else maxOf(0, estimated)
         }
 
@@ -73,9 +116,21 @@ class PlaybackService(
             cueIndex != null -> "cue+clock"
             else -> "clock"
         }
+
+        companion object {
+            const val TAIL_GUARD_BYTES = 8L * 1024 * 1024
+        }
     }
 
     private val sessions = ConcurrentHashMap<String, Session>()
+
+    private val ticker = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "daview-playback-tick").apply { isDaemon = true }
+    }
+
+    init {
+        ticker.scheduleWithFixedDelay({ runCatching { tick() } }, 2, 2, TimeUnit.SECONDS)
+    }
 
     fun start(
         item: MediaItemDto,
@@ -101,7 +156,7 @@ class PlaybackService(
             anchorPositionMs = startPositionMs
             anchorWallClock = System.currentTimeMillis()
             // External players get no progress callbacks, so the position has to
-            // be derived; pause the clock until the first byte request arrives.
+            // be derived; hold the clock until the first byte request arrives.
             paused = player != PlayerKind.INTERNAL
         }
         sessions[id] = session
@@ -112,7 +167,6 @@ class PlaybackService(
                     .onFailure { log.debug("cue index unavailable for {}", item.name) }
             }
         }
-        sweep()
         return session
     }
 
@@ -135,55 +189,32 @@ class PlaybackService(
     /**
      * Called by the stream endpoint for every byte range an external player asks
      * for. [rangeStart] is the first byte requested.
+     *
+     * The offset is not applied straight away: opening a file produces a burst
+     * of probe reads (headers, then the index at the tail, then the real start),
+     * and only the last one in that burst is where playback actually begins.
      */
     fun onRangeRequest(sessionId: String, rangeStart: Long) {
         val session = sessions[sessionId] ?: return
         session.lastActivity = System.currentTimeMillis()
         if (!session.isExternal) return
-
-        val derived = timeAtByte(session, rangeStart)
-        val now = System.currentTimeMillis()
-        if (derived != null) {
-            val projected = session.positionMs()
-            val seeked = session.paused || abs(derived - projected) > SEEK_TOLERANCE_MS
-            if (seeked) {
-                session.anchorPositionMs = derived
-                session.anchorWallClock = now
-            }
-        }
-        if (session.paused) {
-            session.paused = false
-            session.anchorWallClock = now
-        }
-        if (rangeStart > session.maxByteOffset) session.maxByteOffset = rangeStart
-        persist(session, finished = false)
+        if (session.isMetadataRead(rangeStart)) return
+        session.pendingAnchorOffset = rangeStart
+        session.pendingAnchorAt = System.currentTimeMillis()
     }
 
-    /** Continuous progress for proxied streams: how far the player has read. */
+    /**
+     * How far the player has read, for proxied streams. This is the *download*
+     * frontier, which runs ahead of the picture by the player's buffer, so it is
+     * only ever used as an upper bound — never to move the position forward.
+     */
     fun onBytesRead(sessionId: String, absoluteOffset: Long) {
         val session = sessions[sessionId] ?: return
         session.lastActivity = System.currentTimeMillis()
         if (!session.isExternal) return
-        if (absoluteOffset <= session.maxByteOffset) return
-        session.maxByteOffset = absoluteOffset
-
-        val derived = timeAtByte(session, absoluteOffset) ?: return
-        val projected = session.positionMs()
-        // The reader always runs ahead of the picture; only correct when the gap
-        // is large enough that the wall clock must have drifted (a seek, or a
-        // long pause that the clock kept counting through).
-        if (abs(derived - projected) > SEEK_TOLERANCE_MS) {
-            session.anchorPositionMs = (derived - READ_AHEAD_ALLOWANCE_MS).coerceAtLeast(0)
-            session.anchorWallClock = System.currentTimeMillis()
-        }
-    }
-
-    private fun timeAtByte(session: Session, byteOffset: Long): Long? {
-        session.cueIndex?.timeAtOrBefore(byteOffset)?.let { return it }
-        val size = session.fileSize ?: return null
-        val runtime = session.runtimeMs ?: return null
-        if (size <= 0 || runtime <= 0) return null
-        return (byteOffset.toDouble() / size.toDouble() * runtime.toDouble()).toLong()
+        if (session.isMetadataRead(absoluteOffset)) return
+        if (absoluteOffset > session.streamFrontier) session.streamFrontier = absoluteOffset
+        session.frontierValid = true
     }
 
     fun stop(sessionId: String, positionMs: Long?): Session? {
@@ -192,15 +223,11 @@ class PlaybackService(
             session.reportedPositionMs = positionMs
             session.anchorPositionMs = positionMs
         }
-        session.stopped = true
         persist(session, finished = true)
         return session
     }
 
-    fun activeSessions(): List<SessionStateDto> {
-        sweep()
-        return sessions.values.map { it.toDto() }
-    }
+    fun activeSessions(): List<SessionStateDto> = sessions.values.map { it.toDto() }
 
     private fun Session.toDto() = SessionStateDto(
         sessionId = id,
@@ -216,17 +243,42 @@ class PlaybackService(
         positionSource = positionSource()
     )
 
-    /** Closes sessions whose player stopped asking for bytes. */
-    fun sweep() {
-        val timeout = idleTimeoutSecProvider() * 1000L
+    /** Applies settled anchors, saves progress and retires idle sessions. */
+    private fun tick() {
         val now = System.currentTimeMillis()
-        sessions.values
-            .filter { it.isExternal && now - it.lastActivity > timeout }
-            .forEach {
-                log.info("外部播放会话 {} 空闲超时，按 {} ms 记录进度", it.id, it.positionMs())
-                sessions.remove(it.id)
-                persist(it, finished = true)
+        val timeout = idleTimeoutSecProvider() * 1000L
+        sessions.values.forEach { session ->
+            if (session.isExternal) applyPendingAnchor(session, now)
+            if (session.isExternal && now - session.lastActivity > timeout) {
+                log.info("外部播放会话 {} 空闲超时，按 {} ms 记录进度", session.id, session.positionMs())
+                sessions.remove(session.id)
+                persist(session, finished = true)
+            } else if (session.isExternal) {
+                persist(session, finished = false)
             }
+        }
+    }
+
+    private fun applyPendingAnchor(session: Session, now: Long) {
+        val offset = session.pendingAnchorOffset ?: return
+        if (now - session.pendingAnchorAt < ANCHOR_SETTLE_MS) return
+        session.pendingAnchorOffset = null
+
+        val derived = session.timeAtByte(offset)
+        if (derived != null) {
+            val projected = session.positionMs()
+            if (session.paused || abs(derived - projected) > SEEK_TOLERANCE_MS) {
+                session.anchorPositionMs = derived
+                session.anchorWallClock = now
+                // A seek invalidates everything downloaded before it.
+                session.streamFrontier = offset
+                session.frontierValid = false
+            }
+        }
+        if (session.paused) {
+            session.paused = false
+            session.anchorWallClock = now
+        }
     }
 
     private fun persist(session: Session, finished: Boolean) {
@@ -243,7 +295,13 @@ class PlaybackService(
 
     private companion object {
         const val SEEK_TOLERANCE_MS = 30_000L
-        const val READ_AHEAD_ALLOWANCE_MS = 20_000L
         const val MIN_PERSIST_POSITION_MS = 5_000L
+
+        /**
+         * How long a range offset has to stand unchallenged before it counts as
+         * the playback position. Opening a file fires several probe reads within
+         * a second or two; the last of them is the real one.
+         */
+        const val ANCHOR_SETTLE_MS = 3_000L
     }
 }

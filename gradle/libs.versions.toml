@@ -16,9 +16,9 @@ coil = "3.6.2"
 androidxActivity = "1.13.0"
 media3 = "1.11.0"
 lifecycle = "2.11.0"
-androidCompileSdk = "36"
+androidCompileSdk = "37"
 androidMinSdk = "26"
-androidTargetSdk = "36"
+androidTargetSdk = "37"
 
 [libraries]
 compose-material3 = { module = "org.jetbrains.compose.material3:material3", version.ref = "composeMaterial3" }

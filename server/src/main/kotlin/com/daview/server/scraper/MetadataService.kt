@@ -195,19 +195,43 @@ class MetadataService(private val repository: Repository) {
                 targetYear == null || candidate.year == null ||
                     kotlin.math.abs(targetYear - candidate.year) <= 1
             }
-            .map { candidate ->
-                var score = max(
+            .mapNotNull { candidate ->
+                val titleScore = max(
                     similarity(target, normalise(candidate.title)),
                     candidate.originalTitle?.let { similarity(target, normalise(it)) } ?: 0.0
                 )
-                if (targetYear != null && candidate.year != null) {
-                    score += if (targetYear == candidate.year) 0.35 else 0.10
-                }
+                val exactYear = targetYear != null && candidate.year == targetYear
+
+                // Folder names here are English while bangumi.tv answers in
+                // Japanese and Chinese, so string similarity alone would reject
+                // almost every correct match. The provider's own search already
+                // did that work, so a top-ranked hit whose year agrees is
+                // trusted; anything further down has to look like the title.
+                val acceptable = titleScore >= STRONG_TITLE_MATCH ||
+                    (exactYear && candidate.rank < TRUSTED_RANK) ||
+                    (titleScore >= WEAK_TITLE_MATCH && targetYear != null && candidate.year != null)
+                if (!acceptable) return@mapNotNull null
+
+                val score = titleScore + when {
+                    exactYear -> 0.35
+                    targetYear != null && candidate.year != null -> 0.10
+                    else -> 0.0
+                } - candidate.rank * 0.02
                 candidate to score
             }
-            .filter { it.second >= 0.42 }
             .maxByOrNull { it.second }
             ?.first
+    }
+
+    private companion object {
+        /** Enough on its own, even without a matching year. */
+        const val STRONG_TITLE_MATCH = 0.55
+
+        /** Only accepted when the release year matches exactly. */
+        const val WEAK_TITLE_MATCH = 0.40
+
+        /** How far down a provider's ranking an exact-year match is still believed. */
+        const val TRUSTED_RANK = 3
     }
 
     private fun normalise(value: String) = value.lowercase()

@@ -77,10 +77,36 @@ PotPlayer 不会向任何人汇报播放位置——实测过：
 界面会明确标注进度来源（`播放器上报` / `索引推算` / `时钟推算`），不会假装它是精确值。
 
 PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--start-time`，mpv 用 `--start`。
+网页端则走 `potplayer://` 协议——实测 PotPlayer 会剥掉协议前缀、保留完整查询串并向该地址取流，
+所以从浏览器交接出去的播放同样会被服务端跟踪。
+
+### 这条链路的实测结果
+
+用 `/Ani/Bocchi the Rock! (2022)/Season 01/Bocchi the Rock! - S01E01.mkv`（1.0 GB / 23:41）跑通：
+
+```
+启动 PotPlayer，命令行带 /seek=00:05:00
+  t= 24s  pos=  294113 ms (04:54)  src=cue+clock     ← 由 Matroska Cues 定位，误差 6 秒
+  t= 60s  pos=  330121 ms (05:30)  src=cue+clock
+  t=132s  pos=  402135 ms (06:42)  src=cue+clock
+关闭播放器后落库：positionMs=418245, played=false, audioStreamIndex=2, subtitleStreamIndex=1000
+再次播放该集：startPositionMs=418245（客户端据此给 PotPlayer 传 /seek）
+```
+
+一个必须避开的坑：PotPlayer 打开 MKV 时会先读文件末尾的 `Cues`（实测偏移在 99.998% 处）。
+如果把这次 `Range` 当成播放位置，会立刻把整集标记成"已看完"。因此末尾 8 MB 内的
+读取被判定为索引读取而忽略，且任何 `Range` 都要静置 3 秒无新请求才会被采纳为播放位置
+（打开文件时会连续发好几次探测请求，只有最后一次是真正的起播点）。
+这两条行为有单元测试覆盖：`server/src/test/.../PlaybackServiceTest.kt`。
+
+**已知不足**：外置播放器暂停时服务端无从得知，时钟会继续走。
+代理模式下会用"已下载字节对应的时间"作上限压制这个误差，但缓冲区通常领先一两分钟，
+所以暂停很久后的进度会偏大。
 
 ## 快速开始
 
-需要 JDK 17+（推荐 Android Studio 自带的 JBR 21）与 Android SDK（仅 Android 构建需要）。
+需要 JDK 17+（推荐 Android Studio 自带的 JBR 21）；Android 构建另需 SDK Platform 37
+（Coil 3.6 的 AAR 要求 `compileSdk >= 37`）。
 
 ```bash
 ./gradlew :server:installDist
@@ -139,7 +165,15 @@ docs/        架构说明与实测记录
 
 - **网页端不能内嵌播放 mkv**：浏览器不解 Matroska。网页端提供 `potplayer://` 交接与
   「在浏览器中播放」（对 mp4 有效），进度依然由服务端跟踪。
-- **外置播放器的进度是推算值**，暂停时钟仍在走，误差通常在几十秒内；续播够用，不适合当精确计时。
+- **网页端目前显示不了中文**：Compose for Web 把界面画在 canvas 上，用不了系统字体，
+  中文会渲染成方框。服务端已经提供 `/api/font/cjk`（从宿主机上找一个中日韩字体发给客户端），
+  客户端也能成功下载并构造出 `FontFamily`，但在 Compose Multiplatform 1.12 的 wasm 渲染器上
+  仍然不生效——通过 `Typography`、`LocalTextStyle`、直接给 `Text` 设 `fontFamily`，
+  以及配合 `FontFamily.Resolver.preload` 都试过。这条路径因此默认关闭
+  （`UiFont.wasmJs.kt` 里的 `platformNeedsCjkFont`），免得白下载 10 MB。
+  **桌面端与 Android 端不受影响**，它们走系统字体。
+- **外置播放器的进度是推算值**：正常播放时误差在秒级（有 Matroska 索引时），但服务端看不到暂停，
+  长时间暂停后的进度会偏大。够用来续播，不能当精确计时。
 - **暂无 iOS target**：`shared` 的结构已经允许加 `iosArm64/iosSimulatorArm64`，但需要 macOS 才能构建。
 - **AGP 9 兼容**：目前用 `android.builtInKotlin=false` + `android.newDsl=false` 保留经典 KMP 布局，
   后续应迁移到 `com.android.kotlin.multiplatform.library`。
@@ -147,3 +181,15 @@ docs/        架构说明与实测记录
   Compose 插件默认锁定的 1.9.0 里这些 API 还是 `internal`。
 - 扫描时的容器探测每个文件要几次 HTTP 往返，首次扫描大库会比较慢（并发 6，单库上限 400 个文件，
   其余在播放时按需解析）。
+- **刮削需要自备 API Key**：没有 TMDB / TheTVDB Key 时，电影与电视剧库只会用文件名建库、没有海报和简介；
+  番剧库可以只靠 bangumi.tv。bangumi.tv 默认**不会**作为电影 / 电视剧的兜底源——
+  它只收录动画，会把同名的真人剧匹配成动画。
+
+## 测试
+
+```bash
+./gradlew :server:test
+```
+
+覆盖命名解析（季 / 集 / 双语字幕 / 噪音过滤）与外置播放器的进度推算
+（末尾索引读取不得跳到片尾、静置后才锚定、下载进度作为上限）。

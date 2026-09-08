@@ -142,6 +142,22 @@ seek，重新锚定。读取指针总是领先画面，所以 `onBytesRead` 修�
 | 外置播放器 | `ACTION_VIEW` 选择器 / MX / VLC | 探测 exe 路径后起进程 | `potplayer://` / `vlc://` |
 | 进程退出可观测 | 否 | 是（用于立即结束会话） | 否 |
 
+### 网页端的字体问题
+
+Compose for Web 把整个界面画进一个 canvas，Skia 只认识应用自己注册的字体，
+所以中文默认是方框。做过的尝试与结果：
+
+| 尝试 | 结果 |
+| --- | --- |
+| 服务端 `/api/font/cjk` 提供宿主机上的 `simhei.ttf`（9.7 MB，magic `00 01 00 00`，是正规 TTF） | 下载成功，控制台确认 9745792 字节 |
+| `FontFamily(Font("DAViewCJK", bytes))`（`androidx.compose.ui.text.platform.Font`） | 构造不抛异常 |
+| 通过 `MaterialExpressiveTheme(typography = …)` 应用到全部文本样式 | 仍是方框 |
+| 直接给单个 `Text` 传 `fontFamily =` | 仍是方框（拉丁字形也没变，说明字体根本没生效） |
+| `FontFamily.Resolver.preload(family)` 之后再用 | 仍是方框 |
+
+代码保留在 `UiFont.*.kt` 与 `/api/font/cjk`，但 `platformNeedsCjkFont` 在 wasm 上设为
+`false`，避免每次冷启动白白下载 10 MB。桌面端与 Android 端走平台字体管理器，不受影响。
+
 Material 3 Expressive 用到的 `MaterialExpressiveTheme`、`MotionScheme.expressive()`、
 `MaterialShapes`、`ButtonGroup`、`LinearWavyProgressIndicator`、`ContainedLoadingIndicator`、
 `ToggleButton`、`HorizontalFloatingToolbar` 都来自

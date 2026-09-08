@@ -49,8 +49,23 @@ class StreamService(
 
     fun absoluteUrl(path: String): String = dav().absoluteUrl(path)
 
-    fun openRange(path: String, start: Long, end: Long?): WebDavClient.RangeStream =
-        dav().openRange(path, start, end)
+    /**
+     * Opens a byte range, reusing the cached CDN link so a seek costs one
+     * request instead of two (redirect + fetch).
+     */
+    fun openRange(path: String, start: Long, end: Long?): WebDavClient.RangeStream {
+        val direct = directUrl(path)
+        return if (direct != null) {
+            runCatching { dav().openRangeAt(direct, start, end, useAuth = false) }
+                .getOrElse {
+                    // The signed link can expire mid-playback; drop it and retry.
+                    invalidate(path)
+                    dav().openRange(path, start, end)
+                }
+        } else {
+            dav().openRange(path, start, end)
+        }
+    }
 
     fun fileSize(path: String): Long? = dav().size(path)
 
