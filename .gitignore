@@ -27,3 +27,6 @@ Thumbs.db
 # JVM crash dumps
 hs_err_pid*.log
 replay_pid*.log
+
+# Dev-server launch config: holds machine-specific absolute paths
+.claude/launch.json
