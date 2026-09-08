@@ -358,7 +358,7 @@ class MediaFacade(private val context: ServerContext) {
                 .filter { it.isExternal && it.externalPath != null }
                 .associate { stream ->
                     val subtitleDirect = io { context.streams.directUrl(stream.externalPath!!) }
-                    stream.index to (subtitleDirect ?: links.subtitle(item.id, stream.index))
+                    stream.index to (subtitleDirect ?: links.subtitle(item.id, stream.index, session.id))
                 },
             container = mediaPath.substringAfterLast('.'),
             runtimeMs = item.runtimeMs

@@ -25,18 +25,11 @@ class LocalAssetLinks(private val context: ServerContext) : AssetLinks {
     override fun stream(itemId: String, fileName: String, sessionId: String, proxy: Boolean): String =
         context.pipe.urlFor(sessionId, itemId, fileName, redirect = !proxy)
 
-    override fun subtitle(itemId: String, index: Int): String =
-        context.pipe.subtitleUrlFor(SUBTITLE_SESSION, itemId, index)
+    override fun subtitle(itemId: String, index: Int, sessionId: String): String =
+        context.pipe.subtitleUrlFor(sessionId, itemId, index)
 
     companion object {
         const val IMAGE_SCHEME = "daview"
-
-        /**
-         * Subtitles are asked for outside any one playback session — the detail
-         * page lists them before anything starts — so they hang off a session
-         * of their own rather than keeping a player's session alive.
-         */
-        const val SUBTITLE_SESSION = "subtitles"
 
         /** Splits `daview://image/<itemId>/<type>` back into its two parts. */
         fun parseImage(uri: String): Pair<String, String>? {

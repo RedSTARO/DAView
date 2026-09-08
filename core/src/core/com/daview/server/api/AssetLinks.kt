@@ -32,5 +32,10 @@ interface AssetLinks {
      */
     fun stream(itemId: String, fileName: String, sessionId: String, proxy: Boolean): String
 
-    fun subtitle(itemId: String, index: Int): String
+    /**
+     * [sessionId] is the playback session this belongs to. It is what tells a
+     * local pipe when the address stops being needed; an HTTP front end has no
+     * use for it.
+     */
+    fun subtitle(itemId: String, index: Int, sessionId: String): String
 }

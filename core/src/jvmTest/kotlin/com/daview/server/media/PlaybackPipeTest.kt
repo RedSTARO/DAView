@@ -97,6 +97,19 @@ class PlaybackPipeTest {
         assertTrue(failed, "expected the port to be closed")
     }
 
+    /**
+     * A subtitle address belongs to the session that asked for it. Hanging it
+     * off a session id of its own left the pipe listening for the life of the
+     * process after the first subtitle anyone loaded.
+     */
+    @Test
+    fun `a subtitle address is released with its session`() {
+        pipe.urlFor("session-1", "item-1", "a.mkv", redirect = false)
+        val subtitle = pipe.subtitleUrlFor("session-1", "item-1", 1000)
+        pipe.release("session-1")
+        assertTrue(runCatching { status(subtitle) }.isFailure, "expected the port to be closed")
+    }
+
     @Test
     fun `it stays up while another session is still playing`() {
         val first = pipe.urlFor("session-1", "item-1", "a.mkv", redirect = false)
