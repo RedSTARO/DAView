@@ -69,6 +69,10 @@ class Scanner(
         progress.report("saving", total, total, "写入数据库")
         repository.upsertScannedItems(records)
 
+        // Parentage was just rebuilt from the folder tree, so any merge the user
+        // made has to be laid back on top of it.
+        repository.reapplyMerges()
+
         val seen = records.map { it.dto.id }.toSet()
         val stale = repository.idsInLibrary(library.id) - seen
         if (stale.isNotEmpty()) repository.deleteItems(stale)

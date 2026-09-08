@@ -8,6 +8,7 @@ import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.LibraryKind
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.MetadataProvider
+import com.daview.shared.model.ScrapeStatus
 import com.daview.server.library.NameParser
 import org.slf4j.LoggerFactory
 import kotlin.math.max
@@ -83,9 +84,13 @@ class MetadataService(
         val effectiveOrder =
             if (locked == null) order else listOf(locked) + order.filter { it != locked }
 
+        var status = if (locked != null) ScrapeStatus.MANUAL else ScrapeStatus.MATCHED
+        var attempted = false
+
         for (provider in effectiveOrder) {
             val scraper = scrapers[provider] ?: continue
             if (!scraper.isConfigured(config)) continue
+            attempted = true
 
             val pinnedId = providerIds[provider.name.lowercase()]
             val candidateId = when {
@@ -102,7 +107,35 @@ class MetadataService(
             if (merged.overview != null && merged.posterUrl != null && merged.name.isNotBlank()) break
         }
 
-        val metadata = merged ?: return false
+        // Nothing matched confidently. Rather than leave the item bare -- no
+        // title, no artwork, indistinguishable from one that was never scraped
+        // -- take the best any source will offer and say so, so the detail page
+        // can flag it and the manual identify dialog can correct it.
+        if (merged == null && locked == null) {
+            for (provider in effectiveOrder) {
+                val scraper = scrapers[provider] ?: continue
+                if (!scraper.isConfigured(config)) continue
+                val candidate = fallbackMatch(item, scraper.search(item.name, item.year, kind, config))
+                    ?: continue
+                val details = scraper.details(candidate.providerId, kind, config) ?: continue
+                providerIds[provider.name.lowercase()] = candidate.providerId
+                details.extraProviderIds.forEach { (key, value) -> providerIds.putIfAbsent(key, value) }
+                merged = details
+                status = ScrapeStatus.FALLBACK
+                log.info("{} 没有可靠匹配，退而使用 {} 的《{}》", item.name, provider.name, details.name)
+                break
+            }
+        }
+
+        if (merged == null) {
+            // Record that every source was asked and came back empty, so the UI
+            // can distinguish this from an item nobody has scraped yet. The
+            // scraped_at stamp stays null on purpose: a new API key or a
+            // corrected folder name should get another chance on the next scan.
+            if (attempted) markStatus(item, ScrapeStatus.UNMATCHED)
+            return false
+        }
+        val metadata = merged
         val now = System.currentTimeMillis()
         val existing = repository.itemRecord(item.id) ?: return false
 
@@ -124,7 +157,8 @@ class MetadataService(
                     posterUrl = metadata.posterUrl ?: item.posterUrl,
                     backdropUrl = metadata.backdropUrl ?: item.backdropUrl,
                     logoUrl = metadata.logoUrl ?: item.logoUrl,
-                    providerIds = providerIds
+                    providerIds = providerIds,
+                    scrapeStatus = status
                 ),
                 scrapedAt = now
             )
@@ -132,6 +166,27 @@ class MetadataService(
 
         if (item.kind == ItemKind.SERIES) applyEpisodeMetadata(item, providerIds, order, config)
         return true
+    }
+
+    /**
+     * Least-bad candidate when [bestMatch] rejected everything: the provider's
+     * own top hit, as long as the year does not contradict the folder. Wrong
+     * often enough to be labelled, useful more often than an empty entry.
+     */
+    private fun fallbackMatch(item: MediaItemDto, candidates: List<ScrapeCandidate>): ScrapeCandidate? {
+        val targetYear = item.year
+        return candidates
+            .filter { candidate ->
+                targetYear == null || candidate.year == null ||
+                    kotlin.math.abs(targetYear - candidate.year) <= 1
+            }
+            .minByOrNull { it.rank }
+    }
+
+    private fun markStatus(item: MediaItemDto, status: ScrapeStatus) {
+        val record = repository.itemRecord(item.id) ?: return
+        if (record.dto.scrapeStatus == status) return
+        repository.upsertItem(record.copy(dto = record.dto.copy(scrapeStatus = status)))
     }
 
     // ------------------------------------------------------------ manual identify
@@ -175,7 +230,8 @@ class MetadataService(
 
         val base = stripScrapedFields(item).copy(
             providerIds = mapOf(provider.name.lowercase() to id),
-            lockedProvider = provider
+            lockedProvider = provider,
+            scrapeStatus = ScrapeStatus.MANUAL
         )
         if (item.kind == ItemKind.SERIES) resetEpisodes(item.id)
         val applied = enrichItem(base, listOf(provider) + order.filter { it != provider }, config)

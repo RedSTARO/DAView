@@ -7,6 +7,7 @@ import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.MediaStreamDto
 import com.daview.shared.model.MetadataProvider
 import com.daview.shared.model.PersonDto
+import com.daview.shared.model.ScrapeStatus
 import com.daview.shared.model.UserDataDto
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -145,7 +146,8 @@ class Repository(private val db: Database) {
 
     fun children(parentId: String): List<MediaItemDto> = db.read { connection ->
         connection.statement(
-            "$SELECT_ITEM WHERE i.parent_id = ? ORDER BY COALESCE(i.index_number, 99999), i.sort_name"
+            "$SELECT_ITEM WHERE i.parent_id = ? AND i.merged_into IS NULL " +
+                "ORDER BY COALESCE(i.index_number, 99999), i.sort_name"
         ).apply { setString(1, parentId) }.useQuery { it.map(::readItem) }
     }
 
@@ -160,6 +162,74 @@ class Repository(private val db: Database) {
         connection.statement("SELECT id FROM items WHERE library_id = ?")
             .apply { setString(1, libraryId) }
             .useQuery { rs -> rs.map { it.requireString("id") }.toSet() }
+    }
+
+    // ------------------------------------------------------------ merging
+
+    /**
+     * Folds [sourceIds] into [targetId]: their seasons and episodes are
+     * re-parented, and the duplicate rows are flagged rather than deleted so
+     * the merge can be undone and re-applied after a rescan.
+     */
+    fun mergeItems(targetId: String, sourceIds: List<String>) = db.transaction { connection ->
+        sourceIds.filter { it != targetId }.forEach { sourceId ->
+            connection.statement("UPDATE items SET series_id = ? WHERE series_id = ?")
+                .use { it.setString(1, targetId); it.setString(2, sourceId); it.executeUpdate() }
+            connection.statement("UPDATE items SET parent_id = ? WHERE parent_id = ?")
+                .use { it.setString(1, targetId); it.setString(2, sourceId); it.executeUpdate() }
+            connection.statement("UPDATE items SET merged_into = ? WHERE id = ?")
+                .use { it.setString(1, targetId); it.setString(2, sourceId); it.executeUpdate() }
+        }
+    }
+
+    /**
+     * Undoes one merge. The children go back by path: everything under the
+     * source's own directory belonged to it, which is the same rule the scanner
+     * used to build the tree in the first place.
+     */
+    fun unmergeItem(sourceId: String) {
+        val source = item(sourceId) ?: return
+        val prefix = source.path?.trimEnd('/')?.plus("/") ?: return
+        // substr(...) = ? rather than LIKE: SQLite's LIKE ignores ASCII case, and
+        // two folders differing only in case is exactly the kind of duplicate
+        // people merge. LIKE would drag the target's own children back too.
+        db.transaction { connection ->
+            connection.statement(
+                "UPDATE items SET series_id = ? WHERE series_id = ? AND substr(path, 1, length(?)) = ?"
+            ).use {
+                it.setString(1, sourceId); it.setString(2, source.mergedInto)
+                it.setString(3, prefix); it.setString(4, prefix); it.executeUpdate()
+            }
+            connection.statement(
+                "UPDATE items SET parent_id = ? WHERE parent_id = ? AND substr(path, 1, length(?)) = ?"
+            ).use {
+                it.setString(1, sourceId); it.setString(2, source.mergedInto)
+                it.setString(3, prefix); it.setString(4, prefix); it.executeUpdate()
+            }
+            connection.statement("UPDATE items SET merged_into = NULL WHERE id = ?")
+                .use { it.setString(1, sourceId); it.executeUpdate() }
+        }
+    }
+
+    /** The duplicates folded into [targetId]. */
+    fun mergedSources(targetId: String): List<MediaItemDto> = db.read { connection ->
+        connection.statement("$SELECT_ITEM WHERE i.merged_into = ? ORDER BY i.sort_name")
+            .apply { setString(1, targetId) }
+            .useQuery { it.map(::readItem) }
+    }
+
+    /**
+     * Re-applies every recorded merge. The scanner rebuilds parentage from the
+     * folder tree on each run, which would otherwise split merged series apart
+     * again the moment a library is rescanned.
+     */
+    fun reapplyMerges() {
+        val pairs = db.read { connection ->
+            connection.statement("SELECT id, merged_into FROM items WHERE merged_into IS NOT NULL")
+                .useQuery { rs -> rs.map { it.requireString("id") to it.requireString("merged_into") } }
+        }
+        pairs.groupBy({ it.second }, { it.first })
+            .forEach { (target, sources) -> mergeItems(target, sources) }
     }
 
     fun deleteItems(ids: Collection<String>) {
@@ -184,7 +254,8 @@ class Repository(private val db: Database) {
     )
 
     fun query(query: Query): Pair<List<MediaItemDto>, Int> = db.read { connection ->
-        val where = StringBuilder("WHERE 1=1")
+        // A merged-away duplicate is not a separate entry any more.
+        val where = StringBuilder("WHERE i.merged_into IS NULL")
         val binds = ArrayList<Any?>()
         query.libraryId?.let { where.append(" AND i.library_id = ?"); binds += it }
         query.parentId?.let { where.append(" AND i.parent_id = ?"); binds += it }
@@ -258,7 +329,8 @@ class Repository(private val db: Database) {
     fun latest(libraryId: String?, limit: Int): List<MediaItemDto> = db.read { connection ->
         val filter = if (libraryId == null) "" else "AND i.library_id = ?"
         connection.statement(
-            "$SELECT_ITEM WHERE i.kind IN ('MOVIE','SERIES') $filter ORDER BY i.date_created DESC LIMIT ?"
+            "$SELECT_ITEM WHERE i.kind IN ('MOVIE','SERIES') AND i.merged_into IS NULL $filter " +
+                "ORDER BY i.date_created DESC LIMIT ?"
         ).apply {
             if (libraryId == null) setInt(1, limit) else { setString(1, libraryId); setInt(2, limit) }
         }.useQuery { it.map(::readItem) }
@@ -294,7 +366,8 @@ class Repository(private val db: Database) {
     fun itemsNeedingScrape(libraryId: String, force: Boolean): List<MediaItemDto> = db.read { connection ->
         val condition = if (force) "" else "AND i.scraped_at IS NULL"
         connection.statement(
-            "$SELECT_ITEM WHERE i.library_id = ? AND i.kind IN ('MOVIE','SERIES') $condition ORDER BY i.sort_name"
+            "$SELECT_ITEM WHERE i.library_id = ? AND i.kind IN ('MOVIE','SERIES') AND i.merged_into IS NULL " +
+                "$condition ORDER BY i.sort_name"
         ).apply { setString(1, libraryId) }.useQuery { it.map(::readItem) }
     }
 
@@ -557,6 +630,8 @@ class Repository(private val db: Database) {
         statement.setString(++i, dto.logoUrl)
         statement.setString(++i, json.encodeToString(stringMapSerializer, dto.providerIds))
         statement.setString(++i, dto.lockedProvider?.name)
+        statement.setString(++i, dto.scrapeStatus.name)
+        statement.setString(++i, dto.mergedInto)
         statement.setString(++i, dto.path)
         dto.sizeBytes?.let { statement.setLong(++i, it) } ?: statement.setNull(++i)
         statement.setString(++i, json.encodeToString(streamListSerializer, dto.mediaStreams))
@@ -600,6 +675,11 @@ class Repository(private val db: Database) {
             .getOrDefault(emptyMap()),
         lockedProvider = rs.getString("locked_provider")
             ?.let { name -> MetadataProvider.entries.firstOrNull { it.name == name } },
+        scrapeStatus = rs.getString("scrape_status")
+            ?.let { name -> ScrapeStatus.entries.firstOrNull { it.name == name } }
+            ?: ScrapeStatus.NONE,
+        scrapedAt = rs.getLongOrNull("scraped_at"),
+        mergedInto = rs.getString("merged_into"),
         childCount = rs.getIntOrNull("child_count"),
         episodeCount = rs.getIntOrNull("episode_count"),
         playedEpisodeCount = rs.getIntOrNull("played_episode_count"),
@@ -662,12 +742,12 @@ class Repository(private val db: Database) {
                 id, library_id, kind, parent_id, series_id, name, original_name, sort_name, overview,
                 year, premiere_date, runtime_ms, community_rating, official_rating, genres, studios, people,
                 index_number, parent_index_number, poster_url, backdrop_url, logo_url, provider_ids,
-                locked_provider, path, size_bytes, media_streams, date_created, date_modified, etag,
-                scraped_at, probed_at
+                locked_provider, scrape_status, merged_into, path, size_bytes, media_streams,
+                date_created, date_modified, etag, scraped_at, probed_at
         """
 
         const val ITEM_PLACEHOLDERS =
-            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
 
         const val UPSERT_ITEM = """
             INSERT INTO items($ITEM_COLUMNS) VALUES ($ITEM_PLACEHOLDERS)
@@ -681,6 +761,7 @@ class Repository(private val db: Database) {
                 index_number = excluded.index_number, parent_index_number = excluded.parent_index_number,
                 poster_url = excluded.poster_url, backdrop_url = excluded.backdrop_url, logo_url = excluded.logo_url,
                 provider_ids = excluded.provider_ids, locked_provider = excluded.locked_provider,
+                scrape_status = excluded.scrape_status, merged_into = excluded.merged_into,
                 path = excluded.path, size_bytes = excluded.size_bytes,
                 media_streams = excluded.media_streams, date_modified = excluded.date_modified,
                 etag = excluded.etag, scraped_at = excluded.scraped_at, probed_at = excluded.probed_at
@@ -718,6 +799,8 @@ class Repository(private val db: Database) {
                 logo_url = CASE WHEN items.scraped_at IS NULL THEN excluded.logo_url ELSE items.logo_url END,
                 provider_ids = CASE WHEN items.scraped_at IS NULL
                     THEN excluded.provider_ids ELSE items.provider_ids END,
+                scrape_status = CASE WHEN items.scraped_at IS NULL
+                    THEN excluded.scrape_status ELSE items.scrape_status END,
                 index_number = excluded.index_number, parent_index_number = excluded.parent_index_number,
                 path = excluded.path, size_bytes = excluded.size_bytes,
                 media_streams = excluded.media_streams, date_modified = excluded.date_modified,

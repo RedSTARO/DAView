@@ -125,6 +125,18 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
             listOf(
                 // Holds the provider the user pinned by hand for this item.
                 "ALTER TABLE items ADD COLUMN locked_provider TEXT"
+            ),
+            listOf(
+                // How the metadata was arrived at: matched, fell back to a
+                // secondary source, was pinned by hand, or found nothing.
+                "ALTER TABLE items ADD COLUMN scrape_status TEXT"
+            ),
+            listOf(
+                // Set on a duplicate series that has been folded into another
+                // one. The row stays so the merge can be undone without a
+                // rescan, and so the scanner can re-apply it after one.
+                "ALTER TABLE items ADD COLUMN merged_into TEXT",
+                "CREATE INDEX IF NOT EXISTS idx_items_merged ON items(merged_into)"
             )
         )
     }

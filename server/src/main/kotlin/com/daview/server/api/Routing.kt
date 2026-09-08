@@ -327,6 +327,55 @@ fun Route.apiRoutes(context: ServerContext) {
         }
     }
 
+    // ------------------------------------------------------------ merging duplicates
+
+    /**
+     * The same show can land in the library twice — two folders, or one copy in
+     * the anime library and another in the TV one. Merging folds the duplicates'
+     * seasons and episodes under one item and hides the spare entries.
+     */
+    get("/api/items/{id}/merged") {
+        call.requireAuth(context) ?: return@get
+        call.respond(context.repository.mergedSources(call.parameters["id"].orEmpty()).map { it.withAssetUrls(call) })
+    }
+
+    post("/api/items/{id}/merge") {
+        call.requireAuth(context) ?: return@post
+        val target = context.repository.item(call.parameters["id"].orEmpty())
+        if (target == null) {
+            call.respond(HttpStatusCode.NotFound, ApiError("条目不存在"))
+            return@post
+        }
+        val request = call.receive<MergeRequest>()
+        val sources = request.sourceIds.filter { it != target.id }.mapNotNull { context.repository.item(it) }
+        if (sources.isEmpty()) {
+            call.respond(HttpStatusCode.BadRequest, ApiError("没有可合并的条目"))
+            return@post
+        }
+        val wrongKind = sources.firstOrNull { it.kind != target.kind }
+        if (wrongKind != null) {
+            call.respond(
+                HttpStatusCode.BadRequest,
+                ApiError("只能合并同类条目", "${wrongKind.name} 是 ${wrongKind.kind}，目标是 ${target.kind}")
+            )
+            return@post
+        }
+        context.repository.mergeItems(target.id, sources.map { it.id })
+        call.respond(context.repository.item(target.id)!!.withAssetUrls(call))
+    }
+
+    post("/api/items/{id}/unmerge") {
+        call.requireAuth(context) ?: return@post
+        val id = call.parameters["id"].orEmpty()
+        val source = context.repository.item(id)
+        if (source?.mergedInto == null) {
+            call.respond(HttpStatusCode.BadRequest, ApiError("这个条目没有被合并"))
+            return@post
+        }
+        context.repository.unmergeItem(id)
+        call.respond(context.repository.item(id)!!.withAssetUrls(call))
+    }
+
     // ------------------------------------------------------------ manual identify
 
     /**

@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CallMerge
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
@@ -69,6 +70,7 @@ import com.daview.app.data.Screen
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.PlayedState
+import com.daview.shared.model.ScrapeStatus
 import com.daview.shared.model.StreamType
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -157,6 +159,25 @@ fun DetailScreen(state: AppState, playback: PlaybackController) {
                 MediaRow("相关影片", relatedMovies) { state.navigate(Screen.Detail(it.id)) }
             }
         }
+    }
+}
+
+/**
+ * Where the metadata came from, and how much it should be trusted. A fallback
+ * match is the one worth acting on: it means no source matched confidently and
+ * the least-bad candidate was taken.
+ */
+private fun scrapeLabel(item: MediaItemDto): String {
+    val ids = item.providerIds.entries
+        .filter { it.key != "imdb" }
+        .joinToString(" · ") { "${it.key} ${it.value}" }
+        .ifBlank { "无来源 id" }
+    return when (item.scrapeStatus) {
+        ScrapeStatus.MANUAL -> "手动指定 · $ids"
+        ScrapeStatus.MATCHED -> "自动匹配 · $ids"
+        ScrapeStatus.FALLBACK -> "次级来源顶替（未可靠匹配，建议核对） · $ids"
+        ScrapeStatus.UNMATCHED -> "所有来源都没有匹配"
+        ScrapeStatus.NONE -> if (item.scrapedAt != null) "已刮削 · $ids" else "尚未刮削"
     }
 }
 
@@ -287,9 +308,13 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
         ?: state.detailEpisodes.firstOrNull()
     var menuOpen by remember { mutableStateOf(false) }
     var identifyOpen by remember { mutableStateOf(false) }
+    var mergeOpen by remember { mutableStateOf(false) }
 
     if (identifyOpen) {
         IdentifyDialog(state, item, onDismiss = { identifyOpen = false })
+    }
+    if (mergeOpen) {
+        MergeDialog(state, item, onDismiss = { mergeOpen = false })
     }
 
     Column {
@@ -365,6 +390,17 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
                     )
                 }
             }
+            // Duplicates only happen at the top level: a whole series or film
+            // scanned twice, not an individual episode.
+            if (item.kind == ItemKind.MOVIE || item.kind == ItemKind.SERIES) {
+                IconButton(onClick = { mergeOpen = true }) {
+                    Icon(
+                        Icons.Filled.CallMerge,
+                        contentDescription = "合并重复条目",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             // Only whole films and series carry scraped metadata, so only they
             // can be re-pointed at a different entry.
             if (item.kind == ItemKind.MOVIE || item.kind == ItemKind.SERIES) {
@@ -410,6 +446,7 @@ private fun FileInfoSection(item: MediaItemDto) {
                 ).joinToString(" · ")
             )
         }
+        add("刮削" to scrapeLabel(item))
         if (audio.isNotEmpty()) add("音轨" to audio.joinToString("\n") { it.displayTitle })
         if (subtitles.isNotEmpty()) add("字幕" to subtitles.joinToString("\n") { it.displayTitle })
         subtitles.mapNotNull { it.externalPath }.takeIf { it.isNotEmpty() }?.let {

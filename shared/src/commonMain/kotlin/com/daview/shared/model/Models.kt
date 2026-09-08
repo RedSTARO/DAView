@@ -146,6 +146,12 @@ data class MediaItemDto(
      * never searches again, so a rescan cannot undo the correction.
      */
     val lockedProvider: MetadataProvider? = null,
+    /** How the metadata was obtained. Written by the server; ignored on input. */
+    val scrapeStatus: ScrapeStatus = ScrapeStatus.NONE,
+    /** Set on a duplicate that has been folded into another item, which hides it. */
+    val mergedInto: String? = null,
+    /** When it was last scraped, or null when it never was. */
+    val scrapedAt: Long? = null,
     val childCount: Int? = null,
     /** Episodes under this item: within a season, across a whole series. */
     val episodeCount: Int? = null,
@@ -186,6 +192,28 @@ data class MediaItemDto(
 
 enum class PlayedState { NONE, PARTIAL, PLAYED }
 
+/** How an item's metadata was arrived at, so the detail page can say so. */
+@Serializable
+enum class ScrapeStatus {
+    /** Never attempted — a fresh item, or no provider was configured. */
+    @SerialName("none") NONE,
+
+    /** A provider's entry matched on title and year. */
+    @SerialName("matched") MATCHED,
+
+    /**
+     * No provider matched confidently, so the best candidate a later source
+     * offered was taken rather than leaving the item bare. Worth checking.
+     */
+    @SerialName("fallback") FALLBACK,
+
+    /** The user pinned the entry by hand. */
+    @SerialName("manual") MANUAL,
+
+    /** Every configured provider was asked and none had anything usable. */
+    @SerialName("unmatched") UNMATCHED
+}
+
 @Serializable
 data class ItemPage(
     val items: List<MediaItemDto>,
@@ -220,6 +248,10 @@ data class IdentifyContextDto(
     val providerIds: Map<String, String> = emptyMap(),
     val lockedProvider: MetadataProvider? = null
 )
+
+/** Folds [sourceIds] into the item the request is addressed to. */
+@Serializable
+data class MergeRequest(val sourceIds: List<String>)
 
 @Serializable
 data class IdentifyRequest(

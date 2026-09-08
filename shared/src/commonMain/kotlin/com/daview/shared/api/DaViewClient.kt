@@ -128,6 +128,18 @@ class DaViewClient(
 
     suspend fun children(id: String): List<MediaItemDto> = http.get(url("/api/items/$id/children")).body()
 
+    /** Duplicates that have been folded into this item. */
+    suspend fun mergedSources(itemId: String): List<MediaItemDto> =
+        http.get(url("/api/items/$itemId/merged")).body()
+
+    /** Folds duplicates into this item; they stop appearing as separate entries. */
+    suspend fun merge(itemId: String, sourceIds: List<String>): MediaItemDto =
+        http.post(url("/api/items/$itemId/merge")) { setBody(MergeRequest(sourceIds)) }.body()
+
+    /** Splits one duplicate back out of whatever it was merged into. */
+    suspend fun unmerge(sourceId: String): MediaItemDto =
+        http.post(url("/api/items/$sourceId/unmerge")).body()
+
     /** What the manual identify dialog needs: parsed folder title and usable sources. */
     suspend fun identifyContext(itemId: String): IdentifyContextDto =
         http.get(url("/api/items/$itemId/identify")).body()
