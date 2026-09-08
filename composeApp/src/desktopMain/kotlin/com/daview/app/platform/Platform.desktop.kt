@@ -168,6 +168,9 @@ actual fun copyToClipboard(text: String) {
     }
 }
 
+/** Nothing to do: a desktop process is not reclaimed for being in the background. */
+actual fun onScanStarted() = Unit
+
 actual fun createSettingsStore(): SettingsStore = object : SettingsStore {
     private val node = Preferences.userRoot().node("com/daview/app")
     override fun getString(key: String): String? = node.get(key, null)

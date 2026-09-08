@@ -84,6 +84,12 @@ actual fun copyToClipboard(text: String) {
     manager?.setPrimaryClip(ClipData.newPlainText("DAView", text))
 }
 
+actual fun onScanStarted() {
+    if (AndroidContextHolder.isInitialised) {
+        com.daview.app.ScanForegroundService.start(AndroidContextHolder.context)
+    }
+}
+
 actual fun createSettingsStore(): SettingsStore = object : SettingsStore {
     private val preferences = AndroidContextHolder.context
         .getSharedPreferences("daview", Context.MODE_PRIVATE)

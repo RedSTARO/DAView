@@ -2,12 +2,15 @@ package com.daview.app.platform
 
 import com.daview.server.ServerContext
 import com.daview.server.config.ConfigStore
-import java.nio.file.Path
 
 /**
  * The library, running inside the app. See the Android counterpart: same idea,
- * with JDBC underneath and the data directory the standalone build would use,
- * so a desktop install and a headless one can share a folder.
+ * with JDBC underneath and the data directory the app has always used.
+ *
+ * One per process, for the same reason — a window can be recreated.
  */
-fun createCoreContext(dataDir: Path? = null): ServerContext =
-    ServerContext(dataDir ?: ConfigStore.defaultDataDir())
+private var instance: ServerContext? = null
+
+@Synchronized
+fun createCoreContext(): ServerContext =
+    instance ?: ServerContext(ConfigStore.defaultDataDir()).also { instance = it }

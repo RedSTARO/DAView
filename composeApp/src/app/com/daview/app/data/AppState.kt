@@ -8,6 +8,7 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.daview.app.platform.SettingsStore
 import com.daview.app.platform.createCoreContext
 import com.daview.app.platform.createSettingsStore
+import com.daview.app.platform.onScanStarted
 import com.daview.server.ServerContext
 import com.daview.server.api.AssetLinks
 import com.daview.server.api.MediaFacade
@@ -248,6 +249,10 @@ class AppState(private val scope: CoroutineScope) {
 
     fun startScan(libraryId: String, mode: ScanMode = ScanMode.FULL) = run {
         library.scan(libraryId, mode)
+        // A scan is minutes of round trips against the share, and on a phone the
+        // process is reclaimed the moment the user switches away unless
+        // something says otherwise.
+        onScanStarted()
         toast = when (mode) {
             ScanMode.MISSING -> "已开始刮削未刮削的条目"
             ScanMode.REFRESH -> "已开始重新刮削全部"
@@ -284,6 +289,11 @@ class AppState(private val scope: CoroutineScope) {
         refreshLibraries()
         toast = "媒体库已创建"
         onDone()
+    }
+
+    fun cancelScan(libraryId: String) = run {
+        library.cancelScan(libraryId)
+        toast = "正在停止扫描"
     }
 
     fun deleteLibrary(id: String) = run {

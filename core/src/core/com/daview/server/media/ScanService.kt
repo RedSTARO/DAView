@@ -25,10 +25,30 @@ class ScanService(
         Thread(runnable, "daview-scan").apply { isDaemon = true }
     }
     private val progress = ConcurrentHashMap<String, ScanProgressDto>()
+    private val cancelled = ConcurrentHashMap.newKeySet<String>()
 
     fun status(): List<ScanProgressDto> = progress.values.sortedBy { it.libraryName }
 
     fun isRunning(libraryId: String): Boolean = progress[libraryId]?.running == true
+
+    fun anyRunning(): Boolean = progress.values.any { it.running }
+
+    /**
+     * Asks a scan to stop at its next step.
+     *
+     * There is no safe point to interrupt a thread that is mid-request to the
+     * storage or mid-write to SQLite, so the flag is read where progress is
+     * reported — which is every folder, every scrape and every probe.
+     */
+    fun cancel(libraryId: String) {
+        if (isRunning(libraryId)) cancelled += libraryId
+    }
+
+    private class ScanCancelled : RuntimeException("已取消")
+
+    private fun checkCancelled(libraryId: String) {
+        if (libraryId in cancelled) throw ScanCancelled()
+    }
 
     fun submit(library: LibraryDto, mode: ScanMode): ScanProgressDto {
         if (isRunning(library.id)) return progress.getValue(library.id)
@@ -59,6 +79,7 @@ class ScanService(
             // in a handful of unmatched titles is the slow way round.
             val result = if (mode == ScanMode.MISSING) null else {
                 Scanner(dav, repository).scan(library) { phase, current, total, message ->
+                    checkCancelled(library.id)
                     progress[library.id] = progress.getValue(library.id).copy(
                         phase = phase, current = current, total = total, message = message, running = true
                     )
@@ -71,6 +92,7 @@ class ScanService(
                 config.scraper.copy(language = library.language),
                 force = mode == ScanMode.REFRESH
             ) { current, total, message ->
+                checkCancelled(library.id)
                 progress[library.id] = progress.getValue(library.id).copy(
                     phase = "scraping", current = current, total = total, message = message, running = true
                 )
@@ -78,6 +100,7 @@ class ScanService(
 
             if (mode != ScanMode.MISSING) {
                 streams.probeMissing(library.id, PROBE_BUDGET) { current, total, message ->
+                    checkCancelled(library.id)
                     progress[library.id] = progress.getValue(library.id).copy(
                         phase = "probing", current = current, total = total, message = message, running = true
                     )
@@ -91,12 +114,20 @@ class ScanService(
                 message = if (warnings.isEmpty()) "完成" else "完成（${warnings.size} 个警告）",
                 finishedAt = System.currentTimeMillis()
             )
+        } catch (cancel: ScanCancelled) {
+            log.info("库 {} 的扫描已取消", library.name)
+            progress[library.id] = progress.getValue(library.id).copy(
+                phase = "cancelled", running = false, message = "已取消",
+                finishedAt = System.currentTimeMillis()
+            )
         } catch (t: Throwable) {
             log.error("扫描 {} 失败", library.name, t)
             progress[library.id] = progress.getValue(library.id).copy(
                 phase = "error", running = false, error = t.message ?: t.toString(),
                 finishedAt = System.currentTimeMillis()
             )
+        } finally {
+            cancelled -= library.id
         }
     }
 

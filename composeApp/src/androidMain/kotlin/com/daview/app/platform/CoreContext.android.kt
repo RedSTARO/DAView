@@ -11,9 +11,16 @@ import java.io.File
  * way it calls anything else. The phone scans the share, scrapes, keeps its own
  * database and agrees with the other devices through the sync file — none of
  * which needs a port.
+ *
+ * One per process. The activity can be recreated while the process lives, and
+ * a second instance would mean a second SQLite handle over the same file and a
+ * second sync scheduler uploading against the first.
  */
-fun createCoreContext(): ServerContext {
+private var instance: ServerContext? = null
+
+@Synchronized
+fun createCoreContext(): ServerContext = instance ?: run {
     val context = AndroidContextHolder.context
     val dataDir = File(context.filesDir, "daview").apply { mkdirs() }
-    return ServerContext(dataDir.toPath(), AndroidSqlDatabase(context, dataDir))
+    ServerContext(dataDir.toPath(), AndroidSqlDatabase(context, dataDir)).also { instance = it }
 }

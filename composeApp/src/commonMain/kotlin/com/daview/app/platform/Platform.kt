@@ -75,3 +75,10 @@ interface SettingsStore {
 
 expect fun createSettingsStore(): SettingsStore
 
+/**
+ * Tells the platform a scan has started, where being backgrounded would
+ * otherwise kill it. A no-op on desktop, where a window losing focus does not
+ * end the process.
+ */
+expect fun onScanStarted()
+

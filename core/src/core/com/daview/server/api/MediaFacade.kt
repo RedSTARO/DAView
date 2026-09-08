@@ -126,6 +126,8 @@ class MediaFacade(private val context: ServerContext) {
 
     fun scanStatus(): List<ScanProgressDto> = context.scans.status()
 
+    fun cancelScan(libraryId: String) = context.scans.cancel(libraryId)
+
     // ------------------------------------------------------------ items
 
     fun items(

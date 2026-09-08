@@ -169,12 +169,18 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
             }
             if (status != null && status.running) {
                 Spacer(Modifier.height(10.dp))
-                Text(
-                    "${status.phase} ${status.current}/${status.total} · ${status.message}",
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${status.phase} ${status.current}/${status.total} · ${status.message}",
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    // A scan of a large share is minutes of round trips; starting
+                    // one by accident should not mean waiting it out.
+                    TextButton(onClick = { state.cancelScan(library.id) }) { Text("取消") }
+                }
                 Spacer(Modifier.height(6.dp))
                 LinearWavyProgressIndicator(
                     progress = { if (status.total > 0) status.current.toFloat() / status.total else 0f },
