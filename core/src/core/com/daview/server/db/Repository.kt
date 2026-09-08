@@ -97,6 +97,9 @@ class Repository(private val db: Database) {
             .use { it.setString(1, id); it.executeUpdate() }
     }
 
+    /** See [Database.refreshStatistics]; called once a scan has settled. */
+    fun refreshStatistics() = db.refreshStatistics()
+
     fun markScanned(libraryId: String, at: Long) = db.transaction { connection ->
         connection.statement("UPDATE libraries SET last_scan_at = ? WHERE id = ?").use {
             it.setLong(1, at); it.setString(2, libraryId); it.executeUpdate()

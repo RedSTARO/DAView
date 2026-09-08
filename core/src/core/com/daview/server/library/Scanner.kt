@@ -78,6 +78,11 @@ class Scanner(
         if (stale.isNotEmpty()) repository.deleteItems(stale)
         repository.markScanned(library.id, now)
 
+        // The catalogue just changed size by orders of magnitude. Leaving the
+        // planner on the statistics it had before the scan is what makes a
+        // freshly filled library feel slower than one that has been reopened.
+        repository.refreshStatistics()
+
         return Result(records.size, stale.size, warnings)
     }
 
