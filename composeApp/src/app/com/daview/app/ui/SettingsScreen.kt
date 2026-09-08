@@ -54,9 +54,12 @@ import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
 import com.daview.app.data.Screen
 import com.daview.app.platform.PlatformInfo
-import com.daview.app.platform.copyToClipboard
-import com.daview.app.platform.openUrl
 import com.daview.app.platform.pickTextFile
+import com.daview.app.platform.saveTextFile
+import com.daview.server.api.BackupOptions
+import com.daview.server.api.backupFileName
+import com.daview.shared.api.DaViewJson
+import com.daview.shared.model.BackupFileDto
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.LibraryKind
 import com.daview.shared.model.ScanMode
@@ -286,24 +289,22 @@ private fun ClientSection(state: AppState) {
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "服务器: ${state.serverUrl}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
             "平台: ${PlatformInfo.name}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         state.serverInfo?.let {
             Text(
-                "服务端版本: ${it.version} · 共 ${it.itemCount} 个条目",
+                "版本 ${it.version} · 共 ${it.itemCount} 个条目",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Spacer(Modifier.height(12.dp))
-        FilledTonalButton(onClick = { state.disconnect() }) { Text("断开连接") }
+        Text(
+            "媒体库在本机，没有需要连接的服务器",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -326,22 +327,20 @@ private fun SyncSection(state: AppState) {
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(state.client) {
-        val api = state.client ?: return@LaunchedEffect
-        runCatching { api.syncSettings() }.onSuccess {
+    LaunchedEffect(Unit) {
+        runCatching { state.library.syncSettings() }.onSuccess {
             settings = it
             path = it.remotePath
         }
     }
 
-    fun apply(block: suspend (com.daview.shared.api.DaViewClient) -> Unit) {
-        val api = state.client ?: return
+    fun apply(block: suspend () -> Unit) {
         scope.launch {
             busy = true
             message = null
             error = null
             try {
-                block(api)
+                block()
             } catch (e: Throwable) {
                 error = e.message ?: "请求失败"
             } finally {
@@ -373,8 +372,8 @@ private fun SyncSection(state: AppState) {
                 checked = current?.enabled == true,
                 enabled = current != null && !busy,
                 onCheckedChange = { want ->
-                    apply { api ->
-                        val updated = api.updateSyncSettings(
+                    apply {
+                        val updated = state.library.updateSyncSettings(
                             (current ?: SyncSettingsDto()).copy(enabled = want, remotePath = path)
                         )
                         settings = updated
@@ -403,27 +402,27 @@ private fun SyncSection(state: AppState) {
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
-                enabled = state.client != null && !busy,
+                enabled = !busy,
                 onClick = {
-                    apply { api ->
-                        settings = api.updateSyncSettings(
+                    apply {
+                        settings = state.library.updateSyncSettings(
                             (settings ?: SyncSettingsDto()).copy(
                                 enabled = settings?.enabled == true,
                                 remotePath = path
                             )
                         )
-                        show(api.syncUpload())
-                        settings = api.syncSettings()
+                        show(state.library.syncUpload())
+                        settings = state.library.syncSettings()
                     }
                 }
             ) { Text("立即上传") }
 
             FilledTonalButton(
-                enabled = state.client != null && !busy,
+                enabled = !busy,
                 onClick = {
-                    apply { api ->
-                        show(api.syncPull())
-                        settings = api.syncSettings()
+                    apply {
+                        show(state.library.syncPull())
+                        settings = state.library.syncSettings()
                         state.refreshLibraries()
                         state.refreshHome()
                     }
@@ -518,30 +517,29 @@ private fun BackupSection(state: AppState) {
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
-                enabled = state.client != null && !busy,
+                enabled = !busy,
                 onClick = {
-                    val api = state.client ?: return@Button
-                    val url = api.backupUrl(items = includeItems, secrets = includeSecrets)
-                    openUrl(url)
-                    error = null
-                    message = "已打开下载地址"
+                    scope.launch {
+                        error = null
+                        message = null
+                        // Streamed into the file the user picked: a full
+                        // catalogue is a few megabytes, and it is assembled a
+                        // page at a time rather than held in memory first.
+                        val chunks = state.library.backupChunks(
+                            BackupOptions(items = includeItems, secrets = includeSecrets)
+                        )
+                        val saved = runCatching {
+                            saveTextFile(backupFileName()) { out -> chunks.forEach(out::append) }
+                        }.getOrNull()
+                        message = saved?.let { "已导出到 $it" }
+                        if (saved == null) error = "没有写入文件"
+                    }
                 }
             ) { Text("导出") }
 
             FilledTonalButton(
-                enabled = state.client != null && !busy,
+                enabled = !busy,
                 onClick = {
-                    val api = state.client ?: return@FilledTonalButton
-                    copyToClipboard(api.backupUrl(items = includeItems, secrets = includeSecrets))
-                    error = null
-                    message = "下载地址已复制，可以用 curl -o backup.json 取"
-                }
-            ) { Text("复制地址") }
-
-            FilledTonalButton(
-                enabled = state.client != null && !busy,
-                onClick = {
-                    val api = state.client ?: return@FilledTonalButton
                     scope.launch {
                         error = null
                         message = null
@@ -551,9 +549,11 @@ private fun BackupSection(state: AppState) {
                         if (content.isNullOrBlank()) return@launch
                         busy = true
                         try {
-                            val summary = api.importBackup(content)
+                            val summary = state.library.importBackup(
+                                DaViewJson.decodeFromString(BackupFileDto.serializer(), content)
+                            )
                             message = "已导入：媒体库 ${summary.libraries} 个、条目 ${summary.items} 项、" +
-                                "观看记录 ${summary.userData} 条" +
+                                "观看记录 ${summary.userData} 条、手动指定 ${summary.pins} 条" +
                                 (if (summary.settingsApplied) "，设置已应用" else "")
                             state.refreshLibraries()
                             state.loadServerSettings()
@@ -602,12 +602,11 @@ private fun WebDavPickerDialog(state: AppState, onDismiss: () -> Unit) {
     var kind by remember { mutableStateOf(LibraryKind.MOVIE) }
 
     fun load(target: String) {
-        val api = state.client ?: return
         scope.launch {
             loading = true
             error = null
             try {
-                entries = api.browseStorage(target)
+                entries = state.library.browseStorage(target)
                 path = target
                 name = target.trim('/').substringAfterLast('/')
             } catch (e: Throwable) {

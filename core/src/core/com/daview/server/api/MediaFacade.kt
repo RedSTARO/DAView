@@ -331,22 +331,33 @@ class MediaFacade(private val context: ServerContext) {
             subtitleStreamIndex = subtitle
         )
 
+        // The storage link is handed over for anything that can use it, but the
+        // in-app player is not one of them: ExoPlayer following the storage's
+        // 302 gets a 502 from the CDN, while the very same link fetched from
+        // here returns 206 a second later. So it reads through the pipe, which
+        // can also re-resolve the link when it expires mid-film.
+        val direct = if (request.player == PlayerKind.INTERNAL) {
+            io { context.streams.directUrl(mediaPath) }
+        } else null
         val proxy = request.trackThroughProxy && context.config.trackExternalPlayers
+
         return PlaybackInfoDto(
             sessionId = session.id,
             item = item.withAssetUrls(links),
             streamUrl = links.stream(item.id, mediaPath.substringAfterLast('/'), session.id, proxy),
-            // The in-app player reports its own position, so it has no reason to
-            // pull bytes through anything: it gets the storage link itself.
-            directUrl = if (request.player == PlayerKind.INTERNAL) {
-                io { context.streams.directUrl(mediaPath) }
-            } else null,
+            directUrl = direct,
             startPositionMs = userData.positionMs,
             audioStreamIndex = audio,
             subtitleStreamIndex = subtitle,
+            // A subtitle is a few kilobytes the player fetches once, and the
+            // storage hands out links for it as readily as for the video, so it
+            // goes straight there. Falling back only when it will not.
             subtitleUrls = item.mediaStreams
                 .filter { it.isExternal && it.externalPath != null }
-                .associate { it.index to links.subtitle(item.id, it.index) },
+                .associate { stream ->
+                    val subtitleDirect = io { context.streams.directUrl(stream.externalPath!!) }
+                    stream.index to (subtitleDirect ?: links.subtitle(item.id, stream.index))
+                },
             container = mediaPath.substringAfterLast('.'),
             runtimeMs = item.runtimeMs
         )

@@ -62,9 +62,8 @@ fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
 
     suspend fun reload() {
-        val api = state.client ?: return
-        merged = api.mergedSources(item.id)
-        results = api.items(kind = item.kind, search = query, limit = 40).items
+        merged = state.library.mergedSources(item.id, state.links)
+        results = state.library.items(state.links, kind = item.kind, search = query, limit = 40).items
             .filter { it.id != item.id }
     }
 
@@ -123,7 +122,7 @@ fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                             }
                             TextButton(
                                 enabled = !busy,
-                                onClick = { run { state.client?.unmerge(source.id) } }
+                                onClick = { run { state.library.unmerge(source.id, state.links) } }
                             ) { Text("拆分") }
                         }
                     }
@@ -203,7 +202,7 @@ fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                 enabled = selected.isNotEmpty() && !busy,
                 onClick = {
                     run {
-                        state.client?.merge(item.id, selected.toList())
+                        state.library.merge(item.id, selected.toList(), state.links)
                         selected = emptySet()
                         state.loadDetail(item.id)
                         state.refreshLibraries()

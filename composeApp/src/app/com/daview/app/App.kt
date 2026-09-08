@@ -47,14 +47,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import coil3.ImageLoader
 import coil3.compose.setSingletonImageLoaderFactory
-import coil3.network.ktor3.KtorNetworkFetcherFactory
 import coil3.request.crossfade
 import com.daview.app.data.AppState
+import com.daview.app.data.LocalImageFetcher
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import com.daview.app.theme.DaViewTheme
 import com.daview.shared.model.LibraryKind
-import com.daview.app.ui.ConnectScreen
 import com.daview.app.ui.DetailScreen
 import com.daview.app.ui.HomeScreen
 import com.daview.app.ui.LibraryScreen
@@ -69,16 +68,22 @@ fun App() {
     val state = remember { AppState(scope) }
     val playback = remember { PlaybackController(state, scope) }
 
+    // Artwork resolves against the on-disk cache rather than a URL: the file is
+    // already on this device, and there is no longer anything listening to hand
+    // it back over a socket.
     setSingletonImageLoaderFactory { context ->
         ImageLoader.Builder(context)
-            .components { add(KtorNetworkFetcherFactory()) }
+            .components { add(LocalImageFetcher.Factory(state.library)) }
             .crossfade(true)
             .build()
     }
 
 
     LaunchedEffect(Unit) {
-        state.tryAutoConnect()
+        state.start()
+        // A scan outlives the screen that started it, and may well have been
+        // running before this process was.
+        state.pollScanStatus()
     }
 
 
@@ -91,10 +96,6 @@ fun App() {
 
     DaViewTheme(darkTheme = state.darkTheme) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            if (state.current is Screen.Connect) {
-                ConnectScreen(state)
-                return@Surface
-            }
 
             BoxWithConstraints(Modifier.fillMaxSize()) {
                 val wide = maxWidth >= 720.dp
@@ -134,7 +135,6 @@ private fun Content(state: AppState, playback: PlaybackController) {
         label = "screen"
     ) { screen ->
         when (screen) {
-            is Screen.Connect -> ConnectScreen(state)
             is Screen.Home -> HomeScreen(state, playback)
             is Screen.Library -> LibraryScreen(state, screen.libraryId)
             is Screen.Detail -> DetailScreen(state, playback)

@@ -24,9 +24,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Turns "play this" into a server session plus whatever the platform can
- * actually run: the in-app player on Android and the web, or an external player
- * everywhere PotPlayer/VLC/mpv exist.
+ * Turns "play this" into a session plus whatever the platform can actually run:
+ * the in-app player on Android, or an external player wherever PotPlayer, VLC,
+ * mpv or an Android chooser exists.
  */
 class PlaybackController(
     private val state: AppState,
@@ -44,12 +44,11 @@ class PlaybackController(
     private var handle: ExternalPlaybackHandle? = null
 
     fun playInternal(item: MediaItemDto) {
-        val api = state.client ?: return
         scope.launch {
             starting = true
             error = null
             try {
-                val playback = api.startPlayback(
+                val playback = state.library.startPlayback(
                     PlaybackStartRequest(
                         itemId = item.id,
                         player = PlayerKind.INTERNAL,
@@ -57,13 +56,14 @@ class PlaybackController(
                         // Stream through the server rather than handing the player
                         // a redirect. The storage answers a plain GET with a 302 to
                         // a signed CDN link, and ExoPlayer following that link gets
-                        // a 502 from the CDN, while the very same link fetched by
-                        // the server returns 206 in a second. On Android the server
-                        // is in this process anyway, so proxying costs one loopback
-                        // hop and buys a link the server can re-resolve when it
+                        // a 502 from the CDN, while the very same link fetched from
+                        // the core returns 206 in a second. The pipe is in this
+                        // process anyway, so reading through it costs one loopback
+                        // hop and buys a link that can be re-resolved when it
                         // expires mid-playback.
                         trackThroughProxy = true
-                    )
+                    ),
+                    state.links
                 )
                 info = playback
                 state.navigate(Screen.Player(item.id))
@@ -76,7 +76,6 @@ class PlaybackController(
     }
 
     fun playExternal(item: MediaItemDto, player: ExternalPlayerInfo) {
-        val api = state.client ?: return
         scope.launch {
             starting = true
             error = null
@@ -87,7 +86,7 @@ class PlaybackController(
                     "mpv", "iina" -> PlayerKind.MPV
                     else -> PlayerKind.EXTERNAL
                 }
-                val playback = api.startPlayback(
+                val playback = state.library.startPlayback(
                     PlaybackStartRequest(
                         itemId = item.id,
                         player = kind,
@@ -95,7 +94,8 @@ class PlaybackController(
                         // Byte-level tracking is what makes progress sync work at
                         // all for players that never report anything back.
                         trackThroughProxy = true
-                    )
+                    ),
+                    state.links
                 )
                 info = playback
                 externalPlayerLabel = player.label
@@ -116,7 +116,7 @@ class PlaybackController(
                     )
                 )
                 if (handle == null && player.id != "copy") {
-                    error = "无法启动 ${player.label}，可在设置中指定可执行文件路径"
+                    error = "无法启动 ${player.label}"
                 }
                 followExternalSession(playback.sessionId)
             } catch (e: Throwable) {
@@ -134,22 +134,21 @@ class PlaybackController(
     }
 
     /**
-     * Polls the server session while an external player runs. The position it
-     * reports is derived from the byte ranges the player requests, so the panel
+     * Follows the session while an external player runs. The position it reports
+     * is derived from the byte ranges the player asks the pipe for, so the panel
      * shows it as an estimate.
      */
     private fun followExternalSession(sessionId: String) {
         scope.launch {
-            val api = state.client ?: return@launch
             val watcher = handle
             while (isActive) {
-                val sessions = runCatching { api.sessions() }.getOrNull().orEmpty()
-                val session = sessions.firstOrNull { it.sessionId == sessionId }
+                val session = runCatching { state.library.sessions() }.getOrNull().orEmpty()
+                    .firstOrNull { it.sessionId == sessionId }
                 externalSession = session
                 if (watcher != null && watcher.canObserveExit && !watcher.isRunning()) {
-                    // Let the server settle on its own estimate rather than
+                    // Let the session settle on its own estimate rather than
                     // guessing a position the player never told us.
-                    runCatching { api.stopPlayback(PlaybackStopRequest(sessionId, -1)) }
+                    runCatching { state.library.stopPlayback(PlaybackStopRequest(sessionId, -1)) }
                     break
                 }
                 if (session == null && watcher?.canObserveExit != true) break
@@ -164,20 +163,20 @@ class PlaybackController(
     }
 
     fun reportProgress(positionMs: Long, paused: Boolean, audio: Int?, subtitle: Int?) {
-        val api = state.client ?: return
         val sessionId = info?.sessionId ?: return
         scope.launch {
             runCatching {
-                api.reportProgress(PlaybackProgressRequest(sessionId, positionMs, paused, audio, subtitle))
+                state.library.reportProgress(
+                    PlaybackProgressRequest(sessionId, positionMs, paused, audio, subtitle)
+                )
             }
         }
     }
 
     fun stop(positionMs: Long) {
-        val api = state.client ?: return
         val sessionId = info?.sessionId ?: return
         scope.launch {
-            runCatching { api.stopPlayback(PlaybackStopRequest(sessionId, positionMs)) }
+            runCatching { state.library.stopPlayback(PlaybackStopRequest(sessionId, positionMs)) }
             info = null
             state.refreshHome()
         }
@@ -185,9 +184,8 @@ class PlaybackController(
 
     fun stopExternal() {
         handle?.stop()
-        val api = state.client ?: return
         val sessionId = info?.sessionId ?: return
-        scope.launch { runCatching { api.stopPlayback(PlaybackStopRequest(sessionId, -1)) } }
+        scope.launch { runCatching { state.library.stopPlayback(PlaybackStopRequest(sessionId, -1)) } }
     }
 
     val canUseInternalPlayer: Boolean get() = PlatformInfo.hasInternalPlayer

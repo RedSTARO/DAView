@@ -6,11 +6,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.daview.app.platform.SettingsStore
-import com.daview.app.platform.ambientServerUrl
-import com.daview.app.platform.ambientToken
+import com.daview.app.platform.createCoreContext
 import com.daview.app.platform.createSettingsStore
-import com.daview.shared.api.DaViewApiException
-import com.daview.shared.api.DaViewClient
+import com.daview.server.ServerContext
+import com.daview.server.api.AssetLinks
+import com.daview.server.api.MediaFacade
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.MediaItemDto
@@ -25,7 +25,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 sealed interface Screen {
-    data object Connect : Screen
     data object Home : Screen
     data class Library(val libraryId: String) : Screen
     data class Detail(val itemId: String) : Screen
@@ -46,27 +45,23 @@ data class HomeData(
  * Single mutable holder for the whole client. The app is small enough that a
  * per-screen ViewModel layer would add indirection without buying anything, so
  * screens read this directly and call back into it.
+ *
+ * The library it talks to is in this process. There is no connection to make,
+ * nothing to authenticate against and no address to get wrong — the app opens
+ * on the home screen.
  */
 class AppState(private val scope: CoroutineScope) {
 
     private val settings: SettingsStore = createSettingsStore()
 
-    var serverUrl by mutableStateOf(
-        settings.getString(KEY_SERVER) ?: ambientServerUrl() ?: "http://127.0.0.1:8096"
-    )
-    var token by mutableStateOf(settings.getString(KEY_TOKEN) ?: ambientToken() ?: "")
+    val core: ServerContext = createCoreContext()
+    val library: MediaFacade = core.media
+    val links: AssetLinks = LocalAssetLinks(core)
 
-    // Snapshot-backed: screens and LaunchedEffects key off the connection.
-    var client by mutableStateOf<DaViewClient?>(null)
-        private set
-
-    var connecting by mutableStateOf(false)
-        private set
-    var connectionError by mutableStateOf<String?>(null)
     var serverInfo by mutableStateOf<ServerInfoDto?>(null)
     var serverSettings by mutableStateOf<ServerSettingsDto?>(null)
 
-    val backStack: SnapshotStateList<Screen> = mutableStateListOf(Screen.Connect)
+    val backStack: SnapshotStateList<Screen> = mutableStateListOf(Screen.Home)
     val current: Screen get() = backStack.last()
 
     var libraries by mutableStateOf<List<LibraryDto>>(emptyList())
@@ -118,110 +113,77 @@ class AppState(private val scope: CoroutineScope) {
                 refreshLibraries()
                 loadServerSettings()
             }
+
             else -> Unit
         }
     }
 
-    // ------------------------------------------------------------ connection
+    /** Reads what the library already knows, before anything has been asked of it. */
+    fun start() = run {
+        serverInfo = library.info()
+        libraries = library.libraries()
+        refreshHome()
+    }
 
     fun setTheme(dark: Boolean) {
         darkTheme = dark
         settings.putString(KEY_THEME, if (dark) "dark" else "light")
     }
 
-    fun connect(url: String = serverUrl, accessToken: String = token, remember: Boolean = true) {
-        scope.launch {
-            connecting = true
-            connectionError = null
-            try {
-                val normalised = url.trim().trimEnd('/').ifBlank { "http://127.0.0.1:8096" }
-                val candidate = DaViewClient(
-                    baseUrl = normalised,
-                    tokenProvider = { accessToken.trim().ifBlank { null } }
-                )
-                val info = candidate.info()
-                client?.close()
-                client = candidate
-                serverInfo = info
-                serverUrl = normalised
-                token = accessToken.trim()
-                if (remember) {
-                    settings.putString(KEY_SERVER, normalised)
-                    settings.putString(KEY_TOKEN, token)
-                }
-                refreshLibraries()
-                replaceAll(Screen.Home)
-            } catch (e: DaViewApiException) {
-                connectionError = if (e.status == 401) "令牌无效，请检查服务器令牌" else e.message
-            } catch (e: Throwable) {
-                connectionError = "无法连接到服务器: ${e.message ?: e::class.simpleName}"
-            } finally {
-                connecting = false
-            }
-        }
-    }
-
-    fun disconnect() {
-        client?.close()
-        client = null
-        serverInfo = null
-        settings.putString(KEY_TOKEN, null)
-        replaceAll(Screen.Connect)
-    }
-
-    /** Attempts a silent reconnect on start-up when credentials are remembered. */
-    fun tryAutoConnect() {
-        if (token.isNotBlank() || ambientToken() != null) connect(remember = true)
-    }
-
     // ------------------------------------------------------------ data
 
-    private inline fun run(crossinline block: suspend (DaViewClient) -> Unit) {
-        val active = client ?: return
+    /**
+     * Every call goes through here so a failure lands in the snackbar instead
+     * of taking the coroutine down. The facade reports what went wrong in its
+     * own terms, which is already the message worth showing.
+     */
+    private inline fun run(crossinline block: suspend () -> Unit) {
         scope.launch {
             try {
-                block(active)
+                block()
+            } catch (e: MediaFacade.FacadeException) {
+                toast = listOfNotNull(e.message, e.detail).joinToString("：")
             } catch (e: Throwable) {
-                toast = e.message ?: "请求失败"
+                toast = e.message ?: "操作失败"
             }
         }
     }
 
-    fun refreshLibraries() = run { libraries = it.libraries() }
+    fun refreshLibraries() = run { libraries = library.libraries() }
 
-    fun loadServerSettings() = run { serverSettings = it.settings() }
+    fun loadServerSettings() = run { serverSettings = library.settings() }
 
-    fun refreshHome() = run { api ->
-        val libs = api.libraries()
+    fun refreshHome() = run {
+        val libs = library.libraries()
         libraries = libs
         home = HomeData(
-            resume = api.resume(20),
-            nextUp = api.nextUp(20),
-            latest = api.latest(limit = 24)
+            resume = library.resume(20, links),
+            nextUp = library.nextUp(20, links),
+            latest = library.latest(null, 24, links)
         )
-        // One request per library, and they only fill in the bottom of the page,
-        // so they run after the rest of it is already on screen.
+        // One row per library, and they only fill in the bottom of the page, so
+        // they are gathered after the rest of it is already on screen.
         home = home.copy(
-            unwatched = libs.associate { it.id to api.unwatched(it.id, 24) }
+            unwatched = libs.associate { it.id to library.unwatched(it.id, 24, links) }
                 .filterValues { it.isNotEmpty() }
         )
     }
 
-    fun loadLibrary(libraryId: String) = run { api ->
+    fun loadLibrary(libraryId: String) = run {
         libraryLoading = true
         try {
             val kind = when (libraries.firstOrNull { it.id == libraryId }?.kind?.isSeriesLike) {
                 true -> ItemKind.SERIES
                 else -> ItemKind.MOVIE
             }
-            val page = api.items(libraryId = libraryId, kind = kind, sort = librarySort, limit = 500)
+            val page = library.items(links, libraryId = libraryId, kind = kind, sort = librarySort, limit = 500)
             // A series library can still contain stand-alone films (a spin-off
             // movie folder inside a show); include them so nothing disappears.
             val extra = if (kind == ItemKind.SERIES) {
-                api.items(libraryId = libraryId, kind = ItemKind.MOVIE, sort = librarySort, limit = 200).items
-                    .filter { it.parentId == null }
+                library.items(links, libraryId = libraryId, kind = ItemKind.MOVIE, sort = librarySort, limit = 200)
+                    .items.filter { it.parentId == null }
             } else emptyList()
-            libraryItems = (page.items + extra).sortedBy { it.sortName }
+            libraryItems = page.items + extra
         } finally {
             libraryLoading = false
         }
@@ -232,13 +194,13 @@ class AppState(private val scope: CoroutineScope) {
         loadLibrary(libraryId)
     }
 
-    fun loadDetail(itemId: String) = run { api ->
+    fun loadDetail(itemId: String) = run {
         detailLoading = true
         try {
-            val item = api.item(itemId)
+            val item = library.item(itemId, links)
             detailItem = item
             detailChildren = if (item.kind == ItemKind.SERIES || item.kind == ItemKind.SEASON) {
-                api.children(itemId)
+                library.children(itemId, links)
             } else emptyList()
             // An episode has no children of its own. What its page wants is the
             // rest of the run it sits in, and that hangs off its season — the
@@ -246,25 +208,25 @@ class AppState(private val scope: CoroutineScope) {
             val seasonId = detailChildren.firstOrNull { it.kind == ItemKind.SEASON }?.id
                 ?: item.parentId?.takeIf { item.kind == ItemKind.EPISODE }
             detailSeasonId = seasonId
-            detailEpisodes = seasonId?.let { api.children(it) } ?: emptyList()
+            detailEpisodes = seasonId?.let { library.children(it, links) } ?: emptyList()
         } finally {
             detailLoading = false
         }
     }
 
-    fun selectSeason(seasonId: String) = run { api ->
+    fun selectSeason(seasonId: String) = run {
         detailSeasonId = seasonId
-        detailEpisodes = api.children(seasonId)
+        detailEpisodes = library.children(seasonId, links)
     }
 
-    fun search(query: String) = run { api ->
-        searchQuery = query
-        searchResults = if (query.isBlank()) emptyList() else api.items(search = query, limit = 60).items
+    fun search(query: String) = run {
+        searchResults = if (query.isBlank()) emptyList()
+        else library.items(links, search = query, limit = 60).items
     }
 
-    fun toggleFavorite(item: MediaItemDto) = run { api ->
-        api.setFavorite(item.id, !item.userData.favorite)
-        if (detailItem?.id == item.id) detailItem = api.item(item.id)
+    fun toggleFavorite(item: MediaItemDto) = run {
+        library.setFavorite(item.id, !item.userData.favorite)
+        if (detailItem?.id == item.id) detailItem = library.item(item.id, links)
         toast = if (item.userData.favorite) "已取消收藏" else "已收藏"
     }
 
@@ -273,19 +235,19 @@ class AppState(private val scope: CoroutineScope) {
      * the decision comes from its episodes — and marking one flips all of them,
      * which is why the whole open detail is reloaded rather than one row.
      */
-    fun togglePlayed(item: MediaItemDto) = run { api ->
+    fun togglePlayed(item: MediaItemDto) = run {
         val markPlayed = item.playedState != PlayedState.PLAYED
-        api.setPlayed(item.id, markPlayed)
+        library.setPlayed(item.id, markPlayed)
         detailItem?.id?.let { openId ->
-            detailItem = api.item(openId)
-            if (detailChildren.isNotEmpty()) detailChildren = api.children(openId)
-            detailSeasonId?.let { detailEpisodes = api.children(it) }
+            detailItem = library.item(openId, links)
+            if (detailChildren.isNotEmpty()) detailChildren = library.children(openId, links)
+            detailSeasonId?.let { detailEpisodes = library.children(it, links) }
         }
         toast = if (markPlayed) "已标记为已观看" else "已标记为未观看"
     }
 
-    fun startScan(libraryId: String, mode: ScanMode = ScanMode.FULL) = run { api ->
-        api.scanLibrary(libraryId, mode)
+    fun startScan(libraryId: String, mode: ScanMode = ScanMode.FULL) = run {
+        library.scan(libraryId, mode)
         toast = when (mode) {
             ScanMode.MISSING -> "已开始刮削未刮削的条目"
             ScanMode.REFRESH -> "已开始重新刮削全部"
@@ -294,13 +256,15 @@ class AppState(private val scope: CoroutineScope) {
         pollScanStatus()
     }
 
+    /**
+     * Follows a scan that is already running, whoever started it. Scans outlive
+     * the screen that kicked them off, so this is called on start-up too.
+     */
     fun pollScanStatus() {
         scope.launch {
             while (isActive) {
-                val api = client ?: return@launch
-                val status = runCatching { api.scanStatus() }.getOrNull() ?: return@launch
-                scanStatus = status
-                if (status.none { it.running }) {
+                scanStatus = library.scanStatus()
+                if (scanStatus.none { it.running }) {
                     refreshLibraries()
                     return@launch
                 }
@@ -309,28 +273,26 @@ class AppState(private val scope: CoroutineScope) {
         }
     }
 
-    fun saveServerSettings(updated: ServerSettingsDto, onDone: (Boolean) -> Unit = {}) = run { api ->
-        serverSettings = api.updateSettings(updated)
+    fun saveServerSettings(updated: ServerSettingsDto, onDone: (Boolean) -> Unit = {}) = run {
+        serverSettings = library.updateSettings(updated)
         toast = "设置已保存"
         onDone(true)
     }
 
-    fun createLibrary(library: LibraryDto, onDone: () -> Unit = {}) = run { api ->
-        api.createLibrary(library)
+    fun createLibrary(entry: LibraryDto, onDone: () -> Unit = {}) = run {
+        library.createLibrary(entry)
         refreshLibraries()
         toast = "媒体库已创建"
         onDone()
     }
 
-    fun deleteLibrary(id: String) = run { api ->
-        api.deleteLibrary(id)
+    fun deleteLibrary(id: String) = run {
+        library.deleteLibrary(id)
         refreshLibraries()
         toast = "媒体库已删除"
     }
 
     private companion object {
-        const val KEY_SERVER = "serverUrl"
-        const val KEY_TOKEN = "token"
         const val KEY_THEME = "theme"
     }
 }

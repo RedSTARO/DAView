@@ -145,6 +145,23 @@ actual suspend fun pickTextFile(): String? = withContext(Dispatchers.Main) {
     }
 }
 
+actual suspend fun saveTextFile(suggestedName: String, write: (Appendable) -> Unit): String? =
+    withContext(Dispatchers.Main) {
+        val dialog = FileDialog(null as Frame?, "保存到", FileDialog.SAVE).apply {
+            file = suggestedName
+            isVisible = true
+        }
+        val directory = dialog.directory
+        val chosen = dialog.file ?: return@withContext null
+        withContext(Dispatchers.IO) {
+            val target = File(directory, chosen)
+            runCatching {
+                target.bufferedWriter().use { write(it) }
+                target.absolutePath
+            }.getOrNull()
+        }
+    }
+
 actual fun copyToClipboard(text: String) {
     runCatching {
         Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null)
@@ -159,6 +176,3 @@ actual fun createSettingsStore(): SettingsStore = object : SettingsStore {
     }
 }
 
-actual fun ambientServerUrl(): String? = System.getProperty("daview.serverUrl")
-
-actual fun ambientToken(): String? = System.getProperty("daview.token")

@@ -20,12 +20,31 @@ import kotlin.coroutines.resume
 object AndroidFilePicker {
 
     private var launcher: ActivityResultLauncher<Array<String>>? = null
+    private var saveLauncher: ActivityResultLauncher<String>? = null
     private var activity: ComponentActivity? = null
     private var pending: CancellableContinuation<String?>? = null
+    private var pendingSave: CancellableContinuation<String?>? = null
+    private var pendingWrite: ((Appendable) -> Unit)? = null
 
     /** Called from the activity's onCreate; registering later throws. */
     fun register(owner: ComponentActivity) {
         activity = owner
+        saveLauncher = owner.registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+            val waiting = pendingSave
+            val write = pendingWrite
+            pendingSave = null
+            pendingWrite = null
+            if (waiting == null || !waiting.isActive) return@registerForActivityResult
+            if (uri == null || write == null) {
+                waiting.resume(null)
+                return@registerForActivityResult
+            }
+            val path = runCatching {
+                owner.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { write(it) }
+                uri.toString()
+            }.getOrNull()
+            waiting.resume(path)
+        }
         launcher = owner.registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             val waiting = pending
             pending = null
@@ -45,6 +64,28 @@ object AndroidFilePicker {
         if (activity === owner) {
             activity = null
             launcher = null
+            saveLauncher = null
+        }
+    }
+
+    /**
+     * The counterpart of [pick]: the app cannot write to a path of its own
+     * choosing either, so an export goes through the same system chooser and
+     * the bytes are written into whatever the user picked.
+     */
+    suspend fun save(suggestedName: String, write: (Appendable) -> Unit): String? {
+        val target = saveLauncher ?: return null
+        return withContext(Dispatchers.Main) {
+            suspendCancellableCoroutine { continuation ->
+                pendingSave = continuation
+                pendingWrite = write
+                continuation.invokeOnCancellation { pendingSave = null; pendingWrite = null }
+                runCatching { target.launch(suggestedName) }.onFailure {
+                    pendingSave = null
+                    pendingWrite = null
+                    continuation.resume(null)
+                }
+            }
         }
     }
 

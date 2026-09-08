@@ -65,6 +65,17 @@ class PlaybackPipe(
         return "http://127.0.0.1:$port/$mode/$sessionId/$itemId/$encoded"
     }
 
+    /**
+     * A subtitle file, for the case where the storage would not produce a link
+     * of its own. Players load these over HTTP like anything else.
+     */
+    @Synchronized
+    fun subtitleUrlFor(sessionId: String, itemId: String, index: Int): String {
+        val port = start()
+        sessions += sessionId
+        return "http://127.0.0.1:$port/t/$sessionId/$itemId/$index"
+    }
+
     /** Drops a session and closes the socket once none are left. */
     @Synchronized
     fun release(sessionId: String) {
@@ -160,7 +171,23 @@ class PlaybackPipe(
         val (mode, sessionId, itemId) = segments
         if (sessionId !in sessions) return respondStatus(output, 404, "Not Found")
 
-        val path = repository.item(itemId)?.path ?: return respondStatus(output, 404, "Not Found")
+        val item = repository.item(itemId) ?: return respondStatus(output, 404, "Not Found")
+
+        if (mode == "t") {
+            val index = segments.getOrNull(3)?.toIntOrNull()
+            val subtitlePath = item.mediaStreams
+                .firstOrNull { it.index == index && it.isExternal }?.externalPath
+                ?: return respondStatus(output, 404, "Not Found")
+            val bytes = streams.openRange(subtitlePath, 0, null).use { it.stream.readBytes() }
+            output.write(
+                ("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+                    "Content-Length: ${bytes.size}\r\nConnection: close\r\n\r\n").toByteArray()
+            )
+            if (request.method != "HEAD") output.write(bytes)
+            return
+        }
+
+        val path = item.path ?: return respondStatus(output, 404, "Not Found")
 
         // Every request is a position report, including the ones a player makes
         // while opening the file. PlaybackService is what decides which of them
@@ -179,7 +206,7 @@ class PlaybackPipe(
             // No signed link to hand over; fall through and serve the bytes.
         }
 
-        val size = repository.item(itemId)?.sizeBytes ?: runCatching { streams.fileSize(path) }.getOrNull()
+        val size = item.sizeBytes ?: runCatching { streams.fileSize(path) }.getOrNull()
         val rangeEnd = request.rangeEnd ?: size?.let { it - 1 }
         val length = if (size != null && rangeEnd != null) rangeEnd - request.rangeStart + 1 else null
 

@@ -6,9 +6,8 @@ import com.daview.app.platform.AndroidContextHolder
 class DaViewApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        // The library itself is built with the UI. Nothing needs to be running
+        // before the first frame any more, so start-up does no work here.
         AndroidContextHolder.context = applicationContext
-        // Started here rather than in the activity so the port is listening by
-        // the time the UI tries to connect to it.
-        EmbeddedServer.start(applicationContext)
     }
 }

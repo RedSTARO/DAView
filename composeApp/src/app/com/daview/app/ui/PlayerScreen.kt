@@ -31,18 +31,6 @@ import com.daview.app.data.Screen
 import com.daview.app.platform.PlatformInfo
 import com.daview.app.platform.copyToClipboard
 import com.daview.app.platform.openUrl
-import com.daview.shared.model.PlaybackInfoDto
-
-/**
- * In-app playback surface. Only Android ships one today; desktop and web hand
- * off to an external player and show [ExternalPlaybackPanel] instead.
- */
-@Composable
-expect fun InternalPlayer(
-    info: PlaybackInfoDto,
-    onProgress: (positionMs: Long, paused: Boolean, audioIndex: Int?, subtitleIndex: Int?) -> Unit,
-    onClose: (positionMs: Long) -> Unit
-)
 
 @Composable
 fun PlayerScreen(state: AppState, playback: PlaybackController) {

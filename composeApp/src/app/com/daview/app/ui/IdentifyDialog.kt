@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
 import com.daview.shared.model.IdentifyContextDto
+import com.daview.shared.model.IdentifyRequest
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.MetadataProvider
 import com.daview.shared.model.ScrapeCandidateDto
@@ -70,10 +71,9 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(item.id) {
-        val api = state.client ?: return@LaunchedEffect
         busy = true
         try {
-            val loaded = api.identifyContext(item.id)
+            val loaded = state.library.identifyContext(item.id)
             context = loaded
             provider = loaded.lockedProvider ?: loaded.providers.firstOrNull()
             query = loaded.defaultQuery
@@ -89,13 +89,12 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
     }
 
     fun search() {
-        val api = state.client ?: return
         val source = provider ?: return
         scope.launch {
             busy = true
             error = null
             try {
-                candidates = api.identifySearch(item.id, source, query, year.toIntOrNull())
+                candidates = state.library.identifySearch(item.id, source, query, year.toIntOrNull())
                 searched = true
             } catch (e: Throwable) {
                 error = e.message
@@ -106,13 +105,16 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
     }
 
     fun apply(id: String) {
-        val api = state.client ?: return
         val source = provider ?: return
         scope.launch {
             busy = true
             error = null
             try {
-                val updated = api.identify(item.id, source, id)
+                val updated = state.library.identify(
+                    item.id,
+                    IdentifyRequest(provider = source, providerId = id),
+                    state.links
+                )
                 state.toast = "已指定为 ${updated.name}"
                 state.loadDetail(item.id)
                 state.refreshLibraries()

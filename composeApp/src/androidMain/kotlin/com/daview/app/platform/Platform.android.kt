@@ -75,6 +75,9 @@ actual fun openUrl(url: String) {
 /** Storage Access Framework, which is the only way an Android app may read a file the user chose. */
 actual suspend fun pickTextFile(): String? = AndroidFilePicker.pick()
 
+actual suspend fun saveTextFile(suggestedName: String, write: (Appendable) -> Unit): String? =
+    AndroidFilePicker.save(suggestedName, write)
+
 actual fun copyToClipboard(text: String) {
     if (!AndroidContextHolder.isInitialised) return
     val manager = AndroidContextHolder.context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
@@ -92,6 +95,3 @@ actual fun createSettingsStore(): SettingsStore = object : SettingsStore {
 }
 
 /** The app's own in-process server, unless the user has pointed it elsewhere. */
-actual fun ambientServerUrl(): String? = com.daview.app.EmbeddedServer.url
-
-actual fun ambientToken(): String? = com.daview.app.EmbeddedServer.token

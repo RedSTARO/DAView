@@ -57,6 +57,16 @@ expect fun copyToClipboard(text: String)
  */
 expect suspend fun pickTextFile(): String?
 
+/**
+ * Opens the platform's save dialog and writes the file through [write], or
+ * returns null when the user backed out.
+ *
+ * Takes a writer rather than a string because a full catalogue export is a few
+ * megabytes assembled a page at a time; there is no reason to hold all of it in
+ * memory on the way to a file the user chose.
+ */
+expect suspend fun saveTextFile(suggestedName: String, write: (Appendable) -> Unit): String?
+
 /** Simple string key/value persistence backed by whatever the platform offers. */
 interface SettingsStore {
     fun getString(key: String): String?
@@ -65,8 +75,3 @@ interface SettingsStore {
 
 expect fun createSettingsStore(): SettingsStore
 
-/** The server address baked into the page, used when the web client is served by DAView itself. */
-expect fun ambientServerUrl(): String?
-
-/** `?token=` handed over by the server's startup URL, so the web client can self-configure. */
-expect fun ambientToken(): String?
