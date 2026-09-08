@@ -19,8 +19,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -42,6 +44,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -63,6 +66,7 @@ import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MediaItemDto
+import com.daview.shared.model.PlayedState
 import com.daview.shared.model.StreamType
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -71,6 +75,7 @@ fun DetailScreen(state: AppState, playback: PlaybackController) {
     val item = state.detailItem ?: return
     val seasons = state.detailChildren.filter { it.kind == ItemKind.SEASON }
     val relatedMovies = state.detailChildren.filter { it.kind == ItemKind.MOVIE }
+    val selectedSeason = seasons.firstOrNull { it.id == state.detailSeasonId }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 48.dp)) {
         item { DetailHeader(state, playback, item) }
@@ -78,6 +83,8 @@ fun DetailScreen(state: AppState, playback: PlaybackController) {
         if (item.people.isNotEmpty()) {
             item { PeopleRow(item) }
         }
+
+        item { FileInfoSection(item) }
 
         if (seasons.isNotEmpty()) {
             item {
@@ -96,11 +103,44 @@ fun DetailScreen(state: AppState, playback: PlaybackController) {
                             }
                         }
                     }
+                    selectedSeason?.let { season ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                watchedLabel(season),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { state.togglePlayed(season) }) {
+                                Text(
+                                    if (season.playedState == PlayedState.PLAYED) "整季标记未看"
+                                    else "整季标记已看"
+                                )
+                            }
+                        }
+                    }
+                    selectedSeason?.path?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            "目录: $it",
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                 }
             }
             items(state.detailEpisodes, key = { it.id }) { episode ->
-                EpisodeRow(episode, onPlay = { playback.playInternalOrExternal(episode) }) {
+                EpisodeRow(
+                    episode,
+                    basePath = selectedSeason?.path,
+                    onPlay = { playback.playInternalOrExternal(episode) }
+                ) {
                     state.togglePlayed(episode)
                 }
             }
@@ -114,24 +154,46 @@ fun DetailScreen(state: AppState, playback: PlaybackController) {
     }
 }
 
+/**
+ * One line of watched state for any kind of item: a film or episode says where
+ * it stopped, a series or season how much of it is done.
+ */
+private fun watchedLabel(item: MediaItemDto): String = when {
+    item.isPlayable -> when {
+        item.userData.played -> "已看完"
+        item.userData.positionMs > 0 -> "看到 ${formatDuration(item.userData.positionMs)}"
+        else -> "未观看"
+    }
+    (item.episodeCount ?: 0) == 0 -> "未观看"
+    item.playedEpisodeCount == item.episodeCount -> "已看完 ${item.episodeCount} 集"
+    else -> "已看 ${item.playedEpisodeCount ?: 0} / ${item.episodeCount} 集"
+}
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun DetailHeader(state: AppState, playback: PlaybackController, item: MediaItemDto) {
     Box(Modifier.fillMaxWidth().heightIn(min = 320.dp)) {
+        // The band is only as tall as the column beside the poster, and that
+        // height is not known until the column has been measured.
+        // `matchParentSize` runs in Box's second pass and so picks it up;
+        // `fillMaxSize` cannot, because a LazyColumn item is measured with an
+        // unbounded height and the art then falls back to its own pixel size.
         val art = item.backdropUrl ?: item.posterUrl
         if (art != null) {
             AsyncImage(
                 model = art,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.matchParentSize()
             )
         }
+        // Title and overview sit over the whole band rather than just its foot,
+        // so the scrim stays dense all the way up.
         Box(
-            Modifier.fillMaxSize().background(
+            Modifier.matchParentSize().background(
                 Brush.verticalGradient(
-                    0f to MaterialTheme.colorScheme.background.copy(alpha = 0.35f),
-                    0.5f to MaterialTheme.colorScheme.background.copy(alpha = 0.8f),
+                    0f to MaterialTheme.colorScheme.background.copy(alpha = 0.55f),
+                    0.5f to MaterialTheme.colorScheme.background.copy(alpha = 0.88f),
                     1f to MaterialTheme.colorScheme.background
                 )
             )
@@ -173,6 +235,7 @@ private fun DetailHeader(state: AppState, playback: PlaybackController, item: Me
                     item.runtimeMs?.let { Chip(formatDuration(it)) }
                     item.communityRating?.let { Chip("★ ${(it * 10).toInt() / 10.0}") }
                     item.childCount?.takeIf { item.kind == ItemKind.SERIES }?.let { Chip("$it 季") }
+                    Chip(watchedLabel(item))
                 }
 
                 if (item.genres.isNotEmpty()) {
@@ -268,13 +331,20 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (item.isPlayable) {
+            // Series and seasons get the toggle too: marking one watched marks
+            // every episode under it, which is the only thing "watched" can mean
+            // for something that has no bytes of its own.
+            if (item.kind != ItemKind.SEASON || (item.episodeCount ?: 0) > 0) {
                 IconButton(onClick = { state.togglePlayed(item) }) {
                     Icon(
-                        Icons.Filled.Check,
-                        contentDescription = "已观看",
-                        tint = if (item.userData.played) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
+                        if (item.playedState == PlayedState.PLAYED) Icons.Filled.Check
+                        else Icons.Filled.CheckCircleOutline,
+                        contentDescription = if (item.playedState == PlayedState.PLAYED) "标记为未观看" else "标记为已观看",
+                        tint = when (item.playedState) {
+                            PlayedState.PLAYED -> MaterialTheme.colorScheme.primary
+                            PlayedState.PARTIAL -> MaterialTheme.colorScheme.secondary
+                            PlayedState.NONE -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 }
             }
@@ -296,49 +366,82 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
 
-        if (item.isPlayable && item.mediaStreams.isNotEmpty()) {
-            Spacer(Modifier.height(14.dp))
-            StreamSummary(item)
+/**
+ * What the files themselves say, as opposed to what a scraper wrote. A series or
+ * a season only knows the folder it was found in, so the block shrinks to
+ * whatever that item actually carries.
+ */
+@Composable
+private fun FileInfoSection(item: MediaItemDto) {
+    val video = item.mediaStreams.firstOrNull { it.type == StreamType.VIDEO }
+    val audio = item.mediaStreams.filter { it.type == StreamType.AUDIO }
+    val subtitles = item.mediaStreams.filter { it.type == StreamType.SUBTITLE }
+
+    val rows = buildList<Pair<String, String>> {
+        item.path?.takeIf { it.isNotBlank() }?.let {
+            add((if (item.isPlayable) "文件" else "目录") to it)
         }
+        formatSize(item.sizeBytes).takeIf { it.isNotBlank() }?.let { add("大小" to it) }
+        video?.let { stream ->
+            add(
+                "画面" to listOfNotNull(
+                    stream.codec?.uppercase() ?: "未知",
+                    if (stream.width != null && stream.height != null) "${stream.width}×${stream.height}" else null
+                ).joinToString(" · ")
+            )
+        }
+        if (audio.isNotEmpty()) add("音轨" to audio.joinToString("\n") { it.displayTitle })
+        if (subtitles.isNotEmpty()) add("字幕" to subtitles.joinToString("\n") { it.displayTitle })
+        subtitles.mapNotNull { it.externalPath }.takeIf { it.isNotEmpty() }?.let {
+            add("外挂字幕" to it.joinToString("\n"))
+        }
+    }
+    if (rows.isEmpty()) return
+
+    Column {
+        SectionHeader("文件信息")
+        // The paths are the part worth pulling out of the app, so the whole
+        // block is selectable rather than growing a copy button per row.
+        SelectionContainer {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                rows.forEach { (label, value) -> InfoRow(label, value) }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
     }
 }
 
 @Composable
-private fun StreamSummary(item: MediaItemDto) {
-    val audio = item.mediaStreams.filter { it.type == StreamType.AUDIO }
-    val subtitles = item.mediaStreams.filter { it.type == StreamType.SUBTITLE }
-    val video = item.mediaStreams.firstOrNull { it.type == StreamType.VIDEO }
-
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        video?.let {
-            Text(
-                "画面: ${it.codec?.uppercase() ?: "未知"}" +
-                    (if (it.width != null && it.height != null) " · ${it.width}×${it.height}" else "") +
-                    (formatSize(item.sizeBytes).takeIf { size -> size.isNotBlank() }?.let { size -> " · $size" } ?: ""),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        if (audio.isNotEmpty()) {
-            Text(
-                "音轨: " + audio.joinToString(" / ") { it.displayTitle },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        if (subtitles.isNotEmpty()) {
-            Text(
-                "字幕: " + subtitles.joinToString(" / ") { it.displayTitle },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
+private fun InfoRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(
+            label,
+            modifier = Modifier.width(72.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            value,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall
+        )
     }
+}
+
+/**
+ * The season folder is already printed above the list, so an episode row only
+ * repeats what sits below it. Falls back to the whole path when the episode is
+ * not inside the folder its season was named after.
+ */
+private fun pathUnder(path: String, base: String?): String {
+    if (base.isNullOrBlank()) return path
+    return path.removePrefix(base.trimEnd('/') + "/")
 }
 
 @Composable
@@ -391,7 +494,12 @@ private fun PeopleRow(item: MediaItemDto) {
 }
 
 @Composable
-private fun EpisodeRow(episode: MediaItemDto, onPlay: () -> Unit, onToggleWatched: () -> Unit) {
+private fun EpisodeRow(
+    episode: MediaItemDto,
+    basePath: String?,
+    onPlay: () -> Unit,
+    onToggleWatched: () -> Unit
+) {
     Card(
         onClick = onPlay,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp),
@@ -446,6 +554,7 @@ private fun EpisodeRow(episode: MediaItemDto, onPlay: () -> Unit, onToggleWatche
                 Spacer(Modifier.height(4.dp))
                 Text(
                     listOfNotNull(
+                        watchedLabel(episode),
                         episode.runtimeMs?.let { formatDuration(it) },
                         formatSize(episode.sizeBytes).takeIf { it.isNotBlank() },
                         episode.mediaStreams.count { it.type == StreamType.SUBTITLE }
@@ -454,13 +563,25 @@ private fun EpisodeRow(episode: MediaItemDto, onPlay: () -> Unit, onToggleWatche
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                episode.path?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        pathUnder(it, basePath),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
             IconButton(onClick = onToggleWatched) {
                 Icon(
-                    Icons.Filled.Check,
-                    contentDescription = "标记观看状态",
-                    tint = if (episode.userData.played) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
+                    if (episode.userData.played) Icons.Filled.Check else Icons.Filled.CheckCircleOutline,
+                    contentDescription = if (episode.userData.played) "标记为未观看" else "标记为已观看",
+                    tint = when (episode.playedState) {
+                        PlayedState.PLAYED -> MaterialTheme.colorScheme.primary
+                        PlayedState.PARTIAL -> MaterialTheme.colorScheme.secondary
+                        PlayedState.NONE -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
                 )
             }
         }
