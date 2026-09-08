@@ -264,6 +264,33 @@ class Repository(private val db: Database) {
         }.useQuery { it.map(::readItem) }
     }
 
+    /**
+     * Top-level entries nobody has started. A film qualifies on its own row; a
+     * series qualifies only when no episode under it has been watched or left
+     * part-way, which is the same pair of columns [resume] reads one row at a
+     * time. `played_episode_count` cannot answer this — it is a select alias,
+     * and SQLite cannot filter on one.
+     */
+    fun unwatched(libraryId: String?, limit: Int): List<MediaItemDto> = db.read { connection ->
+        val filter = if (libraryId == null) "" else "AND i.library_id = ?"
+        connection.statement(
+            """
+            $SELECT_ITEM
+            WHERE i.kind IN ('MOVIE','SERIES') $filter
+              AND COALESCE(u.played, 0) = 0
+              AND COALESCE(u.position_ms, 0) = 0
+              AND NOT EXISTS (
+                    SELECT 1 FROM items e JOIN user_data ue ON ue.item_id = e.id
+                    WHERE e.kind = 'EPISODE' AND (e.series_id = i.id OR e.parent_id = i.id)
+                      AND (ue.played = 1 OR ue.position_ms > 0)
+              )
+            ORDER BY i.sort_name LIMIT ?
+            """.trimIndent()
+        ).apply {
+            if (libraryId == null) setInt(1, limit) else { setString(1, libraryId); setInt(2, limit) }
+        }.useQuery { it.map(::readItem) }
+    }
+
     fun itemsNeedingScrape(libraryId: String, force: Boolean): List<MediaItemDto> = db.read { connection ->
         val condition = if (force) "" else "AND i.scraped_at IS NULL"
         connection.statement(

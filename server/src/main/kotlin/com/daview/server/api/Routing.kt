@@ -431,6 +431,15 @@ fun Route.apiRoutes(context: ServerContext) {
         )
     }
 
+    get("/api/home/unwatched") {
+        call.requireAuth(context) ?: return@get
+        val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 20
+        call.respond(
+            context.repository.unwatched(call.request.queryParameters["libraryId"], limit)
+                .map { it.withAssetUrls(call) }
+        )
+    }
+
     // ------------------------------------------------------------ playback
 
     post("/api/playback/start") {

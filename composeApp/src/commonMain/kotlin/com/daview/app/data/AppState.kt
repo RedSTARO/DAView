@@ -36,7 +36,9 @@ sealed interface Screen {
 data class HomeData(
     val resume: List<MediaItemDto> = emptyList(),
     val nextUp: List<MediaItemDto> = emptyList(),
-    val latest: List<MediaItemDto> = emptyList()
+    val latest: List<MediaItemDto> = emptyList(),
+    /** Unwatched entries keyed by library id. Libraries with none are absent. */
+    val unwatched: Map<String, List<MediaItemDto>> = emptyMap()
 )
 
 /**
@@ -189,12 +191,19 @@ class AppState(private val scope: CoroutineScope) {
     fun loadServerSettings() = run { serverSettings = it.settings() }
 
     fun refreshHome() = run { api ->
+        val libs = api.libraries()
+        libraries = libs
         home = HomeData(
             resume = api.resume(20),
             nextUp = api.nextUp(20),
             latest = api.latest(limit = 24)
         )
-        libraries = api.libraries()
+        // One request per library, and they only fill in the bottom of the page,
+        // so they run after the rest of it is already on screen.
+        home = home.copy(
+            unwatched = libs.associate { it.id to api.unwatched(it.id, 24) }
+                .filterValues { it.isNotEmpty() }
+        )
     }
 
     fun loadLibrary(libraryId: String) = run { api ->

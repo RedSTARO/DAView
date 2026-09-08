@@ -91,6 +91,14 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
             MediaRow("最近添加", home.latest) { state.navigate(Screen.Detail(it.id)) }
         }
 
+        // One row per library rather than a single pooled one: which shelf a
+        // thing sits on is most of what decides whether you want it tonight.
+        items(state.libraries, key = { it.id }) { library ->
+            MediaRow("${library.name} · 未观看", home.unwatched[library.id].orEmpty()) {
+                state.navigate(Screen.Detail(it.id))
+            }
+        }
+
         val running = state.scanStatus.filter { it.running }
         if (running.isNotEmpty()) {
             item {

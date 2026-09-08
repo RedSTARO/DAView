@@ -162,6 +162,13 @@ class DaViewClient(
             parameter("limit", limit)
         }.body()
 
+    /** Entries in a library that nobody has started watching. */
+    suspend fun unwatched(libraryId: String? = null, limit: Int = 20): List<MediaItemDto> =
+        http.get(url("/api/home/unwatched")) {
+            libraryId?.let { parameter("libraryId", it) }
+            parameter("limit", limit)
+        }.body()
+
     suspend fun setFavorite(itemId: String, favorite: Boolean): UserDataDto =
         http.post(url("/api/items/$itemId/favorite")) { parameter("value", favorite) }.body()
 
