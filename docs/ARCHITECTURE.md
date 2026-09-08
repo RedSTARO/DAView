@@ -158,6 +158,13 @@ Compose for Web 把整个界面画进一个 canvas，Skia 只认识应用自己�
 代码保留在 `UiFont.*.kt` 与 `/api/font/cjk`，但 `platformNeedsCjkFont` 在 wasm 上设为
 `false`，避免每次冷启动白白下载 10 MB。桌面端与 Android 端走平台字体管理器，不受影响。
 
+**下次从哪儿接着试**：`androidx.compose.ui.text.platform.Font(identity, bytes)` 是
+skiko/JVM 的便利构造，wasm 渲染器并没有把它接进字体解析器——这与上面五种尝试的
+现象一致（family 建得出来、拉丁字形不变、preload 无效）。Compose Multiplatform 在
+网页端的正规路径是把字体放进 `composeResources/font/`，用 `Res.font.*` 配合
+`preloadFont` 加载。代价是仓库里要放一个约 10 MB 的字体（Noto Sans SC 之类的
+OFL 字体），或者在构建时下载。
+
 Material 3 Expressive 用到的 `MaterialExpressiveTheme`、`MotionScheme.expressive()`、
 `MaterialShapes`、`ButtonGroup`、`LinearWavyProgressIndicator`、`ContainedLoadingIndicator`、
 `ToggleButton`、`HorizontalFloatingToolbar` 都来自
