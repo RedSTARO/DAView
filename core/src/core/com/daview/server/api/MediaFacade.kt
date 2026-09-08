@@ -41,21 +41,36 @@ class MediaFacade(private val context: ServerContext) {
     private fun invalid(message: String, detail: String? = null): Nothing =
         throw FacadeException(Failure.INVALID, message, detail)
 
-    private suspend fun <T> io(block: () -> T): T = withContext(Dispatchers.IO) { block() }
+    /**
+     * Runs [block] off whatever thread called in.
+     *
+     * Every public method below goes through this. The catalogue lives in
+     * SQLite on the caller's own disk, and the caller is a Compose UI: a read
+     * that takes 200 ms is 200 ms the window does not repaint. Putting the
+     * boundary here rather than at each call site means a screen cannot forget
+     * it, and it keeps the state assignments that follow a call on the thread
+     * the caller was already on.
+     *
+     * Nesting is deliberate — an inner `io { }` inside a wrapped body is a
+     * `withContext` to the dispatcher it is already on, which costs nothing.
+     */
+    private suspend fun <T> io(block: suspend () -> T): T = withContext(Dispatchers.IO) { block() }
 
     // ------------------------------------------------------------ server info
 
-    fun info(): ServerInfoDto = ServerInfoDto(
-        name = context.config.serverName,
-        version = DAVIEW_VERSION,
-        storageConfigured = context.config.storage.configured,
-        libraryCount = context.repository.libraries().size,
-        itemCount = context.repository.totalItemCount()
-    )
+    suspend fun info(): ServerInfoDto = io {
+        ServerInfoDto(
+            name = context.config.serverName,
+            version = DAVIEW_VERSION,
+            storageConfigured = context.config.storage.configured,
+            libraryCount = context.repository.libraries().size,
+            itemCount = context.repository.totalItemCount()
+        )
+    }
 
-    fun settings(): ServerSettingsDto = context.config.toSettingsDto()
+    suspend fun settings(): ServerSettingsDto = io { context.config.toSettingsDto() }
 
-    fun updateSettings(incoming: ServerSettingsDto): ServerSettingsDto {
+    suspend fun updateSettings(incoming: ServerSettingsDto): ServerSettingsDto = io {
         val updated = context.updateConfig { current ->
             current.copy(
                 serverName = incoming.serverName.ifBlank { current.serverName },
@@ -73,31 +88,31 @@ class MediaFacade(private val context: ServerContext) {
                 )
             )
         }
-        return updated.toSettingsDto()
+        updated.toSettingsDto()
     }
 
     // ------------------------------------------------------------ storage
 
-    suspend fun testStorage(incoming: StorageSettingsDto): List<WebDavEntryDto> {
+    suspend fun testStorage(incoming: StorageSettingsDto): List<WebDavEntryDto> = io {
         val effective = StorageConfig(
             url = incoming.url.ifBlank { context.config.storage.url },
             username = incoming.username.ifBlank { context.config.storage.username },
             password = incoming.password.ifBlank { context.config.storage.password }
         )
         if (!effective.configured) invalid("缺少 WebDAV 地址")
-        return io { WebDavClient(effective).probe() }.map { it.toDto() }
+        WebDavClient(effective).probe().map { it.toDto() }
     }
 
-    suspend fun browseStorage(path: String): List<WebDavEntryDto> {
+    suspend fun browseStorage(path: String): List<WebDavEntryDto> = io {
         val dav = context.webdav() ?: invalid("WebDAV 未配置")
-        return io { dav.list(path) }.map { it.toDto() }
+        dav.list(path).map { it.toDto() }
     }
 
     // ------------------------------------------------------------ libraries
 
-    fun libraries(): List<LibraryDto> = context.repository.libraries()
+    suspend fun libraries(): List<LibraryDto> = io { context.repository.libraries() }
 
-    fun createLibrary(incoming: LibraryDto): LibraryDto {
+    suspend fun createLibrary(incoming: LibraryDto): LibraryDto = io {
         val library = incoming.copy(
             // Derived from the path, not random: another device pointed at the
             // same folder has to reach the same id by itself, or the item ids
@@ -108,29 +123,29 @@ class MediaFacade(private val context: ServerContext) {
             providerOrder = incoming.providerOrder.ifEmpty { context.metadata.defaultOrder(incoming.kind) }
         )
         context.repository.upsertLibrary(library)
-        return context.repository.library(library.id) ?: library
+        context.repository.library(library.id) ?: library
     }
 
-    fun updateLibrary(id: String, incoming: LibraryDto): LibraryDto {
+    suspend fun updateLibrary(id: String, incoming: LibraryDto): LibraryDto = io {
         context.repository.library(id) ?: notFound("媒体库不存在")
         context.repository.upsertLibrary(incoming.copy(id = id))
-        return context.repository.library(id)!!
+        context.repository.library(id)!!
     }
 
-    fun deleteLibrary(id: String) = context.repository.deleteLibrary(id)
+    suspend fun deleteLibrary(id: String) = io { context.repository.deleteLibrary(id) }
 
-    fun scan(libraryId: String, mode: ScanMode): ScanProgressDto {
+    suspend fun scan(libraryId: String, mode: ScanMode): ScanProgressDto = io {
         val library = context.repository.library(libraryId) ?: notFound("媒体库不存在")
-        return context.scans.submit(library, mode)
+        context.scans.submit(library, mode)
     }
 
-    fun scanStatus(): List<ScanProgressDto> = context.scans.status()
+    suspend fun scanStatus(): List<ScanProgressDto> = io { context.scans.status() }
 
-    fun cancelScan(libraryId: String) = context.scans.cancel(libraryId)
+    suspend fun cancelScan(libraryId: String) = io { context.scans.cancel(libraryId) }
 
     // ------------------------------------------------------------ items
 
-    fun items(
+    suspend fun items(
         links: AssetLinks,
         libraryId: String? = null,
         parentId: String? = null,
@@ -140,7 +155,7 @@ class MediaFacade(private val context: ServerContext) {
         sort: String = "sortName",
         limit: Int = 100,
         offset: Int = 0
-    ): ItemPage {
+    ): ItemPage = io {
         val (items, total) = context.repository.query(
             Repository.Query(
                 libraryId = libraryId,
@@ -153,7 +168,7 @@ class MediaFacade(private val context: ServerContext) {
                 offset = offset.coerceAtLeast(0)
             )
         )
-        return ItemPage(items.map { it.withAssetUrls(links) }, total, offset)
+        ItemPage(items.map { it.withAssetUrls(links) }, total, offset)
     }
 
     /**
@@ -161,52 +176,52 @@ class MediaFacade(private val context: ServerContext) {
      * and the player both need, and reading them costs a couple of range
      * requests, so it happens once per item rather than during the scan.
      */
-    suspend fun item(id: String, links: AssetLinks): MediaItemDto {
+    suspend fun item(id: String, links: AssetLinks): MediaItemDto = io {
         val item = context.repository.item(id) ?: notFound("条目不存在")
         val enriched = if (item.isPlayable && item.mediaStreams.none { !it.isExternal }) {
             io { runCatching { context.streams.probeItem(item) }.getOrDefault(item) }
         } else item
-        return enriched.withAssetUrls(links)
+        enriched.withAssetUrls(links)
     }
 
-    fun children(id: String, links: AssetLinks): List<MediaItemDto> =
-        context.repository.children(id).map { it.withAssetUrls(links) }
+    suspend fun children(id: String, links: AssetLinks): List<MediaItemDto> =
+        io { context.repository.children(id).map { it.withAssetUrls(links) } }
 
-    fun setFavorite(id: String, value: Boolean): UserDataDto =
-        context.repository.setFavorite(id, value)
+    suspend fun setFavorite(id: String, value: Boolean): UserDataDto =
+        io { context.repository.setFavorite(id, value) }
 
     /**
      * A series or a season has no bytes of its own, so marking one watched
      * means marking the episodes under it; its own row would just be a second
      * answer to the same question, free to drift from the episodes.
      */
-    suspend fun setPlayed(id: String, value: Boolean): UserDataDto {
+    suspend fun setPlayed(id: String, value: Boolean): UserDataDto = io {
         val episodes = context.repository.episodeIdsUnder(id)
-        if (episodes.isEmpty()) return context.repository.setPlayed(id, value)
-        io { episodes.forEach { context.repository.setPlayed(it, value) } }
-        return context.repository.userData(id)
+        if (episodes.isEmpty()) return@io context.repository.setPlayed(id, value)
+        episodes.forEach { context.repository.setPlayed(it, value) }
+        context.repository.userData(id)
     }
 
     // ------------------------------------------------------------ home rows
 
-    fun resume(limit: Int, links: AssetLinks) =
-        context.repository.resume(limit).map { it.withAssetUrls(links) }
+    suspend fun resume(limit: Int, links: AssetLinks) =
+        io { context.repository.resume(limit).map { it.withAssetUrls(links) } }
 
-    fun nextUp(limit: Int, links: AssetLinks) =
-        context.repository.nextUp(limit).map { it.withAssetUrls(links) }
+    suspend fun nextUp(limit: Int, links: AssetLinks) =
+        io { context.repository.nextUp(limit).map { it.withAssetUrls(links) } }
 
-    fun latest(libraryId: String?, limit: Int, links: AssetLinks) =
-        context.repository.latest(libraryId, limit).map { it.withAssetUrls(links) }
+    suspend fun latest(libraryId: String?, limit: Int, links: AssetLinks) =
+        io { context.repository.latest(libraryId, limit).map { it.withAssetUrls(links) } }
 
-    fun unwatched(libraryId: String?, limit: Int, links: AssetLinks) =
-        context.repository.unwatched(libraryId, limit).map { it.withAssetUrls(links) }
+    suspend fun unwatched(libraryId: String?, limit: Int, links: AssetLinks) =
+        io { context.repository.unwatched(libraryId, limit).map { it.withAssetUrls(links) } }
 
     // ------------------------------------------------------------ merging duplicates
 
-    fun mergedSources(id: String, links: AssetLinks) =
-        context.repository.mergedSources(id).map { it.withAssetUrls(links) }
+    suspend fun mergedSources(id: String, links: AssetLinks) =
+        io { context.repository.mergedSources(id).map { it.withAssetUrls(links) } }
 
-    fun merge(targetId: String, sourceIds: List<String>, links: AssetLinks): MediaItemDto {
+    suspend fun merge(targetId: String, sourceIds: List<String>, links: AssetLinks): MediaItemDto = io {
         val target = context.repository.item(targetId) ?: notFound("条目不存在")
         val sources = sourceIds.filter { it != target.id }.mapNotNull { context.repository.item(it) }
         if (sources.isEmpty()) invalid("没有可合并的条目")
@@ -214,14 +229,14 @@ class MediaFacade(private val context: ServerContext) {
             invalid("只能合并同类条目", "${it.name} 是 ${it.kind}，目标是 ${target.kind}")
         }
         context.repository.mergeItems(target.id, sources.map { it.id })
-        return context.repository.item(target.id)!!.withAssetUrls(links)
+        context.repository.item(target.id)!!.withAssetUrls(links)
     }
 
-    fun unmerge(id: String, links: AssetLinks): MediaItemDto {
+    suspend fun unmerge(id: String, links: AssetLinks): MediaItemDto = io {
         val source = context.repository.item(id)
         if (source?.mergedInto == null) invalid("这个条目没有被合并")
         context.repository.unmergeItem(id)
-        return context.repository.item(id)!!.withAssetUrls(links)
+        context.repository.item(id)!!.withAssetUrls(links)
     }
 
     // ------------------------------------------------------------ manual identify
@@ -235,10 +250,10 @@ class MediaFacade(private val context: ServerContext) {
         return item
     }
 
-    fun identifyContext(id: String): IdentifyContextDto {
+    suspend fun identifyContext(id: String): IdentifyContextDto = io {
         val item = identifiable(id)
         val parsed = context.metadata.folderTitle(item)
-        return IdentifyContextDto(
+        IdentifyContextDto(
             itemId = item.id,
             kind = item.kind,
             defaultQuery = parsed.title,
@@ -254,14 +269,12 @@ class MediaFacade(private val context: ServerContext) {
         provider: MetadataProvider?,
         query: String?,
         year: Int?
-    ): List<ScrapeCandidateDto> {
+    ): List<ScrapeCandidateDto> = io {
         val item = identifiable(id)
         if (provider == null || provider == MetadataProvider.NONE) invalid("未知的刮削源")
         val effectiveQuery = query?.takeIf { it.isNotBlank() } ?: context.metadata.folderTitle(item).title
         val kind = if (item.kind == ItemKind.MOVIE) ItemKind.MOVIE else ItemKind.SERIES
-        return io {
-            context.metadata.searchProvider(provider, effectiveQuery, year, kind, context.scraperConfigFor(item))
-        }.map {
+        context.metadata.searchProvider(provider, effectiveQuery, year, kind, context.scraperConfigFor(item)).map {
             ScrapeCandidateDto(
                 provider = provider,
                 providerId = it.providerId,
@@ -274,25 +287,23 @@ class MediaFacade(private val context: ServerContext) {
         }
     }
 
-    suspend fun identify(id: String, request: IdentifyRequest, links: AssetLinks): MediaItemDto {
+    suspend fun identify(id: String, request: IdentifyRequest, links: AssetLinks): MediaItemDto = io {
         val item = identifiable(id)
         if (request.provider == MetadataProvider.NONE || request.providerId.isBlank()) {
             invalid("需要刮削源与条目 id")
         }
-        val updated = io {
-            context.metadata.identify(
-                item = item,
-                provider = request.provider,
-                providerId = request.providerId,
-                order = context.providerOrderFor(item),
-                config = context.scraperConfigFor(item)
-            )
-        } ?: throw FacadeException(
+        val updated = context.metadata.identify(
+            item = item,
+            provider = request.provider,
+            providerId = request.providerId,
+            order = context.providerOrderFor(item),
+            config = context.scraperConfigFor(item)
+        ) ?: throw FacadeException(
             Failure.UPSTREAM,
             "刮削失败",
             "${request.provider.displayName} 上没有 id ${request.providerId.trim()}，或该源未配置密钥"
         )
-        return updated.withAssetUrls(links)
+        updated.withAssetUrls(links)
     }
 
     // ------------------------------------------------------------ playback
@@ -304,7 +315,7 @@ class MediaFacade(private val context: ServerContext) {
      * own path is a directory, and asking the storage to stream a directory is
      * how this used to fail — a 502 with nothing in the player to say why.
      */
-    suspend fun startPlayback(request: PlaybackStartRequest, links: AssetLinks): PlaybackInfoDto {
+    suspend fun startPlayback(request: PlaybackStartRequest, links: AssetLinks): PlaybackInfoDto = io {
         val requested = context.repository.item(request.itemId)
         val stored = when {
             requested == null -> null
@@ -316,7 +327,7 @@ class MediaFacade(private val context: ServerContext) {
             notFound("没有可播放的内容", requested?.let { "${it.name} 下没有分集" })
         }
 
-        val item = io { runCatching { context.streams.probeItem(stored) }.getOrDefault(stored) }
+        val item = runCatching { context.streams.probeItem(stored) }.getOrDefault(stored)
         val mediaPath = item.path ?: storedPath
         val userData = item.userData
         val audio = userData.audioStreamIndex ?: item.mediaStreams
@@ -339,11 +350,11 @@ class MediaFacade(private val context: ServerContext) {
         // here returns 206 a second later. So it reads through the pipe, which
         // can also re-resolve the link when it expires mid-film.
         val direct = if (request.player == PlayerKind.INTERNAL) {
-            io { context.streams.directUrl(mediaPath) }
+            context.streams.directUrl(mediaPath)
         } else null
         val proxy = request.trackThroughProxy && context.config.trackExternalPlayers
 
-        return PlaybackInfoDto(
+        PlaybackInfoDto(
             sessionId = session.id,
             item = item.withAssetUrls(links),
             streamUrl = links.stream(item.id, mediaPath.substringAfterLast('/'), session.id, proxy),
@@ -357,7 +368,7 @@ class MediaFacade(private val context: ServerContext) {
             subtitleUrls = item.mediaStreams
                 .filter { it.isExternal && it.externalPath != null }
                 .associate { stream ->
-                    val subtitleDirect = io { context.streams.directUrl(stream.externalPath!!) }
+                    val subtitleDirect = context.streams.directUrl(stream.externalPath!!)
                     stream.index to (subtitleDirect ?: links.subtitle(item.id, stream.index, session.id))
                 },
             container = mediaPath.substringAfterLast('.'),
@@ -365,13 +376,14 @@ class MediaFacade(private val context: ServerContext) {
         )
     }
 
-    fun reportProgress(request: PlaybackProgressRequest): Boolean =
+    suspend fun reportProgress(request: PlaybackProgressRequest): Boolean = io {
         context.playback.report(
             request.sessionId, request.positionMs, request.paused,
             request.audioStreamIndex, request.subtitleStreamIndex
         ) != null
+    }
 
-    fun stopPlayback(request: PlaybackStopRequest) {
+    suspend fun stopPlayback(request: PlaybackStopRequest): Unit = io {
         context.playback.stop(request.sessionId, request.positionMs.takeIf { it >= 0 })
         // Stopping already tells the pipe, and so does an idle timeout. This is
         // here for the session the tracker no longer holds — it has been retired
@@ -379,25 +391,27 @@ class MediaFacade(private val context: ServerContext) {
         context.pipe.release(request.sessionId)
     }
 
-    fun sessions(): List<SessionStateDto> = context.playback.activeSessions()
+    suspend fun sessions(): List<SessionStateDto> = io { context.playback.activeSessions() }
 
     // ------------------------------------------------------------ sync
 
-    fun syncSettings(result: SyncResultDto? = null) = SyncSettingsDto(
-        enabled = context.config.sync.enabled,
-        remotePath = context.config.sync.remotePath,
-        minIntervalMinutes = context.config.sync.minIntervalMinutes,
-        lastUploadAt = context.config.sync.lastUploadAt,
-        lastPullAt = context.config.sync.lastPullAt,
-        lastError = result?.takeIf { !it.ok }?.message ?: context.config.sync.lastError,
-        writable = context.sync.storageWritable
-    )
+    suspend fun syncSettings(result: SyncResultDto? = null) = io {
+        SyncSettingsDto(
+            enabled = context.config.sync.enabled,
+            remotePath = context.config.sync.remotePath,
+            minIntervalMinutes = context.config.sync.minIntervalMinutes,
+            lastUploadAt = context.config.sync.lastUploadAt,
+            lastPullAt = context.config.sync.lastPullAt,
+            lastError = result?.takeIf { !it.ok }?.message ?: context.config.sync.lastError,
+            writable = context.sync.storageWritable
+        )
+    }
 
     /**
      * Turning it on has to prove the storage takes writes, so it runs a real
      * upload; turning it off is unconditional.
      */
-    suspend fun updateSyncSettings(incoming: SyncSettingsDto): SyncSettingsDto {
+    suspend fun updateSyncSettings(incoming: SyncSettingsDto): SyncSettingsDto = io {
         context.updateConfig { current ->
             current.copy(
                 sync = current.sync.copy(
@@ -406,18 +420,16 @@ class MediaFacade(private val context: ServerContext) {
                 )
             )
         }
-        val result = io {
-            when {
-                incoming.enabled && !context.config.sync.enabled -> context.sync.enable()
-                !incoming.enabled -> {
-                    context.sync.disable()
-                    null
-                }
-
-                else -> null
+        val result = when {
+            incoming.enabled && !context.config.sync.enabled -> context.sync.enable()
+            !incoming.enabled -> {
+                context.sync.disable()
+                null
             }
+
+            else -> null
         }
-        return syncSettings(result)
+        syncSettings(result)
     }
 
     suspend fun syncUpload(): SyncResultDto = io { context.sync.upload() }
@@ -426,21 +438,26 @@ class MediaFacade(private val context: ServerContext) {
 
     // ------------------------------------------------------------ backup
 
+    /**
+     * The one method that does not move itself off the caller's thread: the
+     * sequence is lazy, so the reads happen wherever it is consumed. Consume it
+     * on [Dispatchers.IO].
+     */
     fun backupChunks(options: BackupOptions): Sequence<String> = backupChunks(context, options)
 
     suspend fun importBackup(backup: BackupFileDto): BackupSummaryDto =
         io { runCatching { applyBackup(context, backup) }.getOrElse { invalid("导入失败", it.message) } }
 
     /** Where the artwork for an item is cached, downloading it the first time. */
-    suspend fun imageFile(itemId: String, type: String): java.nio.file.Path? {
-        val item = context.repository.item(itemId) ?: return null
+    suspend fun imageFile(itemId: String, type: String): java.nio.file.Path? = io {
+        val item = context.repository.item(itemId) ?: return@io null
         val remote = when (type) {
             "primary" -> item.posterUrl
             "backdrop" -> item.backdropUrl
             "logo" -> item.logoUrl
             else -> null
-        } ?: return null
-        return io { context.images.get(remote)?.file }
+        } ?: return@io null
+        context.images.get(remote)?.file
     }
 
     // ------------------------------------------------------------ artwork
