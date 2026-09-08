@@ -107,6 +107,14 @@ compose.desktop {
             targetFormats(TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Dmg)
             packageName = "DAView"
             packageVersion = "1.0.0"
+            // jlink builds the bundled runtime from this list plus what Compose
+            // asks for, and anything missing only shows up at runtime: the
+            // Windows launcher swallows the stack trace and reports "Failed to
+            // launch JVM". Both entries are reached on the very first frame —
+            // sqlite-jdbc needs java.sql, and logback's XML configurator hard
+            // references JNDI, so it needs java.naming even though nothing here
+            // uses a JNDI lookup.
+            modules("java.sql", "java.naming")
         }
     }
 }
