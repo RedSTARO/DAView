@@ -159,8 +159,10 @@ fun Route.apiRoutes(context: ServerContext) {
             call.respond(HttpStatusCode.NotFound, ApiError("媒体库不存在"))
             return@post
         }
-        val refresh = call.request.queryParameters["refresh"]?.toBoolean() ?: false
-        call.respond(context.scans.submit(library, refresh))
+        val params = call.request.queryParameters
+        val mode = params["mode"]?.let { value -> ScanMode.entries.firstOrNull { it.name.equals(value, true) } }
+            ?: if (params["refresh"]?.toBoolean() == true) ScanMode.REFRESH else ScanMode.FULL
+        call.respond(context.scans.submit(library, mode))
     }
 
     get("/api/scan/status") {
@@ -494,10 +496,22 @@ fun Route.apiRoutes(context: ServerContext) {
     post("/api/playback/start") {
         call.requireAuth(context) ?: return@post
         val request = call.receive<PlaybackStartRequest>()
-        val stored = context.repository.item(request.itemId)
+        val requested = context.repository.item(request.itemId)
+        // Pressing play on a series or a season has to land on an episode. Its
+        // own path is a directory, and asking the storage to stream a directory
+        // is how this used to fail: a 502 from the server with nothing in the
+        // player to say why.
+        val stored = when {
+            requested == null -> null
+            requested.isPlayable -> requested
+            else -> context.repository.nextEpisodeUnder(requested.id)
+        }
         val storedPath = stored?.path
         if (stored == null || storedPath == null) {
-            call.respond(HttpStatusCode.NotFound, ApiError("条目不存在或不可播放"))
+            call.respond(
+                HttpStatusCode.NotFound,
+                ApiError("没有可播放的内容", requested?.let { "${it.name} 下没有分集" })
+            )
             return@post
         }
         val item = withContext(Dispatchers.IO) {

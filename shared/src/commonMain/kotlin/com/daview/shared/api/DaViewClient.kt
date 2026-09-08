@@ -101,8 +101,8 @@ class DaViewClient(
         http.delete(url("/api/libraries/$id"))
     }
 
-    suspend fun scanLibrary(id: String, refreshMetadata: Boolean = false): ScanProgressDto =
-        http.post(url("/api/libraries/$id/scan")) { parameter("refresh", refreshMetadata) }.body()
+    suspend fun scanLibrary(id: String, mode: ScanMode = ScanMode.FULL): ScanProgressDto =
+        http.post(url("/api/libraries/$id/scan")) { parameter("mode", mode.name.lowercase()) }.body()
 
     suspend fun scanStatus(): List<ScanProgressDto> = http.get(url("/api/scan/status")).body()
 

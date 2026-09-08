@@ -533,6 +533,28 @@ class Repository(private val db: Database) {
      * Every episode under an item, whether it hangs off a series or a season.
      * Used to mark a whole run watched in one go.
      */
+    /**
+     * The episode to play when someone presses play on a series or a season:
+     * whatever was left part-watched, else the first unwatched one, else the
+     * first. Mirrors what "continue watching" means everywhere else.
+     */
+    fun nextEpisodeUnder(itemId: String): MediaItemDto? = db.read { connection ->
+        connection.statement(
+            """
+            $SELECT_ITEM
+            WHERE i.kind = 'EPISODE' AND (i.series_id = ? OR i.parent_id = ?)
+            ORDER BY
+                CASE WHEN COALESCE(u.position_ms, 0) > 0 AND COALESCE(u.played, 0) = 0 THEN 0
+                     WHEN COALESCE(u.played, 0) = 0 THEN 1
+                     ELSE 2 END,
+                COALESCE(i.parent_index_number, 0),
+                COALESCE(i.index_number, 99999)
+            LIMIT 1
+            """.trimIndent()
+        ).apply { setString(1, itemId); setString(2, itemId) }
+            .useQuery { if (it.next()) readItem(it) else null }
+    }
+
     fun episodeIdsUnder(itemId: String): List<String> = db.read { connection ->
         connection.statement(
             "SELECT id FROM items WHERE kind = 'EPISODE' AND (series_id = ? OR parent_id = ?)"

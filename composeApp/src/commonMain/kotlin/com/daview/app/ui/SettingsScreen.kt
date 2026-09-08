@@ -2,6 +2,7 @@ package com.daview.app.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -22,6 +23,8 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
@@ -56,6 +59,7 @@ import com.daview.app.platform.openUrl
 import com.daview.app.platform.pickTextFile
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.LibraryKind
+import com.daview.shared.model.ScanMode
 import com.daview.shared.model.ScraperSettingsDto
 import com.daview.shared.model.StorageSettingsDto
 import com.daview.shared.model.SyncResultDto
@@ -127,8 +131,34 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(onClick = { state.startScan(library.id) }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "扫描")
+                Box {
+                    var scanMenu by remember { mutableStateOf(false) }
+                    IconButton(onClick = { scanMenu = true }) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "扫描")
+                    }
+                    DropdownMenu(scanMenu, onDismissRequest = { scanMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("扫描文件并刮削新条目") },
+                            onClick = { scanMenu = false; state.startScan(library.id, ScanMode.FULL) }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text("仅刮削未刮削的条目")
+                                    Text(
+                                        "不走文件与容器探测，只补没有元数据的",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            },
+                            onClick = { scanMenu = false; state.startScan(library.id, ScanMode.MISSING) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("重新刮削全部") },
+                            onClick = { scanMenu = false; state.startScan(library.id, ScanMode.REFRESH) }
+                        )
+                    }
                 }
                 IconButton(onClick = { state.deleteLibrary(library.id) }) {
                     Icon(Icons.Filled.Delete, contentDescription = "删除")

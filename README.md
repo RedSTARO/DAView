@@ -59,6 +59,8 @@
 - 刮错了可以手动指定条目 id（见下节），指定后会被钉住，重新扫描也不会被覆盖回去
 - **主来源没匹配上时，退而用次级来源**：所有源都严格匹配失败后，会取排名最高、年份不冲突的
   候选顶上，而不是把条目空着。这种条目在详情页标为「次级来源顶替（未可靠匹配，建议核对）」。
+- **三种扫描方式**（媒体库卡片上的刷新按钮）：扫描文件并刮削新条目 / **仅刮削未刮削的条目**
+  （跳过文件遍历与容器探测，实测 5 秒完成，完整扫描要十分钟）/ 重新刮削全部
 - **刮削状态显示在详情页**：自动匹配 / 次级来源顶替 / 手动指定 / 所有来源都没有匹配 / 尚未刮削，
   并列出各来源的 id。
 
@@ -309,6 +311,9 @@ DAVIEW_WEB_DIR=...          # 网页客户端目录，默认取 composeApp 的�
 ```
 shared/      KMP：DTO 与 REST 客户端（jvm / android / wasmJs）
 server/      KMP core（jvm / android）：WebDAV、扫描、命名解析、刮削、SQLite、流媒体、图片缓存
+             共享源码在 src/core，**不能**放 src/main——传统 Android DSL 下那也是 AGP 自己的
+             main 源集，重复注册会让 compileDebugKotlinAndroid 一直报 UP-TO-DATE，APK 里带的
+             是旧代码
 server-app/  独立服务端的启动器，只有一个 main()
 composeApp/  Compose Multiplatform 客户端（androidMain / desktopMain / wasmJsMain）
 docs/        架构说明与实测记录

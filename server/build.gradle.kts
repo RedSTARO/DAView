@@ -30,7 +30,11 @@ kotlin {
     }
 
     sourceSets {
-        val core = "src/main/kotlin"
+        // Deliberately not src/main/kotlin: with the legacy Android DSL that
+        // directory is also AGP's own main source set for the library, so
+        // registering it again left compileDebugKotlinAndroid reporting
+        // UP-TO-DATE after edits and shipping stale server code in the APK.
+        val core = "src/core"
 
         jvmMain {
             kotlin.srcDir(core)
@@ -47,7 +51,10 @@ kotlin {
                 // Typed binding for both statements and queries, which
                 // SQLiteDatabase.rawQuery's String[] arguments cannot express.
                 implementation(libs.androidx.sqlite.framework)
-                implementation(libs.slf4j.android)
+                // slf4j-android is a 1.7-era binding that SLF4J 2 ignores, which
+                // left the server silent on the phone. slf4j-simple is a real 2.x
+                // provider and its stderr output lands in logcat.
+                implementation(libs.slf4j.simple)
             }
         }
 

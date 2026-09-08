@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -29,10 +30,15 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.daview.shared.model.MediaStreamDto
 import com.daview.shared.model.PlaybackInfoDto
@@ -58,8 +64,24 @@ actual fun InternalPlayer(
     var selectedAudio by remember { mutableStateOf(info.audioStreamIndex) }
     var selectedSubtitle by remember { mutableStateOf(info.subtitleStreamIndex) }
 
+    var playbackError by remember { mutableStateOf<String?>(null) }
+
     val player = remember {
-        ExoPlayer.Builder(context).build().apply {
+        // The stream URL points at the app's own server over http, and that
+        // server answers with a 302 to the storage backend's signed https link.
+        // ExoPlayer refuses http -> https redirects unless told otherwise, which
+        // is why playback failed to start at all.
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setAllowCrossProtocolRedirects(true)
+            .setUserAgent("DAView/1.0")
+            .setConnectTimeoutMs(20_000)
+            .setReadTimeoutMs(30_000)
+
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(DefaultDataSource.Factory(context, httpFactory))
+            )
+            .build().apply {
             val subtitles = info.item.mediaStreams
                 .filter { it.type == StreamType.SUBTITLE && it.isExternal }
                 .mapNotNull { stream ->
@@ -77,8 +99,16 @@ actual fun InternalPlayer(
                     .setSubtitleConfigurations(subtitles)
                     .build()
             )
+            android.util.Log.i("DAView", "play url=${info.streamUrl}")
             seekTo(info.startPositionMs)
             playWhenReady = true
+            // Without this a failure is silent: a black surface and no clue.
+            addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    android.util.Log.e("DAView", "playback failed", error)
+                    playbackError = "${error.errorCodeName}: ${error.message ?: "播放失败"}"
+                }
+            })
             prepare()
         }
     }
@@ -162,6 +192,21 @@ actual fun InternalPlayer(
                         )
                     }
                 }
+            }
+        }
+
+        playbackError?.let { message ->
+            Surface(
+                modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Text(
+                    message,
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
             }
         }
 

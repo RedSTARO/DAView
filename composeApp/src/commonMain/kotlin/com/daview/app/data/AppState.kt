@@ -15,6 +15,7 @@ import com.daview.shared.model.ItemKind
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.PlayedState
+import com.daview.shared.model.ScanMode
 import com.daview.shared.model.ScanProgressDto
 import com.daview.shared.model.ServerInfoDto
 import com.daview.shared.model.ServerSettingsDto
@@ -283,9 +284,13 @@ class AppState(private val scope: CoroutineScope) {
         toast = if (markPlayed) "已标记为已观看" else "已标记为未观看"
     }
 
-    fun startScan(libraryId: String, refresh: Boolean = false) = run { api ->
-        api.scanLibrary(libraryId, refresh)
-        toast = "已开始扫描"
+    fun startScan(libraryId: String, mode: ScanMode = ScanMode.FULL) = run { api ->
+        api.scanLibrary(libraryId, mode)
+        toast = when (mode) {
+            ScanMode.MISSING -> "已开始刮削未刮削的条目"
+            ScanMode.REFRESH -> "已开始重新刮削全部"
+            ScanMode.FULL -> "已开始扫描"
+        }
         pollScanStatus()
     }
 

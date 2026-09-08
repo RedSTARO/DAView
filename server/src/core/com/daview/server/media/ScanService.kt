@@ -6,6 +6,7 @@ import com.daview.server.library.Scanner
 import com.daview.server.scraper.MetadataService
 import com.daview.server.storage.WebDavClient
 import com.daview.shared.model.LibraryDto
+import com.daview.shared.model.ScanMode
 import com.daview.shared.model.ScanProgressDto
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
@@ -29,7 +30,7 @@ class ScanService(
 
     fun isRunning(libraryId: String): Boolean = progress[libraryId]?.running == true
 
-    fun submit(library: LibraryDto, refreshMetadata: Boolean): ScanProgressDto {
+    fun submit(library: LibraryDto, mode: ScanMode): ScanProgressDto {
         if (isRunning(library.id)) return progress.getValue(library.id)
         val initial = ScanProgressDto(
             libraryId = library.id,
@@ -37,14 +38,14 @@ class ScanService(
             phase = "queued",
             current = 0,
             total = 0,
-            message = "排队中"
+            message = if (mode == ScanMode.MISSING) "排队中（仅刮削未刮削）" else "排队中"
         )
         progress[library.id] = initial
-        executor.submit { runScan(library, refreshMetadata) }
+        executor.submit { runScan(library, mode) }
         return initial
     }
 
-    private fun runScan(library: LibraryDto, refreshMetadata: Boolean) {
+    private fun runScan(library: LibraryDto, mode: ScanMode) {
         val dav = davProvider()
         if (dav == null) {
             progress[library.id] = progress.getValue(library.id).copy(
@@ -53,31 +54,41 @@ class ScanService(
             return
         }
         try {
-            val scanner = Scanner(dav, repository)
-            val result = scanner.scan(library) { phase, current, total, message ->
-                progress[library.id] = progress.getValue(library.id).copy(
-                    phase = phase, current = current, total = total, message = message, running = true
-                )
+            // MISSING skips the file walk on purpose: nothing about the files has
+            // changed, and walking 118 folders plus probing 400 containers to fill
+            // in a handful of unmatched titles is the slow way round.
+            val result = if (mode == ScanMode.MISSING) null else {
+                Scanner(dav, repository).scan(library) { phase, current, total, message ->
+                    progress[library.id] = progress.getValue(library.id).copy(
+                        phase = phase, current = current, total = total, message = message, running = true
+                    )
+                }.also { log.info("库 {} 扫描完成: {} 项，移除 {} 项", library.name, it.itemCount, it.removed) }
             }
-            log.info("库 {} 扫描完成: {} 项，移除 {} 项", library.name, result.itemCount, result.removed)
 
             val config = configProvider()
-            metadata.enrichLibrary(library, config.scraper.copy(language = library.language), refreshMetadata) { current, total, message ->
+            metadata.enrichLibrary(
+                library,
+                config.scraper.copy(language = library.language),
+                force = mode == ScanMode.REFRESH
+            ) { current, total, message ->
                 progress[library.id] = progress.getValue(library.id).copy(
                     phase = "scraping", current = current, total = total, message = message, running = true
                 )
             }
 
-            streams.probeMissing(library.id, PROBE_BUDGET) { current, total, message ->
-                progress[library.id] = progress.getValue(library.id).copy(
-                    phase = "probing", current = current, total = total, message = message, running = true
-                )
+            if (mode != ScanMode.MISSING) {
+                streams.probeMissing(library.id, PROBE_BUDGET) { current, total, message ->
+                    progress[library.id] = progress.getValue(library.id).copy(
+                        phase = "probing", current = current, total = total, message = message, running = true
+                    )
+                }
             }
 
+            val warnings = result?.warnings.orEmpty()
             progress[library.id] = progress.getValue(library.id).copy(
                 phase = "done",
                 running = false,
-                message = if (result.warnings.isEmpty()) "完成" else "完成（${result.warnings.size} 个警告）",
+                message = if (warnings.isEmpty()) "完成" else "完成（${warnings.size} 个警告）",
                 finishedAt = System.currentTimeMillis()
             )
         } catch (t: Throwable) {

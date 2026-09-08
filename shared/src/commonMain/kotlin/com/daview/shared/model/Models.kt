@@ -367,6 +367,23 @@ data class ServerSettingsDto(
     val version: String = "1.0.0"
 )
 
+/** What a scan should actually do. */
+@Serializable
+enum class ScanMode {
+    /** Walk the files, then scrape whatever has no metadata yet. */
+    @SerialName("full") FULL,
+
+    /**
+     * Skip the file walk and the container probing entirely; only scrape items
+     * nothing has ever matched. Cheap, and the one to reach for after adding an
+     * API key.
+     */
+    @SerialName("missing") MISSING,
+
+    /** Walk the files and scrape everything again from scratch. */
+    @SerialName("refresh") REFRESH
+}
+
 @Serializable
 data class ScanProgressDto(
     val libraryId: String,

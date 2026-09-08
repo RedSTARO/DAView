@@ -53,7 +53,16 @@ class PlaybackController(
                     PlaybackStartRequest(
                         itemId = item.id,
                         player = PlayerKind.INTERNAL,
-                        deviceName = defaultDeviceName()
+                        deviceName = defaultDeviceName(),
+                        // Stream through the server rather than handing the player
+                        // a redirect. The storage answers a plain GET with a 302 to
+                        // a signed CDN link, and ExoPlayer following that link gets
+                        // a 502 from the CDN, while the very same link fetched by
+                        // the server returns 206 in a second. On Android the server
+                        // is in this process anyway, so proxying costs one loopback
+                        // hop and buys a link the server can re-resolve when it
+                        // expires mid-playback.
+                        trackThroughProxy = true
                     )
                 )
                 info = playback

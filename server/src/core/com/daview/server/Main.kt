@@ -49,6 +49,8 @@ fun Application.module(context: ServerContext) {
     }
     install(CallLogging) {
         level = Level.INFO
+        // Byte-range requests would drown everything else; failures still show,
+        // because the WebDAV handler above logs them.
         filter { call -> !call.request.local.uri.startsWith("/api/stream") }
     }
     install(CORS) {
@@ -67,6 +69,10 @@ fun Application.module(context: ServerContext) {
     }
     install(StatusPages) {
         exception<com.daview.server.storage.WebDavException> { call, cause ->
+            // Logged, not just answered: a bare 502 at the player end says
+            // nothing about which request to the storage failed or why.
+            LoggerFactory.getLogger("DAView")
+                .warn("WebDAV 错误 {} {}: {}", call.request.local.method.value, call.request.local.uri, cause.message, cause)
             call.respond(HttpStatusCode.BadGateway, ApiError("WebDAV 错误", cause.message))
         }
         exception<Throwable> { call, cause ->
@@ -89,3 +95,4 @@ fun Application.module(context: ServerContext) {
         }
     }
 }
+
