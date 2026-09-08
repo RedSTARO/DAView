@@ -30,6 +30,22 @@ data class ScraperConfig(
     val tmdbImageBase: String = "https://image.tmdb.org/t/p"
 )
 
+/**
+ * Cross-device sync through the share itself: the watch state is written to one
+ * file on the WebDAV target and read back by the other devices.
+ */
+@Serializable
+data class SyncConfig(
+    val enabled: Boolean = false,
+    /** Path of the sync file relative to the WebDAV root. The app owns this file. */
+    val remotePath: String = "/daview-sync.json",
+    /** Floor on how often an automatic upload may run. */
+    val minIntervalMinutes: Int = 10,
+    val lastUploadAt: Long? = null,
+    val lastPullAt: Long? = null,
+    val lastError: String? = null
+)
+
 @Serializable
 data class AppConfig(
     val serverName: String = "DAView",
@@ -49,7 +65,8 @@ data class AppConfig(
      * finished. Players buffer aggressively — PotPlayer can go a couple of
      * minutes between reads — so this has to be generous.
      */
-    val externalSessionIdleTimeoutSec: Int = 300
+    val externalSessionIdleTimeoutSec: Int = 300,
+    val sync: SyncConfig = SyncConfig()
 )
 
 /**

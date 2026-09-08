@@ -180,6 +180,16 @@ class DaViewClient(
 
     suspend fun sessions(): List<SessionStateDto> = http.get(url("/api/playback/sessions")).body()
 
+    suspend fun syncSettings(): SyncSettingsDto = http.get(url("/api/sync")).body()
+
+    /** Turning it on makes the server prove the storage takes writes first. */
+    suspend fun updateSyncSettings(settings: SyncSettingsDto): SyncSettingsDto =
+        http.put(url("/api/sync")) { setBody(settings) }.body()
+
+    suspend fun syncUpload(): SyncResultDto = http.post(url("/api/sync/upload")).body()
+
+    suspend fun syncPull(): SyncResultDto = http.post(url("/api/sync/pull")).body()
+
     /**
      * Download URL for a backup, token inline so a browser or the OS handler can
      * fetch it directly. [secrets] puts the WebDAV password and the scraper API

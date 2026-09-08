@@ -33,7 +33,9 @@ class WebDavException(message: String, val status: Int? = null, cause: Throwable
  * Two behaviours of the 123pan endpoint shape this class:
  *  - `GET` on a file answers `302` with a signed, time-limited CDN link that
  *    needs no credentials and honours `Range` (see [resolveDirectUrl]).
- *  - The share is read-only, so only `PROPFIND`/`GET`/`HEAD` are implemented.
+ *  - Whether it accepts writes cannot be read off `OPTIONS`: the gateway keeps
+ *    `PUT` out of the `Allow` header even on a share that accepts it, so [put]
+ *    is the only way to find out.
  */
 class WebDavClient(private val config: StorageConfig) {
 
@@ -219,6 +221,69 @@ class WebDavClient(private val config: StorageConfig) {
         openRange(relativePath, 0, limit - 1).use { it.stream.readNBytes(limit.toInt()) }
 
     fun probe(): List<DavEntry> = list("/")
+
+    /** Outcome of a write, kept separate from exceptions so callers can show why. */
+    data class WriteResult(val ok: Boolean, val status: Int?, val message: String?) {
+        /** The share answered, and answered "no". Distinct from a network failure. */
+        val forbidden: Boolean get() = status == 403 || status == 401 || status == 405
+    }
+
+    /**
+     * Uploads [bytes], replacing whatever is at that path.
+     *
+     * Only ever called with a path the app owns; nothing here walks the tree or
+     * touches media files.
+     */
+    fun put(relativePath: String, bytes: ByteArray, contentType: String = "application/json"): WriteResult {
+        val request = HttpRequest.newBuilder(URI.create(absoluteUrl(relativePath)))
+            .PUT(HttpRequest.BodyPublishers.ofByteArray(bytes))
+            .header("Content-Type", contentType)
+            .timeout(Duration.ofSeconds(180))
+            .auth()
+            .build()
+        val response = runCatching { http.send(request, HttpResponse.BodyHandlers.ofString()) }
+            .getOrElse { return WriteResult(false, null, it.message ?: it::class.simpleName) }
+        val status = response.statusCode()
+        return if (status in 200..299) {
+            WriteResult(true, status, null)
+        } else {
+            WriteResult(false, status, "HTTP $status" + response.body().take(200).let {
+                if (it.isBlank()) "" else ": $it"
+            })
+        }
+    }
+
+    /** Deletes a single path. Used only to clean up files this app wrote. */
+    fun delete(relativePath: String): WriteResult {
+        val request = HttpRequest.newBuilder(URI.create(absoluteUrl(relativePath)))
+            .DELETE()
+            .timeout(Duration.ofSeconds(60))
+            .auth()
+            .build()
+        val response = runCatching { http.send(request, HttpResponse.BodyHandlers.discarding()) }
+            .getOrElse { return WriteResult(false, null, it.message) }
+        val status = response.statusCode()
+        return WriteResult(status in 200..299 || status == 404, status, null)
+    }
+
+    /** Bytes of a file the app wrote, or null when it is not there yet. */
+    fun readIfPresent(relativePath: String, limit: Long = 32L * 1024 * 1024): ByteArray? {
+        val request = HttpRequest.newBuilder(URI.create(absoluteUrl(relativePath)))
+            .GET()
+            .timeout(Duration.ofSeconds(120))
+            .auth()
+            .build()
+        val response = runCatching { http.send(request, HttpResponse.BodyHandlers.ofByteArray()) }
+            .getOrElse { return null }
+        // A signed CDN redirect is how this gateway serves file bodies.
+        if (response.statusCode() in 300..399) {
+            val location = response.headers().firstValue("location").orElse(null) ?: return null
+            return openRangeAt(location, 0, limit - 1, useAuth = false).use { it.stream.readBytes() }
+        }
+        if (response.statusCode() == 404) return null
+        if (response.statusCode() !in 200..299) return null
+        return response.body()
+    }
 
     private fun encodeSegment(segment: String): String =
         java.net.URLEncoder.encode(segment, StandardCharsets.UTF_8)

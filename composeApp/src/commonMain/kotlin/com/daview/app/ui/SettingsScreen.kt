@@ -56,6 +56,8 @@ import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.LibraryKind
 import com.daview.shared.model.ScraperSettingsDto
 import com.daview.shared.model.StorageSettingsDto
+import com.daview.shared.model.SyncResultDto
+import com.daview.shared.model.SyncSettingsDto
 import com.daview.shared.model.WebDavEntryDto
 import kotlinx.coroutines.launch
 
@@ -85,6 +87,7 @@ fun SettingsScreen(state: AppState) {
         item { HorizontalDivider(Modifier.padding(20.dp)) }
         item { StorageSection(state) }
         item { ScraperSection(state) }
+        item { SyncSection(state) }
         item { BackupSection(state) }
         item { ClientSection(state) }
     }
@@ -265,6 +268,161 @@ private fun ClientSection(state: AppState) {
         Spacer(Modifier.height(12.dp))
         FilledTonalButton(onClick = { state.disconnect() }) { Text("断开连接") }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+/**
+ * Sync goes through the share itself: there is no second server to talk to, so
+ * the devices agree through one file on the storage they already have in common.
+ *
+ * Whether that storage takes writes cannot be asked — the gateway leaves PUT out
+ * of its OPTIONS response even when it honours it — so switching this on runs a
+ * real upload, and a refusal turns the switch back off with the reason shown.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun SyncSection(state: AppState) {
+    val scope = rememberCoroutineScope()
+    var settings by remember { mutableStateOf<SyncSettingsDto?>(null) }
+    var path by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(state.client) {
+        val api = state.client ?: return@LaunchedEffect
+        runCatching { api.syncSettings() }.onSuccess {
+            settings = it
+            path = it.remotePath
+        }
+    }
+
+    fun apply(block: suspend (com.daview.shared.api.DaViewClient) -> Unit) {
+        val api = state.client ?: return
+        scope.launch {
+            busy = true
+            message = null
+            error = null
+            try {
+                block(api)
+            } catch (e: Throwable) {
+                error = e.message ?: "请求失败"
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    fun show(result: SyncResultDto) {
+        if (result.ok) message = result.message else error = result.message
+    }
+
+    Column(Modifier.padding(horizontal = 20.dp)) {
+        Text("跨端同步", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "把观看进度、媒体库定义与服务器设置写成一个文件放在 WebDAV 上，其它设备读回来合并。" +
+                "同一条记录以时间较新的一方为准。不含刮削结果——那个每台设备扫描一次就有，" +
+                "带上会让每次上传从几 KB 变成几 MB。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        val current = settings
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("启用同步", Modifier.weight(1f))
+            Switch(
+                checked = current?.enabled == true,
+                enabled = current != null && !busy,
+                onCheckedChange = { want ->
+                    apply { api ->
+                        val updated = api.updateSyncSettings(
+                            (current ?: SyncSettingsDto()).copy(enabled = want, remotePath = path)
+                        )
+                        settings = updated
+                        path = updated.remotePath
+                        if (want && !updated.enabled) {
+                            error = updated.lastError ?: "存储不接受写入，已保持关闭"
+                        } else if (want) {
+                            message = "同步已开启"
+                        }
+                    }
+                }
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = path,
+            onValueChange = { path = it },
+            label = { Text("WebDAV 上的同步文件路径") },
+            supportingText = { Text("相对于 WebDAV 根目录，只有这个文件会被写入") },
+            singleLine = true,
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                enabled = state.client != null && !busy,
+                onClick = {
+                    apply { api ->
+                        settings = api.updateSyncSettings(
+                            (settings ?: SyncSettingsDto()).copy(
+                                enabled = settings?.enabled == true,
+                                remotePath = path
+                            )
+                        )
+                        show(api.syncUpload())
+                        settings = api.syncSettings()
+                    }
+                }
+            ) { Text("立即上传") }
+
+            FilledTonalButton(
+                enabled = state.client != null && !busy,
+                onClick = {
+                    apply { api ->
+                        show(api.syncPull())
+                        settings = api.syncSettings()
+                        state.refreshLibraries()
+                        state.refreshHome()
+                    }
+                }
+            ) { Text("从云端合并") }
+        }
+
+        if (busy) {
+            Spacer(Modifier.height(8.dp))
+            LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+        }
+        current?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                listOfNotNull(
+                    it.lastUploadAt?.let { _ -> "已上传" } ?: "尚未上传",
+                    it.lastPullAt?.let { _ -> "已合并过云端记录" },
+                    when (it.writable) {
+                        true -> "存储可写"
+                        false -> "存储只读，无法同步"
+                        null -> null
+                    }
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        message?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+        }
+        (error ?: current?.lastError)?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        Spacer(Modifier.height(20.dp))
     }
 }
 

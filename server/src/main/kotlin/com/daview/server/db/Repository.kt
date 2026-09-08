@@ -23,6 +23,9 @@ private val streamListSerializer = ListSerializer(MediaStreamDto.serializer())
 private val stringMapSerializer = MapSerializer(String.serializer(), String.serializer())
 private val providerListSerializer = ListSerializer(MetadataProvider.serializer())
 
+/** A watch-state row with the timestamp the API does not expose. */
+data class UserDataRow(val itemId: String, val data: UserDataDto, val updatedAt: Long)
+
 /** Row shape for [items], including bookkeeping columns the API never exposes. */
 data class ItemRecord(
     val dto: MediaItemDto,
@@ -295,10 +298,34 @@ class Repository(private val db: Database) {
             .useQuery { if (it.next()) readUserData(it, null) else UserDataDto() }
     }
 
-    /** Every watch-state row, for the backup export. */
-    fun allUserData(): List<Pair<String, UserDataDto>> = db.read { connection ->
+    /** Every watch-state row, for the backup export and for sync. */
+    fun allUserData(): List<UserDataRow> = db.read { connection ->
         connection.prepareStatement("SELECT * FROM user_data ORDER BY item_id")
-            .useQuery { rs -> rs.map { it.getString("item_id") to readUserData(it, null) } }
+            .useQuery { rs ->
+                rs.map {
+                    UserDataRow(
+                        itemId = it.getString("item_id"),
+                        data = readUserData(it, null),
+                        updatedAt = it.getLongOrNull("updated_at") ?: 0L
+                    )
+                }
+            }
+    }
+
+    /**
+     * Cheap summary of the watch state, used to notice that something changed
+     * without diffing every row: the newest timestamp plus the row count.
+     */
+    fun userDataFingerprint(): Pair<Long, Int> = db.read { connection ->
+        connection.prepareStatement("SELECT COALESCE(MAX(updated_at), 0), COUNT(*) FROM user_data")
+            .useQuery { if (it.next()) it.getLong(1) to it.getInt(2) else 0L to 0 }
+    }
+
+    /** When a watch-state row last changed, or null when there is no such row. */
+    fun userDataUpdatedAt(itemId: String): Long? = db.read { connection ->
+        connection.prepareStatement("SELECT updated_at FROM user_data WHERE item_id = ?")
+            .apply { setString(1, itemId) }
+            .useQuery { if (it.next()) it.getLong(1) else null }
     }
 
     /**
@@ -306,7 +333,11 @@ class Repository(private val db: Database) {
      * not re-derive `played` or bump the play count: restoring a backup must
      * reproduce what was there, not re-interpret it.
      */
-    fun restoreUserData(itemId: String, data: UserDataDto) = db.transaction { connection ->
+    fun restoreUserData(
+        itemId: String,
+        data: UserDataDto,
+        updatedAt: Long = System.currentTimeMillis()
+    ) = db.transaction { connection ->
         connection.prepareStatement(
             """
             INSERT INTO user_data(item_id, position_ms, played, play_count, favorite,
@@ -329,7 +360,7 @@ class Repository(private val db: Database) {
             data.lastPlayedAt?.let { statement.setLong(6, it) } ?: statement.setNull(6, java.sql.Types.INTEGER)
             data.audioStreamIndex?.let { statement.setInt(7, it) } ?: statement.setNull(7, java.sql.Types.INTEGER)
             data.subtitleStreamIndex?.let { statement.setInt(8, it) } ?: statement.setNull(8, java.sql.Types.INTEGER)
-            statement.setLong(9, System.currentTimeMillis())
+            statement.setLong(9, updatedAt)
             statement.executeUpdate()
         }
     }

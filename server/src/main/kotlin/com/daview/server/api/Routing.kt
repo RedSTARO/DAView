@@ -225,6 +225,46 @@ fun Route.apiRoutes(context: ServerContext) {
         call.respond(summary)
     }
 
+    // ------------------------------------------------------------ sync
+
+    get("/api/sync") {
+        call.requireAuth(context) ?: return@get
+        call.respond(context.syncSettings())
+    }
+
+    put("/api/sync") {
+        call.requireAuth(context) ?: return@put
+        val incoming = call.receive<SyncSettingsDto>()
+        context.updateConfig { current ->
+            current.copy(
+                sync = current.sync.copy(
+                    remotePath = incoming.remotePath.ifBlank { current.sync.remotePath },
+                    minIntervalMinutes = incoming.minIntervalMinutes.coerceIn(1, 24 * 60)
+                )
+            )
+        }
+        // Turning it on has to prove the storage takes writes, so it runs an
+        // upload; turning it off is unconditional.
+        val result = withContext(Dispatchers.IO) {
+            when {
+                incoming.enabled && !context.config.sync.enabled -> context.sync.enable()
+                !incoming.enabled -> { context.sync.disable(); null }
+                else -> null
+            }
+        }
+        call.respond(context.syncSettings(result))
+    }
+
+    post("/api/sync/upload") {
+        call.requireAuth(context) ?: return@post
+        call.respond(withContext(Dispatchers.IO) { context.sync.upload() })
+    }
+
+    post("/api/sync/pull") {
+        call.requireAuth(context) ?: return@post
+        call.respond(withContext(Dispatchers.IO) { context.sync.pull() })
+    }
+
     // ------------------------------------------------------------ items
 
     get("/api/items") {
@@ -605,6 +645,17 @@ private suspend fun ServerContext.identifiable(call: ApplicationCall): MediaItem
     }
     return item
 }
+
+private fun ServerContext.syncSettings(result: com.daview.shared.model.SyncResultDto? = null) =
+    SyncSettingsDto(
+        enabled = config.sync.enabled,
+        remotePath = config.sync.remotePath,
+        minIntervalMinutes = config.sync.minIntervalMinutes,
+        lastUploadAt = config.sync.lastUploadAt,
+        lastPullAt = config.sync.lastPullAt,
+        lastError = result?.takeIf { !it.ok }?.message ?: config.sync.lastError,
+        writable = sync.storageWritable
+    )
 
 /** Scraper credentials, with the language of the library the item belongs to. */
 private fun ServerContext.scraperConfigFor(item: MediaItemDto) =

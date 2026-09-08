@@ -88,7 +88,8 @@ suspend fun ApplicationCall.respondBackup(context: ServerContext, options: Backu
             emit(
                 backupJson.encodeToString(
                     ListSerializer(BackupUserDataDto.serializer()),
-                    context.repository.allUserData().map { BackupUserDataDto(it.first, it.second) }
+                    context.repository.allUserData()
+                        .map { BackupUserDataDto(it.itemId, it.data, it.updatedAt) }
                 )
             )
         }
@@ -115,11 +116,44 @@ suspend fun ApplicationCall.respondBackup(context: ServerContext, options: Backu
 }
 
 /**
+ * Builds a backup in memory, for callers that need the bytes rather than a
+ * response — sync, which uploads them to the share.
+ *
+ * Fine for the sync payload, which leaves the catalogue out and comes to a
+ * couple of kilobytes. Passing `items = true` here materialises every row, so
+ * the HTTP export streams instead.
+ */
+fun buildBackup(context: ServerContext, options: BackupOptions): String {
+    val file = BackupFileDto(
+        createdAt = System.currentTimeMillis(),
+        serverVersion = DAVIEW_VERSION,
+        containsSecrets = options.secrets,
+        settings = if (options.settings) context.backupSettings(options.secrets) else null,
+        libraries = if (options.libraries) context.repository.libraries() else emptyList(),
+        userData = if (options.userData) {
+            context.repository.allUserData().map { BackupUserDataDto(it.itemId, it.data, it.updatedAt) }
+        } else emptyList(),
+        items = if (options.items) {
+            context.repository.itemRecordsPage(Int.MAX_VALUE, 0).map { it.toBackup() }
+        } else emptyList()
+    )
+    return backupJson.encodeToString(BackupFileDto.serializer(), file)
+}
+
+/**
  * Restores a backup on top of whatever is already here. Sections missing from
  * the file are left alone, and a blank secret means "keep the local one", so a
  * secret-free export can be imported without wiping the target's credentials.
  */
-fun applyBackup(context: ServerContext, backup: BackupFileDto): BackupSummaryDto {
+fun applyBackup(
+    context: ServerContext,
+    backup: BackupFileDto,
+    /**
+     * Sync passes true so the newer side of each row wins. A restore leaves it
+     * false: the file the user picked is meant to be authoritative.
+     */
+    mergeUserDataByTimestamp: Boolean = false
+): BackupSummaryDto {
     require(backup.format == BACKUP_FORMAT) { "不是 DAView 备份文件" }
     require(backup.version <= BACKUP_VERSION) {
         "备份文件版本 ${backup.version} 比这个服务端（$BACKUP_VERSION）新"
@@ -152,19 +186,29 @@ fun applyBackup(context: ServerContext, backup: BackupFileDto): BackupSummaryDto
     backup.items.chunked(ITEM_PAGE).forEach { chunk ->
         context.repository.upsertItems(chunk.map { it.toRecord() })
     }
-    backup.userData.forEach { context.repository.restoreUserData(it.itemId, it.data) }
+    var mergedUserData = 0
+    backup.userData.forEach { row ->
+        val local = if (mergeUserDataByTimestamp) context.repository.userDataUpdatedAt(row.itemId) else null
+        if (local != null && local >= row.updatedAt) return@forEach
+        context.repository.restoreUserData(
+            row.itemId,
+            row.data,
+            updatedAt = row.updatedAt.takeIf { it > 0 } ?: System.currentTimeMillis()
+        )
+        mergedUserData++
+    }
 
     return BackupSummaryDto(
         settingsApplied = settings != null,
         libraries = backup.libraries.size,
         items = backup.items.size,
-        userData = backup.userData.size,
+        userData = mergedUserData,
         containsSecrets = backup.containsSecrets,
         createdAt = backup.createdAt
     )
 }
 
-private fun ServerContext.backupSettings(secrets: Boolean) = BackupSettingsDto(
+internal fun ServerContext.backupSettings(secrets: Boolean) = BackupSettingsDto(
     serverName = config.serverName,
     storage = StorageSettingsDto(
         url = config.storage.url,
@@ -189,7 +233,7 @@ private fun ServerContext.backupSettings(secrets: Boolean) = BackupSettingsDto(
 )
 
 /** The item as stored, minus the watch state — that travels in its own section. */
-private fun ItemRecord.toBackup() = BackupItemDto(
+internal fun ItemRecord.toBackup() = BackupItemDto(
     item = dto.copy(userData = UserDataDto()),
     dateCreated = dateCreated,
     dateModified = dateModified,

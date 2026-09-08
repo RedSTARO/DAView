@@ -368,7 +368,9 @@ data class BackupItemDto(
 @Serializable
 data class BackupUserDataDto(
     val itemId: String,
-    val data: UserDataDto
+    val data: UserDataDto,
+    /** When this row last changed. Sync keeps the newer side; a restore ignores it. */
+    val updatedAt: Long = 0
 )
 
 @Serializable
@@ -393,6 +395,32 @@ data class BackupSummaryDto(
     val userData: Int = 0,
     val containsSecrets: Boolean = false,
     val createdAt: Long = 0
+)
+
+// ---------------------------------------------------------------- sync
+
+@Serializable
+data class SyncSettingsDto(
+    val enabled: Boolean = false,
+    val remotePath: String = "/daview-sync.json",
+    val minIntervalMinutes: Int = 10,
+    val lastUploadAt: Long? = null,
+    val lastPullAt: Long? = null,
+    val lastError: String? = null,
+    /** Whether the storage accepts writes. Null until something has tried. */
+    val writable: Boolean? = null
+)
+
+@Serializable
+data class SyncResultDto(
+    val ok: Boolean,
+    val message: String,
+    val at: Long = 0,
+    val bytes: Int? = null,
+    val libraries: Int? = null,
+    val userData: Int? = null,
+    /** Set when the storage itself refused the write, as opposed to a network error. */
+    val readOnlyStorage: Boolean = false
 )
 
 @Serializable
