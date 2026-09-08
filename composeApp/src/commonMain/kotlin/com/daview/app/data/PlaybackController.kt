@@ -1,0 +1,185 @@
+package com.daview.app.data
+
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.daview.app.platform.ExternalPlayRequest
+import com.daview.app.platform.ExternalPlaybackHandle
+import com.daview.app.platform.ExternalPlayerInfo
+import com.daview.app.platform.PlatformInfo
+import com.daview.app.platform.availableExternalPlayers
+import com.daview.app.platform.defaultDeviceName
+import com.daview.app.platform.launchExternalPlayer
+import com.daview.shared.model.MediaItemDto
+import com.daview.shared.model.PlaybackInfoDto
+import com.daview.shared.model.PlaybackProgressRequest
+import com.daview.shared.model.PlaybackStartRequest
+import com.daview.shared.model.PlaybackStopRequest
+import com.daview.shared.model.PlayerKind
+import com.daview.shared.model.SessionStateDto
+import com.daview.shared.model.StreamType
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+/**
+ * Turns "play this" into a server session plus whatever the platform can
+ * actually run: the in-app player on Android and the web, or an external player
+ * everywhere PotPlayer/VLC/mpv exist.
+ */
+class PlaybackController(
+    private val state: AppState,
+    private val scope: CoroutineScope
+) {
+    var pending by mutableStateOf<MediaItemDto?>(null)
+    var info by mutableStateOf<PlaybackInfoDto?>(null)
+    var externalSession by mutableStateOf<SessionStateDto?>(null)
+    var externalPlayerLabel by mutableStateOf<String?>(null)
+    var starting by mutableStateOf(false)
+    var error by mutableStateOf<String?>(null)
+
+    val externalPlayers: List<ExternalPlayerInfo> = availableExternalPlayers()
+
+    private var handle: ExternalPlaybackHandle? = null
+
+    fun playInternal(item: MediaItemDto) {
+        val api = state.client ?: return
+        scope.launch {
+            starting = true
+            error = null
+            try {
+                val playback = api.startPlayback(
+                    PlaybackStartRequest(
+                        itemId = item.id,
+                        player = PlayerKind.INTERNAL,
+                        deviceName = defaultDeviceName()
+                    )
+                )
+                info = playback
+                state.navigate(Screen.Player(item.id))
+            } catch (e: Throwable) {
+                error = e.message ?: "无法开始播放"
+            } finally {
+                starting = false
+            }
+        }
+    }
+
+    fun playExternal(item: MediaItemDto, player: ExternalPlayerInfo) {
+        val api = state.client ?: return
+        scope.launch {
+            starting = true
+            error = null
+            try {
+                val kind = when (player.id) {
+                    "potplayer" -> PlayerKind.POTPLAYER
+                    "vlc" -> PlayerKind.VLC
+                    "mpv", "iina" -> PlayerKind.MPV
+                    else -> PlayerKind.EXTERNAL
+                }
+                val playback = api.startPlayback(
+                    PlaybackStartRequest(
+                        itemId = item.id,
+                        player = kind,
+                        deviceName = defaultDeviceName(),
+                        // Byte-level tracking is what makes progress sync work at
+                        // all for players that never report anything back.
+                        trackThroughProxy = true
+                    )
+                )
+                info = playback
+                externalPlayerLabel = player.label
+
+                val subtitleUrl = playback.subtitleStreamIndex
+                    ?.let { playback.subtitleUrls[it] }
+                    ?: playback.item.mediaStreams
+                        .firstOrNull { it.type == StreamType.SUBTITLE && it.isExternal }
+                        ?.let { playback.subtitleUrls[it.index] }
+
+                handle = launchExternalPlayer(
+                    ExternalPlayRequest(
+                        player = player,
+                        streamUrl = playback.streamUrl,
+                        title = buildTitle(playback.item),
+                        startPositionMs = playback.startPositionMs,
+                        subtitleUrl = subtitleUrl
+                    )
+                )
+                if (handle == null && player.id != "copy") {
+                    error = "无法启动 ${player.label}，可在设置中指定可执行文件路径"
+                }
+                followExternalSession(playback.sessionId)
+            } catch (e: Throwable) {
+                error = e.message ?: "无法开始播放"
+            } finally {
+                starting = false
+            }
+        }
+    }
+
+    private fun buildTitle(item: MediaItemDto): String = buildString {
+        item.seriesName?.let { append(it).append(" · ") }
+        item.episodeLabel?.let { append(it).append(' ') }
+        append(item.name)
+    }
+
+    /**
+     * Polls the server session while an external player runs. The position it
+     * reports is derived from the byte ranges the player requests, so the panel
+     * shows it as an estimate.
+     */
+    private fun followExternalSession(sessionId: String) {
+        scope.launch {
+            val api = state.client ?: return@launch
+            val watcher = handle
+            while (isActive) {
+                val sessions = runCatching { api.sessions() }.getOrNull().orEmpty()
+                val session = sessions.firstOrNull { it.sessionId == sessionId }
+                externalSession = session
+                if (watcher != null && watcher.canObserveExit && !watcher.isRunning()) {
+                    // Let the server settle on its own estimate rather than
+                    // guessing a position the player never told us.
+                    runCatching { api.stopPlayback(PlaybackStopRequest(sessionId, -1)) }
+                    break
+                }
+                if (session == null && watcher?.canObserveExit != true) break
+                delay(3000)
+            }
+            externalSession = null
+            externalPlayerLabel = null
+            handle = null
+            state.refreshHome()
+            state.detailItem?.let { state.loadDetail(it.id) }
+        }
+    }
+
+    fun reportProgress(positionMs: Long, paused: Boolean, audio: Int?, subtitle: Int?) {
+        val api = state.client ?: return
+        val sessionId = info?.sessionId ?: return
+        scope.launch {
+            runCatching {
+                api.reportProgress(PlaybackProgressRequest(sessionId, positionMs, paused, audio, subtitle))
+            }
+        }
+    }
+
+    fun stop(positionMs: Long) {
+        val api = state.client ?: return
+        val sessionId = info?.sessionId ?: return
+        scope.launch {
+            runCatching { api.stopPlayback(PlaybackStopRequest(sessionId, positionMs)) }
+            info = null
+            state.refreshHome()
+        }
+    }
+
+    fun stopExternal() {
+        handle?.stop()
+        val api = state.client ?: return
+        val sessionId = info?.sessionId ?: return
+        scope.launch { runCatching { api.stopPlayback(PlaybackStopRequest(sessionId, -1)) } }
+    }
+
+    val canUseInternalPlayer: Boolean get() = PlatformInfo.hasInternalPlayer
+}

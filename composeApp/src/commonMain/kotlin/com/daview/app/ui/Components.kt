@@ -1,0 +1,268 @@
+package com.daview.app.ui
+
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
+import com.daview.shared.model.ItemKind
+import com.daview.shared.model.MediaItemDto
+
+/** `1:23:45` for anything over an hour, `12:34` otherwise. */
+fun formatDuration(ms: Long?): String {
+    if (ms == null || ms <= 0) return "--:--"
+    val total = ms / 1000
+    val hours = total / 3600
+    val minutes = (total % 3600) / 60
+    val seconds = total % 60
+    return if (hours > 0) "$hours:${pad(minutes)}:${pad(seconds)}" else "${minutes}:${pad(seconds)}"
+}
+
+fun formatSize(bytes: Long?): String {
+    if (bytes == null || bytes <= 0) return ""
+    val units = listOf("B", "KB", "MB", "GB", "TB")
+    var value = bytes.toDouble()
+    var index = 0
+    while (value >= 1024 && index < units.lastIndex) {
+        value /= 1024
+        index++
+    }
+    return "${((value * 10).toLong() / 10.0)} ${units[index]}"
+}
+
+private fun pad(value: Long) = value.toString().padStart(2, '0')
+
+@Composable
+fun SectionHeader(title: String, trailing: @Composable (() -> Unit)? = null) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold
+        )
+        trailing?.invoke()
+    }
+}
+
+/**
+ * Poster tile. Hovering lifts the card on desktop and web, which is the main
+ * expressive motion cue in the browse grids.
+ */
+@Composable
+fun PosterCard(
+    item: MediaItemDto,
+    modifier: Modifier = Modifier,
+    width: androidx.compose.ui.unit.Dp = 152.dp,
+    showProgress: Boolean = true,
+    onClick: () -> Unit
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val scale by animateFloatAsState(if (hovered) 1.04f else 1f, label = "poster-scale")
+    val aspect = if (item.kind == ItemKind.EPISODE) 16f / 9f else 2f / 3f
+
+    Column(
+        modifier = modifier
+            .width(width)
+            .hoverable(interaction)
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().aspectRatio(aspect).scale(scale),
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = if (hovered) 6.dp else 0.dp
+        ) {
+            Box {
+                if (item.posterUrl != null) {
+                    AsyncImage(
+                        model = item.posterUrl,
+                        contentDescription = item.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.Movie,
+                            contentDescription = null,
+                            modifier = Modifier.size(40.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                if (item.userData.played) {
+                    Icon(
+                        Icons.Filled.CheckCircle,
+                        contentDescription = "已观看",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(22.dp)
+                    )
+                }
+
+                if (hovered) {
+                    Box(
+                        Modifier.fillMaxSize().background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
+                            )
+                        ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primary) {
+                            Icon(
+                                Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.padding(8.dp).size(26.dp)
+                            )
+                        }
+                    }
+                }
+
+                val progress = item.userData.playedPercentage.toFloat()
+                if (showProgress && progress > 0.01f && !item.userData.played) {
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(4.dp),
+                        color = MaterialTheme.colorScheme.secondary,
+                        trackColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.4f),
+                        gapSize = 0.dp,
+                        drawStopIndicator = {}
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = item.seriesName?.takeIf { item.kind == ItemKind.EPISODE } ?: item.name,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = subtitleFor(item),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+private fun subtitleFor(item: MediaItemDto): String = when (item.kind) {
+    ItemKind.EPISODE -> listOfNotNull(item.episodeLabel, item.name).joinToString(" · ")
+    ItemKind.SERIES -> listOfNotNull(item.year?.toString(), item.childCount?.let { "$it 季" })
+        .joinToString(" · ")
+    else -> item.year?.toString().orEmpty()
+}
+
+@Composable
+fun MediaRow(
+    title: String,
+    items: List<MediaItemDto>,
+    itemWidth: androidx.compose.ui.unit.Dp = 152.dp,
+    trailing: @Composable (() -> Unit)? = null,
+    onItemClick: (MediaItemDto) -> Unit
+) {
+    if (items.isEmpty()) return
+    Column(Modifier.fillMaxWidth()) {
+        SectionHeader(title, trailing)
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            items(items, key = { it.id }) { item ->
+                PosterCard(item, width = itemWidth) { onItemClick(item) }
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+@Composable
+fun EmptyState(title: String, description: String, action: @Composable (() -> Unit)? = null) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(title, style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            description,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        action?.let {
+            Spacer(Modifier.height(20.dp))
+            it()
+        }
+    }
+}
+
+@Composable
+fun Chip(text: String, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+        )
+    }
+}

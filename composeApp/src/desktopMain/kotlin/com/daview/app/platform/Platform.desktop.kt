@@ -1,0 +1,147 @@
+package com.daview.app.platform
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import java.awt.Desktop
+import java.awt.Toolkit
+import java.awt.datatransfer.StringSelection
+import java.io.File
+import java.net.URI
+import java.util.prefs.Preferences
+
+actual object PlatformInfo {
+    actual val name: String = System.getProperty("os.name") ?: "Desktop"
+    actual val isDesktop: Boolean = true
+    actual val isAndroid: Boolean = false
+    actual val isWeb: Boolean = false
+    actual val hasInternalPlayer: Boolean = false
+}
+
+actual fun defaultDeviceName(): String =
+    (System.getenv("COMPUTERNAME") ?: System.getenv("HOSTNAME") ?: "Desktop") + " · ${PlatformInfo.name}"
+
+private val windowsCandidates = listOf(
+    Triple("potplayer", "PotPlayer", listOf(
+        "C:/Program Files/DAUM/PotPlayer/PotPlayerMini64.exe",
+        "C:/Program Files (x86)/DAUM/PotPlayer/PotPlayerMini.exe",
+        "C:/Program Files/PotPlayer/PotPlayerMini64.exe"
+    )),
+    Triple("vlc", "VLC", listOf(
+        "C:/Program Files/VideoLAN/VLC/vlc.exe",
+        "C:/Program Files (x86)/VideoLAN/VLC/vlc.exe"
+    )),
+    Triple("mpv", "mpv", listOf(
+        "C:/Program Files/mpv/mpv.exe",
+        "C:/ProgramData/chocolatey/bin/mpv.exe"
+    ))
+)
+
+private val unixCandidates = listOf(
+    Triple("vlc", "VLC", listOf("/usr/bin/vlc", "/snap/bin/vlc", "/Applications/VLC.app/Contents/MacOS/VLC")),
+    Triple("mpv", "mpv", listOf("/usr/bin/mpv", "/usr/local/bin/mpv", "/opt/homebrew/bin/mpv")),
+    Triple("iina", "IINA", listOf("/Applications/IINA.app/Contents/MacOS/IINA"))
+)
+
+actual fun availableExternalPlayers(): List<ExternalPlayerInfo> {
+    val isWindows = PlatformInfo.name.startsWith("Windows", ignoreCase = true)
+    val candidates = if (isWindows) windowsCandidates else unixCandidates
+    val found = candidates.mapNotNull { (id, label, paths) ->
+        val path = paths.firstOrNull { File(it).canExecute() } ?: return@mapNotNull null
+        ExternalPlayerInfo(id, label, path)
+    }
+    // A custom path always shows up so the user can point at anything.
+    return found + ExternalPlayerInfo("custom", "自定义播放器", customPlayerPath())
+}
+
+fun customPlayerPath(): String? =
+    Preferences.userRoot().node("com/daview/app").get("customPlayerPath", null)
+
+fun setCustomPlayerPath(path: String?) {
+    val node = Preferences.userRoot().node("com/daview/app")
+    if (path.isNullOrBlank()) node.remove("customPlayerPath") else node.put("customPlayerPath", path)
+}
+
+/**
+ * Builds the command line for the player.
+ *
+ * PotPlayer takes `/seek=hh:mm:ss` to resume and `/sub=` for an external
+ * subtitle; VLC and mpv use their own flags. Passing the DAView stream URL (not
+ * the CDN link) keeps the server in the loop so it can follow the byte offsets
+ * the player requests and turn them into a playback position.
+ */
+private fun buildCommand(request: ExternalPlayRequest, executable: String): List<String> {
+    val seconds = request.startPositionMs / 1000
+    return when (request.player.id) {
+        "potplayer" -> buildList {
+            add(executable)
+            add(request.streamUrl)
+            if (seconds > 0) add("/seek=%02d:%02d:%02d".format(seconds / 3600, (seconds % 3600) / 60, seconds % 60))
+            request.subtitleUrl?.let { add("/sub=$it") }
+            add("/title=${request.title}")
+        }
+        "vlc" -> buildList {
+            add(executable)
+            add(request.streamUrl)
+            if (seconds > 0) add("--start-time=$seconds")
+            request.subtitleUrl?.let { add("--sub-file=$it") }
+            add("--meta-title=${request.title}")
+        }
+        "mpv", "iina" -> buildList {
+            add(executable)
+            add(request.streamUrl)
+            if (seconds > 0) add("--start=$seconds")
+            request.subtitleUrl?.let { add("--sub-file=$it") }
+            add("--force-media-title=${request.title}")
+        }
+        else -> listOf(executable, request.streamUrl)
+    }
+}
+
+actual fun launchExternalPlayer(request: ExternalPlayRequest): ExternalPlaybackHandle? {
+    val executable = request.player.executablePath ?: return null
+    if (!File(executable).canExecute()) return null
+    val process = ProcessBuilder(buildCommand(request, executable))
+        .redirectErrorStream(true)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        .start()
+
+    return object : ExternalPlaybackHandle {
+        override val canObserveExit = true
+        override fun isRunning() = process.isAlive
+        override suspend fun awaitExit() {
+            withContext(Dispatchers.IO) {
+                while (process.isAlive) delay(500)
+            }
+        }
+        override fun stop() {
+            process.destroy()
+        }
+    }
+}
+
+actual fun openUrl(url: String) {
+    runCatching {
+        if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+            Desktop.getDesktop().browse(URI.create(url))
+        }
+    }
+}
+
+actual fun copyToClipboard(text: String) {
+    runCatching {
+        Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null)
+    }
+}
+
+actual fun createSettingsStore(): SettingsStore = object : SettingsStore {
+    private val node = Preferences.userRoot().node("com/daview/app")
+    override fun getString(key: String): String? = node.get(key, null)
+    override fun putString(key: String, value: String?) {
+        if (value == null) node.remove(key) else node.put(key, value)
+    }
+}
+
+actual fun ambientServerUrl(): String? = System.getProperty("daview.serverUrl")
+
+actual fun ambientToken(): String? = System.getProperty("daview.token")

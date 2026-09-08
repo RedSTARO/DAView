@@ -1,0 +1,25 @@
+# Build
+build/
+*/build/
+.gradle/
+.kotlin/
+local.properties
+kotlin-js-store/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Runtime data (contains WebDAV credentials & API keys)
+/run/
+/data/
+server.config.json
+*.local.json
+*.db
+*.db-journal
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db

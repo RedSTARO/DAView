@@ -1,0 +1,523 @@
+package com.daview.server.api
+
+import com.daview.server.DAVIEW_VERSION
+import com.daview.server.ServerContext
+import com.daview.server.config.StorageConfig
+import com.daview.server.db.Repository
+import com.daview.server.storage.WebDavException
+import com.daview.shared.model.*
+import io.ktor.http.CacheControl
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.plugins.origin
+import io.ktor.server.request.header
+import io.ktor.server.request.receive
+import io.ktor.server.response.header
+import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytesWriter
+import io.ktor.server.response.respondFile
+import io.ktor.server.response.respondRedirect
+import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
+import io.ktor.server.routing.get
+import io.ktor.server.routing.post
+import io.ktor.server.routing.put
+import io.ktor.server.routing.route
+import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.util.UUID
+
+private const val STREAM_BUFFER = 256 * 1024
+
+fun Route.apiRoutes(context: ServerContext) {
+
+    // ------------------------------------------------------------ server info
+
+    get("/api/info") {
+        call.requireAuth(context) ?: return@get
+        call.respond(
+            ServerInfoDto(
+                name = context.config.serverName,
+                version = DAVIEW_VERSION,
+                storageConfigured = context.config.storage.configured,
+                libraryCount = context.repository.libraries().size,
+                itemCount = context.repository.totalItemCount()
+            )
+        )
+    }
+
+    // ------------------------------------------------------------ settings
+
+    get("/api/settings") {
+        call.requireAuth(context) ?: return@get
+        call.respond(context.config.toDto())
+    }
+
+    put("/api/settings") {
+        call.requireAuth(context) ?: return@put
+        val incoming = call.receive<ServerSettingsDto>()
+        val updated = context.updateConfig { current ->
+            current.copy(
+                serverName = incoming.serverName.ifBlank { current.serverName },
+                storage = current.storage.copy(
+                    url = incoming.storage.url.ifBlank { current.storage.url },
+                    username = incoming.storage.username.ifBlank { current.storage.username },
+                    // An empty password means "keep the stored one".
+                    password = incoming.storage.password.ifBlank { current.storage.password }
+                ),
+                scraper = current.scraper.copy(
+                    tmdbApiKey = incoming.scraper.tmdbApiKey.ifBlank { current.scraper.tmdbApiKey },
+                    tvdbApiKey = incoming.scraper.tvdbApiKey.ifBlank { current.scraper.tvdbApiKey },
+                    bangumiToken = incoming.scraper.bangumiToken.ifBlank { current.scraper.bangumiToken },
+                    language = incoming.scraper.language.ifBlank { current.scraper.language }
+                )
+            )
+        }
+        call.respond(updated.toDto())
+    }
+
+    // ------------------------------------------------------------ storage
+
+    post("/api/storage/test") {
+        call.requireAuth(context) ?: return@post
+        val incoming = call.receive<StorageSettingsDto>()
+        val effective = StorageConfig(
+            url = incoming.url.ifBlank { context.config.storage.url },
+            username = incoming.username.ifBlank { context.config.storage.username },
+            password = incoming.password.ifBlank { context.config.storage.password }
+        )
+        if (!effective.configured) {
+            call.respond(HttpStatusCode.BadRequest, ApiError("缺少 WebDAV 地址"))
+            return@post
+        }
+        val entries = withContext(Dispatchers.IO) {
+            com.daview.server.storage.WebDavClient(effective).probe()
+        }
+        call.respond(entries.map { it.toDto() })
+    }
+
+    get("/api/storage/browse") {
+        call.requireAuth(context) ?: return@get
+        val dav = context.webdav()
+        if (dav == null) {
+            call.respond(HttpStatusCode.BadRequest, ApiError("WebDAV 未配置"))
+            return@get
+        }
+        val path = call.request.queryParameters["path"] ?: "/"
+        val entries = withContext(Dispatchers.IO) { dav.list(path) }
+        call.respond(entries.map { it.toDto() })
+    }
+
+    // ------------------------------------------------------------ libraries
+
+    get("/api/libraries") {
+        call.requireAuth(context) ?: return@get
+        call.respond(context.repository.libraries())
+    }
+
+    post("/api/libraries") {
+        call.requireAuth(context) ?: return@post
+        val incoming = call.receive<LibraryDto>()
+        val library = incoming.copy(
+            id = incoming.id.ifBlank { UUID.randomUUID().toString().replace("-", "").take(12) },
+            name = incoming.name.ifBlank { incoming.path.trim('/').substringAfterLast('/') },
+            providerOrder = incoming.providerOrder.ifEmpty { context.metadata.defaultOrder(incoming.kind) }
+        )
+        context.repository.upsertLibrary(library)
+        call.respond(context.repository.library(library.id) ?: library)
+    }
+
+    put("/api/libraries/{id}") {
+        call.requireAuth(context) ?: return@put
+        val id = call.parameters["id"].orEmpty()
+        val existing = context.repository.library(id)
+        if (existing == null) {
+            call.respond(HttpStatusCode.NotFound, ApiError("媒体库不存在"))
+            return@put
+        }
+        val incoming = call.receive<LibraryDto>()
+        context.repository.upsertLibrary(incoming.copy(id = id))
+        call.respond(context.repository.library(id)!!)
+    }
+
+    delete("/api/libraries/{id}") {
+        call.requireAuth(context) ?: return@delete
+        context.repository.deleteLibrary(call.parameters["id"].orEmpty())
+        call.respond(HttpStatusCode.NoContent)
+    }
+
+    post("/api/libraries/{id}/scan") {
+        call.requireAuth(context) ?: return@post
+        val library = context.repository.library(call.parameters["id"].orEmpty())
+        if (library == null) {
+            call.respond(HttpStatusCode.NotFound, ApiError("媒体库不存在"))
+            return@post
+        }
+        val refresh = call.request.queryParameters["refresh"]?.toBoolean() ?: false
+        call.respond(context.scans.submit(library, refresh))
+    }
+
+    get("/api/scan/status") {
+        call.requireAuth(context) ?: return@get
+        call.respond(context.scans.status())
+    }
+
+    // ------------------------------------------------------------ items
+
+    get("/api/items") {
+        call.requireAuth(context) ?: return@get
+        val params = call.request.queryParameters
+        val (items, total) = context.repository.query(
+            Repository.Query(
+                libraryId = params["libraryId"],
+                parentId = params["parentId"],
+                kind = params["kind"]?.let { value -> ItemKind.entries.firstOrNull { it.name.equals(value, true) } },
+                search = params["search"],
+                favorite = params["favorite"]?.toBooleanStrictOrNull(),
+                sort = params["sort"] ?: "sortName",
+                limit = params["limit"]?.toIntOrNull()?.coerceIn(1, 500) ?: 100,
+                offset = params["offset"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+            )
+        )
+        call.respond(ItemPage(items.map { it.withAssetUrls(call) }, total, params["offset"]?.toIntOrNull() ?: 0))
+    }
+
+    get("/api/items/{id}") {
+        call.requireAuth(context) ?: return@get
+        val item = context.repository.item(call.parameters["id"].orEmpty())
+        if (item == null) {
+            call.respond(HttpStatusCode.NotFound, ApiError("条目不存在"))
+            return@get
+        }
+        val enriched = if (item.isPlayable && item.mediaStreams.none { !it.isExternal }) {
+            withContext(Dispatchers.IO) { runCatching { context.streams.probeItem(item) }.getOrDefault(item) }
+        } else item
+        call.respond(enriched.withAssetUrls(call))
+    }
+
+    get("/api/items/{id}/children") {
+        call.requireAuth(context) ?: return@get
+        call.respond(context.repository.children(call.parameters["id"].orEmpty()).map { it.withAssetUrls(call) })
+    }
+
+    post("/api/items/{id}/favorite") {
+        call.requireAuth(context) ?: return@post
+        val value = call.request.queryParameters["value"]?.toBoolean() ?: true
+        call.respond(context.repository.setFavorite(call.parameters["id"].orEmpty(), value))
+    }
+
+    post("/api/items/{id}/played") {
+        call.requireAuth(context) ?: return@post
+        val value = call.request.queryParameters["value"]?.toBoolean() ?: true
+        call.respond(context.repository.setPlayed(call.parameters["id"].orEmpty(), value))
+    }
+
+    // ------------------------------------------------------------ home rows
+
+    get("/api/home/resume") {
+        call.requireAuth(context) ?: return@get
+        val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 20
+        call.respond(context.repository.resume(limit).map { it.withAssetUrls(call) })
+    }
+
+    get("/api/home/nextup") {
+        call.requireAuth(context) ?: return@get
+        val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 20
+        call.respond(context.repository.nextUp(limit).map { it.withAssetUrls(call) })
+    }
+
+    get("/api/home/latest") {
+        call.requireAuth(context) ?: return@get
+        val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 20
+        call.respond(
+            context.repository.latest(call.request.queryParameters["libraryId"], limit).map { it.withAssetUrls(call) }
+        )
+    }
+
+    // ------------------------------------------------------------ playback
+
+    post("/api/playback/start") {
+        call.requireAuth(context) ?: return@post
+        val request = call.receive<PlaybackStartRequest>()
+        val stored = context.repository.item(request.itemId)
+        val storedPath = stored?.path
+        if (stored == null || storedPath == null) {
+            call.respond(HttpStatusCode.NotFound, ApiError("条目不存在或不可播放"))
+            return@post
+        }
+        val item = withContext(Dispatchers.IO) {
+            runCatching { context.streams.probeItem(stored) }.getOrDefault(stored)
+        }
+
+        val mediaPath = item.path ?: storedPath
+        val userData = item.userData
+        val audio = userData.audioStreamIndex ?: item.mediaStreams
+            .firstOrNull { it.type == StreamType.AUDIO && it.isDefault }?.index
+            ?: item.mediaStreams.firstOrNull { it.type == StreamType.AUDIO }?.index
+        val subtitle = userData.subtitleStreamIndex ?: pickDefaultSubtitle(item)
+
+        val session = context.playback.start(
+            item = item,
+            player = request.player,
+            deviceName = request.deviceName,
+            startPositionMs = userData.positionMs,
+            audioStreamIndex = audio,
+            subtitleStreamIndex = subtitle
+        )
+
+        val token = context.config.accessToken
+        val base = call.externalBase()
+        val proxy = request.trackThroughProxy && context.config.trackExternalPlayers
+        // The file name is carried in the path so external players show a sane
+        // title and pick the right demuxer; it has to be percent-encoded or
+        // spaces alone will break the hand-off.
+        val fileName = encodePathSegment(mediaPath.substringAfterLast('/'))
+        val streamUrl = "$base/api/stream/${item.id}/$fileName" +
+            "?session=${session.id}&mode=${if (proxy) "proxy" else "redirect"}&token=$token"
+
+        call.respond(
+            PlaybackInfoDto(
+                sessionId = session.id,
+                item = item.withAssetUrls(call),
+                streamUrl = streamUrl,
+                directUrl = if (request.player == PlayerKind.INTERNAL) {
+                    withContext(Dispatchers.IO) { context.streams.directUrl(mediaPath) }
+                } else null,
+                startPositionMs = userData.positionMs,
+                audioStreamIndex = audio,
+                subtitleStreamIndex = subtitle,
+                subtitleUrls = item.mediaStreams
+                    .filter { it.isExternal && it.externalPath != null }
+                    .associate { it.index to "$base/api/subtitle/${item.id}/${it.index}?token=$token" },
+                container = mediaPath.substringAfterLast('.'),
+                runtimeMs = item.runtimeMs
+            )
+        )
+    }
+
+    post("/api/playback/progress") {
+        call.requireAuth(context) ?: return@post
+        val request = call.receive<PlaybackProgressRequest>()
+        val session = context.playback.report(
+            request.sessionId, request.positionMs, request.paused,
+            request.audioStreamIndex, request.subtitleStreamIndex
+        )
+        if (session == null) {
+            call.respond(HttpStatusCode.NotFound, ApiError("会话不存在"))
+        } else {
+            call.respond(HttpStatusCode.NoContent)
+        }
+    }
+
+    post("/api/playback/stop") {
+        call.requireAuth(context) ?: return@post
+        val request = call.receive<PlaybackStopRequest>()
+        context.playback.stop(request.sessionId, request.positionMs.takeIf { it >= 0 })
+        call.respond(HttpStatusCode.NoContent)
+    }
+
+    get("/api/playback/sessions") {
+        call.requireAuth(context) ?: return@get
+        call.respond(context.playback.activeSessions())
+    }
+
+    // ------------------------------------------------------------ media bytes
+
+    get("/api/stream/{id}/{name...}") {
+        call.requireAuth(context) ?: return@get
+        val item = context.repository.item(call.parameters["id"].orEmpty())
+        val path = item?.path
+        if (path == null) {
+            call.respond(HttpStatusCode.NotFound, ApiError("条目不存在"))
+            return@get
+        }
+        val sessionId = call.request.queryParameters["session"]
+        val rangeHeader = call.request.header(HttpHeaders.Range)
+        val rangeStart = rangeHeader?.removePrefix("bytes=")?.substringBefore('-')?.toLongOrNull() ?: 0L
+        sessionId?.let { context.playback.onRangeRequest(it, rangeStart) }
+
+        val mode = call.request.queryParameters["mode"] ?: "redirect"
+        if (mode != "proxy") {
+            val direct = withContext(Dispatchers.IO) { context.streams.directUrl(path) }
+            if (direct != null) {
+                call.respondRedirect(direct, permanent = false)
+                return@get
+            }
+        }
+
+        val size = item.sizeBytes ?: withContext(Dispatchers.IO) { context.streams.fileSize(path) }
+        val rangeEnd = rangeHeader?.substringAfter('-')?.toLongOrNull()
+            ?: size?.let { it - 1 }
+
+        val stream = withContext(Dispatchers.IO) { context.streams.openRange(path, rangeStart, rangeEnd) }
+        val effectiveSize = size ?: stream.totalSize
+        val length = if (effectiveSize != null && rangeEnd != null) rangeEnd - rangeStart + 1 else null
+
+        call.response.header(HttpHeaders.AcceptRanges, "bytes")
+        call.response.header(HttpHeaders.CacheControl, CacheControl.NoCache(null).toString())
+        if (effectiveSize != null && rangeEnd != null) {
+            call.response.header(HttpHeaders.ContentRange, "bytes $rangeStart-$rangeEnd/$effectiveSize")
+        }
+
+        val status = if (rangeHeader != null) HttpStatusCode.PartialContent else HttpStatusCode.OK
+        call.respondBytesWriter(
+            contentType = ContentType.Application.OctetStream,
+            status = status,
+            contentLength = length
+        ) {
+            var delivered = 0L
+            val buffer = ByteArray(STREAM_BUFFER)
+            try {
+                while (true) {
+                    val read = withContext(Dispatchers.IO) { stream.stream.read(buffer) }
+                    if (read <= 0) break
+                    writeFully(buffer, 0, read)
+                    delivered += read
+                    sessionId?.let { context.playback.onBytesRead(it, rangeStart + delivered) }
+                }
+                flush()
+            } finally {
+                stream.close()
+            }
+        }
+    }
+
+    get("/api/subtitle/{id}/{index}") {
+        call.requireAuth(context) ?: return@get
+        val item = context.repository.item(call.parameters["id"].orEmpty())
+        val index = call.parameters["index"]?.toIntOrNull()
+        val stream = item?.mediaStreams?.firstOrNull { it.index == index && it.isExternal }
+        val path = stream?.externalPath
+        if (path == null) {
+            call.respond(HttpStatusCode.NotFound, ApiError("字幕不存在"))
+            return@get
+        }
+        val bytes = withContext(Dispatchers.IO) {
+            context.streams.openRange(path, 0, null).use { it.stream.readBytes() }
+        }
+        val contentType = when (stream.codec) {
+            "vtt" -> ContentType.parse("text/vtt")
+            "srt" -> ContentType.parse("application/x-subrip")
+            else -> ContentType.parse("text/plain; charset=utf-8")
+        }
+        call.respondBytesWriter(contentType = contentType, status = HttpStatusCode.OK, contentLength = bytes.size.toLong()) {
+            writeFully(bytes, 0, bytes.size)
+            flush()
+        }
+    }
+
+    get("/api/images/{id}/{type}") {
+        call.requireAuth(context) ?: return@get
+        val item = context.repository.item(call.parameters["id"].orEmpty())
+        val remote = when (call.parameters["type"]) {
+            "backdrop" -> item?.backdropUrl
+            "logo" -> item?.logoUrl
+            else -> item?.posterUrl
+        }
+        if (remote.isNullOrBlank()) {
+            call.respond(HttpStatusCode.NotFound, ApiError("没有图片"))
+            return@get
+        }
+        val entry = withContext(Dispatchers.IO) { context.images.get(remote) }
+        if (entry == null) {
+            call.respond(HttpStatusCode.BadGateway, ApiError("图片下载失败"))
+            return@get
+        }
+        call.response.header(HttpHeaders.CacheControl, "public, max-age=2592000")
+        call.respondFile(entry.file.toFile())
+    }
+}
+
+// ---------------------------------------------------------------- helpers
+
+private fun encodePathSegment(value: String): String =
+    java.net.URLEncoder.encode(value, Charsets.UTF_8)
+        .replace("+", "%20")
+        .replace("%2F", "/")
+
+private fun pickDefaultSubtitle(item: MediaItemDto): Int? {
+    val subtitles = item.mediaStreams.filter { it.type == StreamType.SUBTITLE }
+    if (subtitles.isEmpty()) return null
+    return subtitles.firstOrNull { it.isDefault }?.index
+        ?: subtitles.firstOrNull { it.language?.startsWith("zh") == true }?.index
+        ?: subtitles.first().index
+}
+
+/**
+ * Rewrites remote artwork URLs to the server's own cached endpoints.
+ *
+ * The token goes in the query string because image URLs are consumed by
+ * `<img>` tags and image loaders that cannot attach an Authorization header.
+ */
+private fun MediaItemDto.withAssetUrls(call: ApplicationCall): MediaItemDto {
+    val base = call.externalBase()
+    val token = call.attributes.getOrNull(AccessTokenKey).orEmpty()
+    val suffix = if (token.isBlank()) "" else "?token=$token"
+    return copy(
+        posterUrl = posterUrl?.let { "$base/api/images/$id/primary$suffix" },
+        backdropUrl = backdropUrl?.let { "$base/api/images/$id/backdrop$suffix" },
+        logoUrl = logoUrl?.let { "$base/api/images/$id/logo$suffix" }
+    )
+}
+
+private fun ApplicationCall.externalBase(): String {
+    val forwardedProto = request.header("X-Forwarded-Proto")
+    val forwardedHost = request.header("X-Forwarded-Host")
+    if (forwardedHost != null) return "${forwardedProto ?: "http"}://$forwardedHost"
+    val origin = request.origin
+    val port = origin.serverPort
+    val defaultPort = (origin.scheme == "http" && port == 80) || (origin.scheme == "https" && port == 443)
+    return if (defaultPort) "${origin.scheme}://${origin.serverHost}"
+    else "${origin.scheme}://${origin.serverHost}:$port"
+}
+
+/**
+ * Bearer token or `?token=` query parameter. Returns null (after answering with
+ * 401) when the caller is not authorised.
+ */
+private suspend fun ApplicationCall.requireAuth(context: ServerContext): Unit? {
+    val expected = context.config.accessToken
+    if (expected.isBlank()) return Unit
+    val header = request.header(HttpHeaders.Authorization)?.removePrefix("Bearer ")?.trim()
+    val query = request.queryParameters["token"]
+    if (header == expected || query == expected) {
+        attributes.put(AccessTokenKey, expected)
+        return Unit
+    }
+    respond(HttpStatusCode.Unauthorized, ApiError("令牌无效", "请在设置中填写服务器令牌"))
+    return null
+}
+
+private val AccessTokenKey = io.ktor.util.AttributeKey<String>("daview-access-token")
+
+private fun com.daview.server.config.AppConfig.toDto() = ServerSettingsDto(
+    storage = StorageSettingsDto(
+        url = storage.url,
+        username = storage.username,
+        password = "",
+        passwordSet = storage.password.isNotBlank()
+    ),
+    scraper = ScraperSettingsDto(
+        tmdbApiKey = "",
+        tmdbApiKeySet = scraper.tmdbApiKey.isNotBlank(),
+        tvdbApiKey = "",
+        tvdbApiKeySet = scraper.tvdbApiKey.isNotBlank(),
+        bangumiToken = "",
+        bangumiTokenSet = scraper.bangumiToken.isNotBlank(),
+        language = scraper.language,
+        tmdbImageBase = scraper.tmdbImageBase
+    ),
+    serverName = serverName,
+    version = DAVIEW_VERSION
+)
+
+private fun com.daview.server.storage.DavEntry.toDto() = WebDavEntryDto(
+    name = name,
+    path = path,
+    isDirectory = isDirectory,
+    sizeBytes = size,
+    lastModified = lastModified
+)

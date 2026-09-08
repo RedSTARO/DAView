@@ -1,0 +1,542 @@
+package com.daview.server.db
+
+import com.daview.shared.model.ItemKind
+import com.daview.shared.model.LibraryDto
+import com.daview.shared.model.LibraryKind
+import com.daview.shared.model.MediaItemDto
+import com.daview.shared.model.MediaStreamDto
+import com.daview.shared.model.MetadataProvider
+import com.daview.shared.model.PersonDto
+import com.daview.shared.model.UserDataDto
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
+import java.sql.Connection
+import java.sql.ResultSet
+
+private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
+
+private val stringListSerializer = ListSerializer(String.serializer())
+private val personListSerializer = ListSerializer(PersonDto.serializer())
+private val streamListSerializer = ListSerializer(MediaStreamDto.serializer())
+private val stringMapSerializer = MapSerializer(String.serializer(), String.serializer())
+private val providerListSerializer = ListSerializer(MetadataProvider.serializer())
+
+/** Row shape for [items], including bookkeeping columns the API never exposes. */
+data class ItemRecord(
+    val dto: MediaItemDto,
+    val dateCreated: Long = 0,
+    val dateModified: Long = 0,
+    val etag: String? = null,
+    val scrapedAt: Long? = null,
+    val probedAt: Long? = null
+)
+
+class Repository(private val db: Database) {
+
+    // ------------------------------------------------------------ libraries
+
+    fun libraries(): List<LibraryDto> = db.read { connection ->
+        connection.prepareStatement(
+            "SELECT l.*, (SELECT COUNT(*) FROM items i WHERE i.library_id = l.id AND i.kind IN ('MOVIE','SERIES')) AS item_count " +
+                "FROM libraries l ORDER BY l.created_at"
+        ).useQuery { it.map(::readLibrary) }
+    }
+
+    fun library(id: String): LibraryDto? = db.read { connection ->
+        connection.prepareStatement(
+            "SELECT l.*, (SELECT COUNT(*) FROM items i WHERE i.library_id = l.id AND i.kind IN ('MOVIE','SERIES')) AS item_count " +
+                "FROM libraries l WHERE l.id = ?"
+        ).apply { setString(1, id) }.useQuery { if (it.next()) readLibrary(it) else null }
+    }
+
+    fun upsertLibrary(library: LibraryDto) = db.transaction { connection ->
+        connection.prepareStatement(
+            """
+            INSERT INTO libraries(id, name, kind, path, provider_order, language, last_scan_at, image_url, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name, kind = excluded.kind, path = excluded.path,
+                provider_order = excluded.provider_order, language = excluded.language,
+                last_scan_at = excluded.last_scan_at, image_url = excluded.image_url
+            """.trimIndent()
+        ).use { statement ->
+            statement.setString(1, library.id)
+            statement.setString(2, library.name)
+            statement.setString(3, library.kind.name)
+            statement.setString(4, library.path)
+            statement.setString(5, json.encodeToString(providerListSerializer, library.providerOrder))
+            statement.setString(6, library.language)
+            library.lastScanAt?.let { statement.setLong(7, it) } ?: statement.setNull(7, java.sql.Types.INTEGER)
+            statement.setString(8, library.imageUrl)
+            statement.setLong(9, System.currentTimeMillis())
+            statement.executeUpdate()
+        }
+    }
+
+    fun deleteLibrary(id: String) = db.transaction { connection ->
+        connection.prepareStatement("DELETE FROM user_data WHERE item_id IN (SELECT id FROM items WHERE library_id = ?)")
+            .use { it.setString(1, id); it.executeUpdate() }
+        connection.prepareStatement("DELETE FROM items WHERE library_id = ?")
+            .use { it.setString(1, id); it.executeUpdate() }
+        connection.prepareStatement("DELETE FROM libraries WHERE id = ?")
+            .use { it.setString(1, id); it.executeUpdate() }
+    }
+
+    fun markScanned(libraryId: String, at: Long) = db.transaction { connection ->
+        connection.prepareStatement("UPDATE libraries SET last_scan_at = ? WHERE id = ?").use {
+            it.setLong(1, at); it.setString(2, libraryId); it.executeUpdate()
+        }
+    }
+
+    private fun readLibrary(rs: ResultSet) = LibraryDto(
+        id = rs.getString("id"),
+        name = rs.getString("name"),
+        kind = runCatching { LibraryKind.valueOf(rs.getString("kind")) }.getOrDefault(LibraryKind.OTHER),
+        path = rs.getString("path"),
+        providerOrder = runCatching {
+            json.decodeFromString(providerListSerializer, rs.getString("provider_order"))
+        }.getOrDefault(emptyList()),
+        language = rs.getString("language"),
+        itemCount = runCatching { rs.getInt("item_count") }.getOrDefault(0),
+        lastScanAt = rs.getLongOrNull("last_scan_at"),
+        imageUrl = rs.getString("image_url")
+    )
+
+    // ------------------------------------------------------------ items
+
+    fun upsertItems(records: List<ItemRecord>) {
+        if (records.isEmpty()) return
+        db.transaction { connection ->
+            connection.prepareStatement(UPSERT_ITEM).use { statement ->
+                records.forEach { record ->
+                    bindItem(statement, record)
+                    statement.addBatch()
+                }
+                statement.executeBatch()
+            }
+        }
+    }
+
+    fun upsertItem(record: ItemRecord) = upsertItems(listOf(record))
+
+    fun item(id: String): MediaItemDto? = db.read { connection ->
+        connection.prepareStatement("$SELECT_ITEM WHERE i.id = ?")
+            .apply { setString(1, id) }
+            .useQuery { if (it.next()) readItem(it) else null }
+    }
+
+    fun itemRecord(id: String): ItemRecord? = db.read { connection ->
+        connection.prepareStatement("$SELECT_ITEM WHERE i.id = ?")
+            .apply { setString(1, id) }
+            .useQuery { if (it.next()) readItemRecord(it) else null }
+    }
+
+    fun children(parentId: String): List<MediaItemDto> = db.read { connection ->
+        connection.prepareStatement(
+            "$SELECT_ITEM WHERE i.parent_id = ? ORDER BY COALESCE(i.index_number, 99999), i.sort_name"
+        ).apply { setString(1, parentId) }.useQuery { it.map(::readItem) }
+    }
+
+    fun episodesOfSeries(seriesId: String): List<MediaItemDto> = db.read { connection ->
+        connection.prepareStatement(
+            "$SELECT_ITEM WHERE i.series_id = ? AND i.kind = 'EPISODE' " +
+                "ORDER BY COALESCE(i.parent_index_number, 0), COALESCE(i.index_number, 99999)"
+        ).apply { setString(1, seriesId) }.useQuery { it.map(::readItem) }
+    }
+
+    fun idsInLibrary(libraryId: String): Set<String> = db.read { connection ->
+        connection.prepareStatement("SELECT id FROM items WHERE library_id = ?")
+            .apply { setString(1, libraryId) }
+            .useQuery { rs -> rs.map { it.getString(1) }.toSet() }
+    }
+
+    fun deleteItems(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        db.transaction { connection ->
+            connection.prepareStatement("DELETE FROM items WHERE id = ?").use { statement ->
+                ids.forEach { statement.setString(1, it); statement.addBatch() }
+                statement.executeBatch()
+            }
+        }
+    }
+
+    data class Query(
+        val libraryId: String? = null,
+        val parentId: String? = null,
+        val kind: ItemKind? = null,
+        val search: String? = null,
+        val favorite: Boolean? = null,
+        val sort: String = "sortName",
+        val limit: Int = 100,
+        val offset: Int = 0
+    )
+
+    fun query(query: Query): Pair<List<MediaItemDto>, Int> = db.read { connection ->
+        val where = StringBuilder("WHERE 1=1")
+        val binds = ArrayList<Any?>()
+        query.libraryId?.let { where.append(" AND i.library_id = ?"); binds += it }
+        query.parentId?.let { where.append(" AND i.parent_id = ?"); binds += it }
+        query.kind?.let { where.append(" AND i.kind = ?"); binds += it.name }
+        query.favorite?.let { where.append(" AND COALESCE(u.favorite, 0) = ?"); binds += if (it) 1 else 0 }
+        query.search?.takeIf { it.isNotBlank() }?.let {
+            where.append(" AND (i.name LIKE ? OR i.original_name LIKE ? OR i.sort_name LIKE ?)")
+            val pattern = "%${it.trim()}%"
+            binds += pattern; binds += pattern; binds += pattern
+        }
+
+        val order = when (query.sort) {
+            "name" -> "i.name COLLATE NOCASE"
+            "year" -> "i.year DESC, i.sort_name"
+            "added" -> "i.date_created DESC"
+            "played" -> "u.last_played_at DESC"
+            "rating" -> "i.community_rating DESC NULLS LAST, i.sort_name"
+            "index" -> "COALESCE(i.parent_index_number, 0), COALESCE(i.index_number, 99999)"
+            else -> "i.sort_name"
+        }
+
+        val total = connection.prepareStatement(
+            "SELECT COUNT(*) FROM items i LEFT JOIN user_data u ON u.item_id = i.id $where"
+        ).apply { bind(binds) }.useQuery { if (it.next()) it.getInt(1) else 0 }
+
+        val items = connection.prepareStatement(
+            "$SELECT_ITEM $where ORDER BY $order LIMIT ? OFFSET ?"
+        ).apply {
+            bind(binds)
+            setInt(binds.size + 1, query.limit)
+            setInt(binds.size + 2, query.offset)
+        }.useQuery { it.map(::readItem) }
+
+        items to total
+    }
+
+    /** Partially watched playable items, most recent first. */
+    fun resume(limit: Int): List<MediaItemDto> = db.read { connection ->
+        connection.prepareStatement(
+            "$SELECT_ITEM WHERE u.position_ms > 0 AND COALESCE(u.played, 0) = 0 " +
+                "AND i.kind IN ('MOVIE','EPISODE') ORDER BY u.last_played_at DESC LIMIT ?"
+        ).apply { setInt(1, limit) }.useQuery { it.map(::readItem) }
+    }
+
+    /** First unwatched episode of every series that has been started. */
+    fun nextUp(limit: Int): List<MediaItemDto> = db.read { connection ->
+        connection.prepareStatement(
+            """
+            $SELECT_ITEM
+            WHERE i.kind = 'EPISODE'
+              AND COALESCE(u.played, 0) = 0
+              AND COALESCE(u.position_ms, 0) = 0
+              AND i.series_id IN (
+                    SELECT DISTINCT e.series_id FROM items e
+                    JOIN user_data ue ON ue.item_id = e.id
+                    WHERE e.kind = 'EPISODE' AND (ue.played = 1 OR ue.position_ms > 0)
+              )
+              AND NOT EXISTS (
+                    SELECT 1 FROM items e2 LEFT JOIN user_data u2 ON u2.item_id = e2.id
+                    WHERE e2.series_id = i.series_id AND e2.kind = 'EPISODE'
+                      AND COALESCE(u2.played, 0) = 0 AND COALESCE(u2.position_ms, 0) = 0
+                      AND (COALESCE(e2.parent_index_number, 0) < COALESCE(i.parent_index_number, 0)
+                           OR (COALESCE(e2.parent_index_number, 0) = COALESCE(i.parent_index_number, 0)
+                               AND COALESCE(e2.index_number, 0) < COALESCE(i.index_number, 0)))
+              )
+            ORDER BY i.sort_name LIMIT ?
+            """.trimIndent()
+        ).apply { setInt(1, limit) }.useQuery { it.map(::readItem) }
+    }
+
+    fun latest(libraryId: String?, limit: Int): List<MediaItemDto> = db.read { connection ->
+        val filter = if (libraryId == null) "" else "AND i.library_id = ?"
+        connection.prepareStatement(
+            "$SELECT_ITEM WHERE i.kind IN ('MOVIE','SERIES') $filter ORDER BY i.date_created DESC LIMIT ?"
+        ).apply {
+            if (libraryId == null) setInt(1, limit) else { setString(1, libraryId); setInt(2, limit) }
+        }.useQuery { it.map(::readItem) }
+    }
+
+    fun itemsNeedingScrape(libraryId: String, force: Boolean): List<MediaItemDto> = db.read { connection ->
+        val condition = if (force) "" else "AND i.scraped_at IS NULL"
+        connection.prepareStatement(
+            "$SELECT_ITEM WHERE i.library_id = ? AND i.kind IN ('MOVIE','SERIES') $condition ORDER BY i.sort_name"
+        ).apply { setString(1, libraryId) }.useQuery { it.map(::readItem) }
+    }
+
+    fun itemsNeedingProbe(libraryId: String, limit: Int): List<MediaItemDto> = db.read { connection ->
+        connection.prepareStatement(
+            "$SELECT_ITEM WHERE i.library_id = ? AND i.kind IN ('MOVIE','EPISODE') AND i.probed_at IS NULL LIMIT ?"
+        ).apply { setString(1, libraryId); setInt(2, limit) }.useQuery { it.map(::readItem) }
+    }
+
+    fun totalItemCount(): Int = db.read { connection ->
+        connection.prepareStatement("SELECT COUNT(*) FROM items").useQuery { if (it.next()) it.getInt(1) else 0 }
+    }
+
+    // ------------------------------------------------------------ user data
+
+    fun userData(itemId: String): UserDataDto = db.read { connection ->
+        connection.prepareStatement("SELECT * FROM user_data WHERE item_id = ?")
+            .apply { setString(1, itemId) }
+            .useQuery { if (it.next()) readUserData(it, null) else UserDataDto() }
+    }
+
+    fun saveProgress(
+        itemId: String,
+        positionMs: Long,
+        runtimeMs: Long?,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?,
+        markPlayed: Boolean? = null
+    ): UserDataDto {
+        val existing = userData(itemId)
+        val percentage = if (runtimeMs != null && runtimeMs > 0) {
+            (positionMs.toDouble() / runtimeMs.toDouble()).coerceIn(0.0, 1.0)
+        } else 0.0
+        // Emby's rule: past 90% counts as watched, and the resume point is cleared.
+        val played = markPlayed ?: (percentage >= 0.9)
+        val storedPosition = if (played) 0L else positionMs
+        val playCount = if (played && !existing.played) existing.playCount + 1 else existing.playCount
+
+        db.transaction { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO user_data(item_id, position_ms, played, play_count, favorite,
+                                      last_played_at, audio_stream_index, subtitle_stream_index, updated_at)
+                VALUES (?, ?, ?, ?, COALESCE((SELECT favorite FROM user_data WHERE item_id = ?), 0), ?, ?, ?, ?)
+                ON CONFLICT(item_id) DO UPDATE SET
+                    position_ms = excluded.position_ms,
+                    played = excluded.played,
+                    play_count = excluded.play_count,
+                    last_played_at = excluded.last_played_at,
+                    audio_stream_index = COALESCE(excluded.audio_stream_index, user_data.audio_stream_index),
+                    subtitle_stream_index = COALESCE(excluded.subtitle_stream_index, user_data.subtitle_stream_index),
+                    updated_at = excluded.updated_at
+                """.trimIndent()
+            ).use { statement ->
+                val now = System.currentTimeMillis()
+                statement.setString(1, itemId)
+                statement.setLong(2, storedPosition)
+                statement.setInt(3, if (played) 1 else 0)
+                statement.setInt(4, playCount)
+                statement.setString(5, itemId)
+                statement.setLong(6, now)
+                audioStreamIndex?.let { statement.setInt(7, it) } ?: statement.setNull(7, java.sql.Types.INTEGER)
+                subtitleStreamIndex?.let { statement.setInt(8, it) } ?: statement.setNull(8, java.sql.Types.INTEGER)
+                statement.setLong(9, now)
+                statement.executeUpdate()
+            }
+        }
+        return userData(itemId)
+    }
+
+    fun setFavorite(itemId: String, favorite: Boolean): UserDataDto {
+        db.transaction { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO user_data(item_id, favorite, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(item_id) DO UPDATE SET favorite = excluded.favorite, updated_at = excluded.updated_at
+                """.trimIndent()
+            ).use {
+                it.setString(1, itemId)
+                it.setInt(2, if (favorite) 1 else 0)
+                it.setLong(3, System.currentTimeMillis())
+                it.executeUpdate()
+            }
+        }
+        return userData(itemId)
+    }
+
+    fun setPlayed(itemId: String, played: Boolean): UserDataDto {
+        db.transaction { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO user_data(item_id, played, position_ms, play_count, last_played_at, updated_at)
+                VALUES (?, ?, 0, COALESCE((SELECT play_count FROM user_data WHERE item_id = ?), 0) + ?, ?, ?)
+                ON CONFLICT(item_id) DO UPDATE SET
+                    played = excluded.played, position_ms = 0,
+                    play_count = excluded.play_count,
+                    last_played_at = excluded.last_played_at, updated_at = excluded.updated_at
+                """.trimIndent()
+            ).use {
+                val now = System.currentTimeMillis()
+                it.setString(1, itemId)
+                it.setInt(2, if (played) 1 else 0)
+                it.setString(3, itemId)
+                it.setInt(4, if (played) 1 else 0)
+                it.setLong(5, now)
+                it.setLong(6, now)
+                it.executeUpdate()
+            }
+        }
+        return userData(itemId)
+    }
+
+    // ------------------------------------------------------------ scrape cache
+
+    fun cacheGet(key: String, maxAgeMs: Long): String? = db.read { connection ->
+        connection.prepareStatement("SELECT payload, fetched_at FROM scrape_cache WHERE key = ?")
+            .apply { setString(1, key) }
+            .useQuery {
+                if (!it.next()) return@useQuery null
+                val age = System.currentTimeMillis() - it.getLong("fetched_at")
+                if (age > maxAgeMs) null else it.getString("payload")
+            }
+    }
+
+    fun cachePut(key: String, payload: String) = db.transaction { connection ->
+        connection.prepareStatement(
+            "INSERT INTO scrape_cache(key, payload, fetched_at) VALUES (?, ?, ?) " +
+                "ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, fetched_at = excluded.fetched_at"
+        ).use {
+            it.setString(1, key)
+            it.setString(2, payload)
+            it.setLong(3, System.currentTimeMillis())
+            it.executeUpdate()
+        }
+    }
+
+    // ------------------------------------------------------------ mapping
+
+    private fun java.sql.PreparedStatement.bind(values: List<Any?>) {
+        values.forEachIndexed { index, value ->
+            when (value) {
+                is String -> setString(index + 1, value)
+                is Int -> setInt(index + 1, value)
+                is Long -> setLong(index + 1, value)
+                null -> setObject(index + 1, null)
+                else -> setString(index + 1, value.toString())
+            }
+        }
+    }
+
+    private fun bindItem(statement: java.sql.PreparedStatement, record: ItemRecord) {
+        val dto = record.dto
+        var i = 0
+        statement.setString(++i, dto.id)
+        statement.setString(++i, dto.libraryId)
+        statement.setString(++i, dto.kind.name)
+        statement.setString(++i, dto.parentId)
+        statement.setString(++i, dto.seriesId)
+        statement.setString(++i, dto.name)
+        statement.setString(++i, dto.originalName)
+        statement.setString(++i, dto.sortName)
+        statement.setString(++i, dto.overview)
+        dto.year?.let { statement.setInt(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+        statement.setString(++i, dto.premiereDate)
+        dto.runtimeMs?.let { statement.setLong(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+        dto.communityRating?.let { statement.setDouble(++i, it) } ?: statement.setNull(++i, java.sql.Types.REAL)
+        statement.setString(++i, dto.officialRating)
+        statement.setString(++i, json.encodeToString(stringListSerializer, dto.genres))
+        statement.setString(++i, json.encodeToString(stringListSerializer, dto.studios))
+        statement.setString(++i, json.encodeToString(personListSerializer, dto.people))
+        dto.indexNumber?.let { statement.setInt(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+        dto.parentIndexNumber?.let { statement.setInt(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+        statement.setString(++i, dto.posterUrl)
+        statement.setString(++i, dto.backdropUrl)
+        statement.setString(++i, dto.logoUrl)
+        statement.setString(++i, json.encodeToString(stringMapSerializer, dto.providerIds))
+        statement.setString(++i, dto.path)
+        dto.sizeBytes?.let { statement.setLong(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+        statement.setString(++i, json.encodeToString(streamListSerializer, dto.mediaStreams))
+        statement.setLong(++i, record.dateCreated)
+        statement.setLong(++i, record.dateModified)
+        statement.setString(++i, record.etag)
+        record.scrapedAt?.let { statement.setLong(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+        record.probedAt?.let { statement.setLong(++i, it) } ?: statement.setNull(++i, java.sql.Types.INTEGER)
+    }
+
+    private fun readItem(rs: ResultSet): MediaItemDto = MediaItemDto(
+        id = rs.getString("id"),
+        libraryId = rs.getString("library_id"),
+        kind = runCatching { ItemKind.valueOf(rs.getString("kind")) }.getOrDefault(ItemKind.MOVIE),
+        parentId = rs.getString("parent_id"),
+        seriesId = rs.getString("series_id"),
+        seriesName = runCatching { rs.getString("series_name") }.getOrNull(),
+        name = rs.getString("name"),
+        originalName = rs.getString("original_name"),
+        sortName = rs.getString("sort_name") ?: "",
+        overview = rs.getString("overview"),
+        year = rs.getIntOrNull("year"),
+        premiereDate = rs.getString("premiere_date"),
+        runtimeMs = rs.getLongOrNull("runtime_ms"),
+        communityRating = rs.getDoubleOrNull("community_rating"),
+        officialRating = rs.getString("official_rating"),
+        genres = decodeList(rs.getString("genres")),
+        studios = decodeList(rs.getString("studios")),
+        people = runCatching { json.decodeFromString(personListSerializer, rs.getString("people")) }
+            .getOrDefault(emptyList()),
+        indexNumber = rs.getIntOrNull("index_number"),
+        parentIndexNumber = rs.getIntOrNull("parent_index_number"),
+        posterUrl = rs.getString("poster_url"),
+        backdropUrl = rs.getString("backdrop_url"),
+        logoUrl = rs.getString("logo_url"),
+        providerIds = runCatching { json.decodeFromString(stringMapSerializer, rs.getString("provider_ids")) }
+            .getOrDefault(emptyMap()),
+        childCount = rs.getIntOrNull("child_count"),
+        path = rs.getString("path"),
+        sizeBytes = rs.getLongOrNull("size_bytes"),
+        mediaStreams = runCatching { json.decodeFromString(streamListSerializer, rs.getString("media_streams")) }
+            .getOrDefault(emptyList()),
+        userData = readUserData(rs, rs.getLongOrNull("runtime_ms"))
+    )
+
+    private fun readItemRecord(rs: ResultSet) = ItemRecord(
+        dto = readItem(rs),
+        dateCreated = rs.getLong("date_created"),
+        dateModified = rs.getLong("date_modified"),
+        etag = rs.getString("etag"),
+        scrapedAt = rs.getLongOrNull("scraped_at"),
+        probedAt = rs.getLongOrNull("probed_at")
+    )
+
+    private fun readUserData(rs: ResultSet, runtimeMs: Long?): UserDataDto {
+        val position = rs.getLongOrNull("position_ms") ?: 0L
+        return UserDataDto(
+            positionMs = position,
+            playedPercentage = if (runtimeMs != null && runtimeMs > 0) {
+                (position.toDouble() / runtimeMs.toDouble()).coerceIn(0.0, 1.0)
+            } else 0.0,
+            played = (rs.getIntOrNull("played") ?: 0) == 1,
+            playCount = rs.getIntOrNull("play_count") ?: 0,
+            favorite = (rs.getIntOrNull("favorite") ?: 0) == 1,
+            lastPlayedAt = rs.getLongOrNull("last_played_at"),
+            audioStreamIndex = rs.getIntOrNull("audio_stream_index"),
+            subtitleStreamIndex = rs.getIntOrNull("subtitle_stream_index")
+        )
+    }
+
+    private fun decodeList(raw: String?): List<String> =
+        runCatching { json.decodeFromString(stringListSerializer, raw ?: "[]") }.getOrDefault(emptyList())
+
+    private companion object {
+        const val SELECT_ITEM = """
+            SELECT i.*,
+                   u.position_ms, u.played, u.play_count, u.favorite, u.last_played_at,
+                   u.audio_stream_index, u.subtitle_stream_index,
+                   (SELECT COUNT(*) FROM items c WHERE c.parent_id = i.id) AS child_count,
+                   (SELECT s.name FROM items s WHERE s.id = i.series_id) AS series_name
+            FROM items i
+            LEFT JOIN user_data u ON u.item_id = i.id
+        """
+
+        const val UPSERT_ITEM = """
+            INSERT INTO items(
+                id, library_id, kind, parent_id, series_id, name, original_name, sort_name, overview,
+                year, premiere_date, runtime_ms, community_rating, official_rating, genres, studios, people,
+                index_number, parent_index_number, poster_url, backdrop_url, logo_url, provider_ids,
+                path, size_bytes, media_streams, date_created, date_modified, etag, scraped_at, probed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                library_id = excluded.library_id, kind = excluded.kind, parent_id = excluded.parent_id,
+                series_id = excluded.series_id, name = excluded.name, original_name = excluded.original_name,
+                sort_name = excluded.sort_name, overview = excluded.overview, year = excluded.year,
+                premiere_date = excluded.premiere_date, runtime_ms = excluded.runtime_ms,
+                community_rating = excluded.community_rating, official_rating = excluded.official_rating,
+                genres = excluded.genres, studios = excluded.studios, people = excluded.people,
+                index_number = excluded.index_number, parent_index_number = excluded.parent_index_number,
+                poster_url = excluded.poster_url, backdrop_url = excluded.backdrop_url, logo_url = excluded.logo_url,
+                provider_ids = excluded.provider_ids, path = excluded.path, size_bytes = excluded.size_bytes,
+                media_streams = excluded.media_streams, date_modified = excluded.date_modified,
+                etag = excluded.etag, scraped_at = excluded.scraped_at, probed_at = excluded.probed_at
+        """
+    }
+}
