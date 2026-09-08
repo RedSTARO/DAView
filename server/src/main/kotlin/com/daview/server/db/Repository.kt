@@ -476,7 +476,11 @@ class Repository(private val db: Database) {
             .getOrDefault(emptyList()),
         indexNumber = rs.getIntOrNull("index_number"),
         parentIndexNumber = rs.getIntOrNull("parent_index_number"),
-        posterUrl = rs.getString("poster_url"),
+        // Episode stills only exist on providers that publish them; bangumi.tv
+        // never does. Falling back to the series artwork beats a grid of empty
+        // placeholders, and matches what Emby shows for a still-less episode.
+        posterUrl = rs.getString("poster_url")
+            ?: runCatching { rs.getString("series_poster") }.getOrNull(),
         backdropUrl = rs.getString("backdrop_url"),
         logoUrl = rs.getString("logo_url"),
         providerIds = runCatching { json.decodeFromString(stringMapSerializer, rs.getString("provider_ids")) }
@@ -525,7 +529,8 @@ class Repository(private val db: Database) {
                    u.position_ms, u.played, u.play_count, u.favorite, u.last_played_at,
                    u.audio_stream_index, u.subtitle_stream_index,
                    (SELECT COUNT(*) FROM items c WHERE c.parent_id = i.id) AS child_count,
-                   (SELECT s.name FROM items s WHERE s.id = i.series_id) AS series_name
+                   (SELECT s.name FROM items s WHERE s.id = i.series_id) AS series_name,
+                   (SELECT s.poster_url FROM items s WHERE s.id = i.series_id) AS series_poster
             FROM items i
             LEFT JOIN user_data u ON u.item_id = i.id
         """
