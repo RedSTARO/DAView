@@ -520,7 +520,16 @@ private fun SeasonEpisodesRow(state: AppState, current: MediaItemDto, episodes: 
     }
 
     Column(Modifier.fillMaxWidth()) {
-        SectionHeader(current.parentIndexNumber?.let { "第 $it 季" } ?: "本季剧集") {
+        // Season 0 is the specials folder, and the scanner already names the
+        // season item "特别篇"; "第 0 季" here was the same row calling it
+        // something else.
+        SectionHeader(
+            when (val season = current.parentIndexNumber) {
+                null -> "本季剧集"
+                0 -> "特别篇"
+                else -> "第 $season 季"
+            }
+        ) {
             Text(
                 "${episodes.size} 集",
                 style = MaterialTheme.typography.bodySmall,

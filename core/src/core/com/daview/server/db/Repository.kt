@@ -155,10 +155,17 @@ class Repository(private val db: Database) {
             .useQuery { if (it.next()) readItemRecord(it) else null }
     }
 
+    /**
+     * The seasons of a series, or the episodes of a season. Season 0 goes to
+     * the end of a series' list for the same reason it is last everywhere else
+     * — it is the specials folder — and that also decides which season a
+     * series page opens on, since it opens on the first one.
+     */
     fun children(parentId: String): List<MediaItemDto> = db.read { connection ->
         connection.statement(
             "$SELECT_ITEM WHERE i.parent_id = ? AND i.merged_into IS NULL " +
-                "ORDER BY COALESCE(i.index_number, 99999), i.sort_name"
+                "ORDER BY CASE WHEN i.kind = 'SEASON' AND i.index_number = 0 THEN 1 ELSE 0 END, " +
+                "COALESCE(i.index_number, 99999), i.sort_name"
         ).apply { setString(1, parentId) }.useQuery { it.map(::readItem) }
     }
 
@@ -303,6 +310,19 @@ class Repository(private val db: Database) {
         items to total
     }
 
+    /**
+     * Season 0 is the specials folder in the Emby / Jellyfin layout, and it is
+     * the one season whose number does not say where it sits in the run: it
+     * sorts first as an integer while belonging last as a run order. Ordering
+     * by the season number alone is why pressing play on a series started its
+     * SP instead of `S01E01`.
+     *
+     * A null season is *not* season 0. Episodes that sit directly under the
+     * series carry no season at all, and they are the main run, not extras.
+     */
+    private fun specialsLast(alias: String) =
+        "CASE WHEN $alias.parent_index_number = 0 THEN 1 ELSE 0 END"
+
     /** Partially watched playable items, most recent first. */
     fun resume(limit: Int): List<MediaItemDto> = db.read { connection ->
         connection.statement(
@@ -311,7 +331,12 @@ class Repository(private val db: Database) {
         ).apply { setInt(1, limit) }.useQuery { it.map(::readItem) }
     }
 
-    /** First unwatched episode of every series that has been started. */
+    /**
+     * First unwatched episode of every series that has been started. A special
+     * only qualifies once nothing in the regular seasons is still unwatched,
+     * so a series with an untouched `Season 00` does not sit in "next up"
+     * offering its SP while the viewer is half way through season one.
+     */
     fun nextUp(limit: Int): List<MediaItemDto> = db.read { connection ->
         connection.statement(
             """
@@ -328,9 +353,11 @@ class Repository(private val db: Database) {
                     SELECT 1 FROM items e2 LEFT JOIN user_data u2 ON u2.item_id = e2.id
                     WHERE e2.series_id = i.series_id AND e2.kind = 'EPISODE'
                       AND COALESCE(u2.played, 0) = 0 AND COALESCE(u2.position_ms, 0) = 0
-                      AND (COALESCE(e2.parent_index_number, 0) < COALESCE(i.parent_index_number, 0)
-                           OR (COALESCE(e2.parent_index_number, 0) = COALESCE(i.parent_index_number, 0)
-                               AND COALESCE(e2.index_number, 0) < COALESCE(i.index_number, 0)))
+                      AND (${specialsLast("e2")} < ${specialsLast("i")}
+                           OR (${specialsLast("e2")} = ${specialsLast("i")}
+                               AND (COALESCE(e2.parent_index_number, 0) < COALESCE(i.parent_index_number, 0)
+                                    OR (COALESCE(e2.parent_index_number, 0) = COALESCE(i.parent_index_number, 0)
+                                        AND COALESCE(e2.index_number, 0) < COALESCE(i.index_number, 0)))))
               )
             ORDER BY i.sort_name LIMIT ?
             """.trimIndent()
@@ -608,6 +635,11 @@ class Repository(private val db: Database) {
      * The episode to play when someone presses play on a series or a season:
      * whatever was left part-watched, else the first unwatched one, else the
      * first. Mirrors what "continue watching" means everywhere else.
+     *
+     * The specials rank comes before the watch state, not after it, so an SP
+     * that got five seconds of play cannot outrank the season the viewer is
+     * actually working through. Pressing play on a series is a request for the
+     * main run; the extras are one tap away on the season list.
      */
     fun nextEpisodeUnder(itemId: String): MediaItemDto? = db.read { connection ->
         connection.statement(
@@ -615,6 +647,7 @@ class Repository(private val db: Database) {
             $SELECT_ITEM
             WHERE i.kind = 'EPISODE' AND (i.series_id = ? OR i.parent_id = ?)
             ORDER BY
+                ${specialsLast("i")},
                 CASE WHEN COALESCE(u.position_ms, 0) > 0 AND COALESCE(u.played, 0) = 0 THEN 0
                      WHEN COALESCE(u.played, 0) = 0 THEN 1
                      ELSE 2 END,
