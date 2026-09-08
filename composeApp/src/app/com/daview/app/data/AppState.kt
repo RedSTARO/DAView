@@ -227,7 +227,7 @@ class AppState(private val scope: CoroutineScope) {
 
     fun toggleFavorite(item: MediaItemDto) = run {
         library.setFavorite(item.id, !item.userData.favorite)
-        if (detailItem?.id == item.id) detailItem = library.item(item.id, links)
+        refreshAfterWatchChange(item.id)
         toast = if (item.userData.favorite) "已取消收藏" else "已收藏"
     }
 
@@ -239,12 +239,33 @@ class AppState(private val scope: CoroutineScope) {
     fun togglePlayed(item: MediaItemDto) = run {
         val markPlayed = item.playedState != PlayedState.PLAYED
         library.setPlayed(item.id, markPlayed)
+        refreshAfterWatchChange(item.id)
+        toast = if (markPlayed) "已标记为已观看" else "已标记为未观看"
+    }
+
+    /**
+     * Puts a changed watch state back in front of the user, wherever the item is
+     * currently on screen. The grids and the search results only ever show that
+     * one row, so it is swapped in place and the scroll position survives; the
+     * open detail is reloaded whole, because marking a series watched flips every
+     * episode under it; and the home screen is rebuilt, because its rows are
+     * *selected* by watch state — an entry that just got watched has to leave
+     * "继续观看", not merely redraw with a tick.
+     */
+    private suspend fun refreshAfterWatchChange(itemId: String) {
+        val fresh = library.item(itemId, links)
+        fun List<MediaItemDto>.withFresh() = map { if (it.id == itemId) fresh else it }
+        libraryItems = libraryItems.withFresh()
+        searchResults = searchResults.withFresh()
+        detailChildren = detailChildren.withFresh()
+        detailEpisodes = detailEpisodes.withFresh()
+
         detailItem?.id?.let { openId ->
             detailItem = library.item(openId, links)
             if (detailChildren.isNotEmpty()) detailChildren = library.children(openId, links)
             detailSeasonId?.let { detailEpisodes = library.children(it, links) }
         }
-        toast = if (markPlayed) "已标记为已观看" else "已标记为未观看"
+        if (current is Screen.Home) refreshHome()
     }
 
     fun startScan(libraryId: String, mode: ScanMode = ScanMode.FULL) = run {

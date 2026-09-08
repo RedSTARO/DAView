@@ -24,11 +24,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
+import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import kotlinx.coroutines.delay
 
 @Composable
-fun SearchScreen(state: AppState) {
+fun SearchScreen(state: AppState, playback: PlaybackController) {
     // The field owns its own text. Routing every keystroke through the query
     // meant the character you typed only appeared once a coroutine had run,
     // which an IME makes very obvious.
@@ -66,7 +67,11 @@ fun SearchScreen(state: AppState) {
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
                 items(state.searchResults, key = { it.id }) { item ->
-                    PosterCard(item, width = 150.dp) { state.navigate(Screen.Detail(item.id)) }
+                    PosterCard(
+                        item,
+                        width = 150.dp,
+                        menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) }
+                    ) { state.navigate(Screen.Detail(item.id)) }
                 }
             }
         }

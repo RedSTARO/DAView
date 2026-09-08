@@ -51,6 +51,7 @@ import com.daview.shared.model.MediaItemDto
 fun HomeScreen(state: AppState, playback: PlaybackController) {
     val home = state.home
     val hero = home.resume.firstOrNull() ?: home.nextUp.firstOrNull() ?: home.latest.firstOrNull()
+    val itemMenu = cardMenu(state, playback)
 
     if (state.libraries.isEmpty() && home.latest.isEmpty()) {
         EmptyState(
@@ -82,21 +83,33 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
         item { LibraryShortcuts(state.libraries) { state.navigate(Screen.Library(it.id)) } }
 
         item {
-            MediaRow("继续观看", home.resume, itemWidth = 232.dp) { state.navigate(Screen.Detail(it.id)) }
+            MediaRow(
+                "继续观看",
+                home.resume,
+                itemWidth = 232.dp,
+                menu = itemMenu
+            ) { state.navigate(Screen.Detail(it.id)) }
         }
         item {
-            MediaRow("接下来", home.nextUp, itemWidth = 232.dp) { state.navigate(Screen.Detail(it.id)) }
+            MediaRow(
+                "接下来",
+                home.nextUp,
+                itemWidth = 232.dp,
+                menu = itemMenu
+            ) { state.navigate(Screen.Detail(it.id)) }
         }
         item {
-            MediaRow("最近添加", home.latest) { state.navigate(Screen.Detail(it.id)) }
+            MediaRow("最近添加", home.latest, menu = itemMenu) { state.navigate(Screen.Detail(it.id)) }
         }
 
         // One row per library rather than a single pooled one: which shelf a
         // thing sits on is most of what decides whether you want it tonight.
         items(state.libraries, key = { it.id }) { library ->
-            MediaRow("${library.name} · 未观看", home.unwatched[library.id].orEmpty()) {
-                state.navigate(Screen.Detail(it.id))
-            }
+            MediaRow(
+                "${library.name} · 未观看",
+                home.unwatched[library.id].orEmpty(),
+                menu = itemMenu
+            ) { state.navigate(Screen.Detail(it.id)) }
         }
 
         val running = state.scanStatus.filter { it.running }

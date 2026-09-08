@@ -1,14 +1,17 @@
 package com.daview.app.ui
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -33,16 +37,21 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -96,6 +105,7 @@ fun SectionHeader(title: String, trailing: @Composable (() -> Unit)? = null) {
  * Poster tile. Hovering lifts the card on desktop and web, which is the main
  * expressive motion cue in the browse grids.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PosterCard(
     item: MediaItemDto,
@@ -105,6 +115,12 @@ fun PosterCard(
     /** Overrides the two lines under the tile. Both default to what the item says. */
     title: String? = null,
     subtitle: String? = null,
+    /**
+     * Entries for the menu a right-click or a long press opens, if this card has
+     * one. The tile stays a pure presentation piece: it knows where the menu goes
+     * and when to close it, not what is in it.
+     */
+    menu: (@Composable ColumnScope.(dismiss: () -> Unit) -> Unit)? = null,
     onClick: () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -112,11 +128,34 @@ fun PosterCard(
     val scale by animateFloatAsState(if (hovered) 1.04f else 1f, label = "poster-scale")
     val aspect = if (item.kind == ItemKind.EPISODE) 16f / 9f else 2f / 3f
 
+    // Where the menu was asked for, in pixels from the tile's top-left corner.
+    // Null means closed; a right-click carries the cursor, a long press has no
+    // position to speak of and falls back to the corner.
+    var menuAt by remember { mutableStateOf<Offset?>(null) }
+    var lastPointer by remember { mutableStateOf(PointerType.Unknown) }
+    val density = LocalDensity.current
+
     Column(
         modifier = modifier
             .width(width)
             .hoverable(interaction)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .then(
+                if (menu == null) Modifier
+                else Modifier.secondaryClick(
+                    onPointerType = { lastPointer = it },
+                    onOpen = { at -> menuAt = at }
+                )
+            )
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+                // A held mouse button is not a request for the menu — it already
+                // has the right button. Touch is the only input with nothing else.
+                onLongClick = if (menu == null) null else {
+                    { if (lastPointer == PointerType.Touch) menuAt = Offset.Zero }
+                }
+            )
     ) {
         Surface(
             modifier = Modifier.fillMaxWidth().aspectRatio(aspect).scale(scale),
@@ -186,6 +225,19 @@ fun PosterCard(
                         drawStopIndicator = {}
                     )
                 }
+
+                // Anchored to the artwork, which shares its top-left corner with
+                // the tile, so the offset the gesture reported lands under the
+                // cursor.
+                if (menu != null) {
+                    DropdownMenu(
+                        expanded = menuAt != null,
+                        onDismissRequest = { menuAt = null },
+                        offset = menuAt.toDpOffset(density)
+                    ) {
+                        menu { menuAt = null }
+                    }
+                }
             }
         }
 
@@ -220,6 +272,8 @@ fun MediaRow(
     items: List<MediaItemDto>,
     itemWidth: androidx.compose.ui.unit.Dp = 152.dp,
     trailing: @Composable (() -> Unit)? = null,
+    /** Per-item menu entries, handed straight to each [PosterCard]. */
+    menu: (@Composable ColumnScope.(item: MediaItemDto, dismiss: () -> Unit) -> Unit)? = null,
     onItemClick: (MediaItemDto) -> Unit
 ) {
     if (items.isEmpty()) return
@@ -230,7 +284,11 @@ fun MediaRow(
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             items(items, key = { it.id }) { item ->
-                PosterCard(item, width = itemWidth) { onItemClick(item) }
+                PosterCard(
+                    item,
+                    width = itemWidth,
+                    menu = menu?.let { entries -> { dismiss -> entries(item, dismiss) } }
+                ) { onItemClick(item) }
             }
         }
         Spacer(Modifier.height(20.dp))

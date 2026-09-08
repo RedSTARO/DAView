@@ -1,10 +1,13 @@
 package com.daview.app.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -57,9 +60,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -143,7 +149,8 @@ fun DetailScreen(state: AppState, playback: PlaybackController) {
                 EpisodeRow(
                     episode,
                     basePath = selectedSeason?.path,
-                    onPlay = { playback.playInternalOrExternal(episode) }
+                    onPlay = { playback.playInternalOrExternal(episode) },
+                    menu = { dismiss -> ItemMenuItems(state, playback, episode, dismiss) }
                 ) {
                     state.togglePlayed(episode)
                 }
@@ -151,12 +158,14 @@ fun DetailScreen(state: AppState, playback: PlaybackController) {
         }
 
         if (item.kind == ItemKind.EPISODE && state.detailEpisodes.isNotEmpty()) {
-            item { SeasonEpisodesRow(state, item, state.detailEpisodes) }
+            item { SeasonEpisodesRow(state, playback, item, state.detailEpisodes) }
         }
 
         if (relatedMovies.isNotEmpty()) {
             item {
-                MediaRow("相关影片", relatedMovies) { state.navigate(Screen.Detail(it.id)) }
+                MediaRow("相关影片", relatedMovies, menu = cardMenu(state, playback)) {
+                    state.navigate(Screen.Detail(it.id))
+                }
             }
         }
     }
@@ -504,7 +513,12 @@ private fun pathUnder(path: String, base: String?): String {
  * page is about a single file and this is the way out of it.
  */
 @Composable
-private fun SeasonEpisodesRow(state: AppState, current: MediaItemDto, episodes: List<MediaItemDto>) {
+private fun SeasonEpisodesRow(
+    state: AppState,
+    playback: PlaybackController,
+    current: MediaItemDto,
+    episodes: List<MediaItemDto>
+) {
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = episodes.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
     )
@@ -548,7 +562,8 @@ private fun SeasonEpisodesRow(state: AppState, current: MediaItemDto, episodes: 
                     episode,
                     width = 232.dp,
                     title = episode.episodeLabel ?: episode.name,
-                    subtitle = episode.name
+                    subtitle = episode.name,
+                    menu = { dismiss -> ItemMenuItems(state, playback, episode, dismiss) }
                 ) { state.navigate(Screen.Detail(episode.id)) }
             }
         }
@@ -605,97 +620,123 @@ private fun PeopleRow(item: MediaItemDto) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun EpisodeRow(
     episode: MediaItemDto,
     basePath: String?,
     onPlay: () -> Unit,
+    menu: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit,
     onToggleWatched: () -> Unit
 ) {
-    Card(
-        onClick = onPlay,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        shape = MaterialTheme.shapes.medium
-    ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(
-                modifier = Modifier.width(148.dp).height(84.dp),
-                shape = MaterialTheme.shapes.small,
-                color = MaterialTheme.colorScheme.surfaceContainerHighest
-            ) {
-                Box {
-                    episode.posterUrl?.let {
-                        AsyncImage(
-                            model = it,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                    val progress = episode.userData.playedPercentage.toFloat()
-                    if (progress > 0.01f && !episode.userData.played) {
-                        LinearProgressIndicator(
-                            progress = { progress },
-                            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp),
-                            color = MaterialTheme.colorScheme.secondary,
-                            trackColor = Color.Transparent,
-                            gapSize = 0.dp,
-                            drawStopIndicator = {}
-                        )
+    var menuAt by remember { mutableStateOf<Offset?>(null) }
+    var lastPointer by remember { mutableStateOf(PointerType.Unknown) }
+    val density = LocalDensity.current
+
+    // The menu hangs off the box rather than the card's own content column, so
+    // the offset the gesture reported is measured from the same corner it was.
+    Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp)) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .secondaryClick(
+                    onPointerType = { lastPointer = it },
+                    onOpen = { at -> menuAt = at }
+                )
+                .combinedClickable(
+                    onClick = onPlay,
+                    onLongClick = { if (lastPointer == PointerType.Touch) menuAt = Offset.Zero }
+                ),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            shape = MaterialTheme.shapes.medium
+        ) {
+            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    modifier = Modifier.width(148.dp).height(84.dp),
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest
+                ) {
+                    Box {
+                        episode.posterUrl?.let {
+                            AsyncImage(
+                                model = it,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        val progress = episode.userData.playedPercentage.toFloat()
+                        if (progress > 0.01f && !episode.userData.played) {
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp),
+                                color = MaterialTheme.colorScheme.secondary,
+                                trackColor = Color.Transparent,
+                                gapSize = 0.dp,
+                                drawStopIndicator = {}
+                            )
+                        }
                     }
                 }
-            }
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    listOfNotNull(episode.episodeLabel, episode.name).joinToString(" · "),
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                episode.overview?.let {
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
                     Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    listOfNotNull(
-                        watchedLabel(episode),
-                        episode.runtimeMs?.let { formatDuration(it) },
-                        formatSize(episode.sizeBytes).takeIf { it.isNotBlank() },
-                        episode.mediaStreams.count { it.type == StreamType.SUBTITLE }
-                            .takeIf { it > 0 }?.let { "$it 条字幕" }
-                    ).joinToString(" · "),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                episode.path?.takeIf { it.isNotBlank() }?.let {
-                    Text(
-                        pathUnder(it, basePath),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        listOfNotNull(episode.episodeLabel, episode.name).joinToString(" · "),
+                        style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    episode.overview?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        listOfNotNull(
+                            watchedLabel(episode),
+                            episode.runtimeMs?.let { formatDuration(it) },
+                            formatSize(episode.sizeBytes).takeIf { it.isNotBlank() },
+                            episode.mediaStreams.count { it.type == StreamType.SUBTITLE }
+                                .takeIf { it > 0 }?.let { "$it 条字幕" }
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    episode.path?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            pathUnder(it, basePath),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                IconButton(onClick = onToggleWatched) {
+                    Icon(
+                        if (episode.userData.played) Icons.Filled.Check else Icons.Filled.CheckCircleOutline,
+                        contentDescription = if (episode.userData.played) "标记为未观看" else "标记为已观看",
+                        tint = when (episode.playedState) {
+                            PlayedState.PLAYED -> MaterialTheme.colorScheme.primary
+                            PlayedState.PARTIAL -> MaterialTheme.colorScheme.secondary
+                            PlayedState.NONE -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
                 }
             }
-            IconButton(onClick = onToggleWatched) {
-                Icon(
-                    if (episode.userData.played) Icons.Filled.Check else Icons.Filled.CheckCircleOutline,
-                    contentDescription = if (episode.userData.played) "标记为未观看" else "标记为已观看",
-                    tint = when (episode.playedState) {
-                        PlayedState.PLAYED -> MaterialTheme.colorScheme.primary
-                        PlayedState.PARTIAL -> MaterialTheme.colorScheme.secondary
-                        PlayedState.NONE -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-            }
+        }
+
+        DropdownMenu(
+            expanded = menuAt != null,
+            onDismissRequest = { menuAt = null },
+            offset = menuAt.toDpOffset(density)
+        ) {
+            menu { menuAt = null }
         }
     }
 }

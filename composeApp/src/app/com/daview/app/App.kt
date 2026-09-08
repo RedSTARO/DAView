@@ -136,9 +136,9 @@ private fun Content(state: AppState, playback: PlaybackController) {
     ) { screen ->
         when (screen) {
             is Screen.Home -> HomeScreen(state, playback)
-            is Screen.Library -> LibraryScreen(state, screen.libraryId)
+            is Screen.Library -> LibraryScreen(state, playback, screen.libraryId)
             is Screen.Detail -> DetailScreen(state, playback)
-            is Screen.Search -> SearchScreen(state)
+            is Screen.Search -> SearchScreen(state, playback)
             is Screen.Settings -> SettingsScreen(state)
             is Screen.Player -> PlayerScreen(state, playback)
         }

@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
+import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 
 private val sortOptions = listOf(
@@ -33,7 +34,7 @@ private val sortOptions = listOf(
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun LibraryScreen(state: AppState, libraryId: String) {
+fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: String) {
     val library = state.libraries.firstOrNull { it.id == libraryId }
 
     Column(Modifier.fillMaxSize()) {
@@ -77,7 +78,11 @@ fun LibraryScreen(state: AppState, libraryId: String) {
                 modifier = Modifier.fillMaxSize()
             ) {
                 items(state.libraryItems, key = { it.id }) { item ->
-                    PosterCard(item, width = 150.dp) { state.navigate(Screen.Detail(item.id)) }
+                    PosterCard(
+                        item,
+                        width = 150.dp,
+                        menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) }
+                    ) { state.navigate(Screen.Detail(item.id)) }
                 }
             }
         }
