@@ -24,7 +24,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
 import com.daview.app.data.PlaybackController
@@ -95,24 +94,14 @@ fun ExternalPlaybackPanel(state: AppState, playback: PlaybackController) {
                     color = MaterialTheme.colorScheme.secondary
                 )
                 Spacer(Modifier.height(4.dp))
-                // The show used to be glued to the episode title with a middot;
-                // on its own line it can be a link without splitting a sentence.
-                info.item.seriesName?.let { name ->
-                    LinkText(
-                        name,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.secondary,
-                        onClick = info.item.seriesId?.let { id ->
-                            { state.navigate(Screen.Detail(id)) }
-                        }
-                    )
-                }
-                Text(
-                    info.item.name,
+                // Whatever is playing has a page of its own: the show when it
+                // belongs to one, the film otherwise.
+                LinkText(
+                    info.item.seriesName?.let { "$it · ${info.item.name}" } ?: info.item.name,
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    onClick = { state.navigate(Screen.Detail(info.item.seriesId ?: info.item.id)) }
                 )
 
                 Spacer(Modifier.height(20.dp))

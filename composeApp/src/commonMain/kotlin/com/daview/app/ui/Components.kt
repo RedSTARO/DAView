@@ -270,7 +270,7 @@ fun LinkText(
     style: TextStyle = MaterialTheme.typography.bodyMedium,
     color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     fontWeight: FontWeight? = null,
-    maxLines: Int = 1,
+    maxLines: Int = Int.MAX_VALUE,
     onClick: (() -> Unit)? = null
 ) {
     if (onClick == null) {
