@@ -14,6 +14,7 @@ import com.daview.shared.api.DaViewClient
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.MediaItemDto
+import com.daview.shared.model.PlayedState
 import com.daview.shared.model.ScanProgressDto
 import com.daview.shared.model.ServerInfoDto
 import com.daview.shared.model.ServerSettingsDto
@@ -253,11 +254,20 @@ class AppState(private val scope: CoroutineScope) {
         toast = if (item.userData.favorite) "已取消收藏" else "已收藏"
     }
 
+    /**
+     * Works for any kind. A series or season has no watched flag of its own, so
+     * the decision comes from its episodes — and marking one flips all of them,
+     * which is why the whole open detail is reloaded rather than one row.
+     */
     fun togglePlayed(item: MediaItemDto) = run { api ->
-        api.setPlayed(item.id, !item.userData.played)
-        if (detailItem?.id == item.id) detailItem = api.item(item.id)
-        detailSeasonId?.let { detailEpisodes = api.children(it) }
-        toast = if (item.userData.played) "已标记为未观看" else "已标记为已观看"
+        val markPlayed = item.playedState != PlayedState.PLAYED
+        api.setPlayed(item.id, markPlayed)
+        detailItem?.id?.let { openId ->
+            detailItem = api.item(openId)
+            if (detailChildren.isNotEmpty()) detailChildren = api.children(openId)
+            detailSeasonId?.let { detailEpisodes = api.children(it) }
+        }
+        toast = if (markPlayed) "已标记为已观看" else "已标记为未观看"
     }
 
     fun startScan(libraryId: String, refresh: Boolean = false) = run { api ->

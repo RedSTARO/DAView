@@ -63,6 +63,27 @@ class PlaybackServiceTest {
     )
 
     @Test
+    fun `an in-app session that never reported leaves the item alone`() {
+        repository.saveProgress(item.id, 418_245, runtimeMs, audioStreamIndex = 2, subtitleStreamIndex = 1000)
+
+        val session = playback.start(
+            item = item,
+            player = PlayerKind.INTERNAL,
+            deviceName = "web",
+            startPositionMs = 418_245,
+            audioStreamIndex = 2,
+            subtitleStreamIndex = 1000
+        )
+        // The web build cannot play Matroska, so a session can sit open with the
+        // client never reporting anything. Ending it must not invent a position.
+        playback.stop(session.id, null)
+
+        val stored = repository.userData(item.id)
+        assertEquals(418_245, stored.positionMs, "an untouched resume point must survive")
+        assertFalse(stored.played, "nothing was played, so nothing may be marked watched")
+    }
+
+    @Test
     fun `reading the container index at the tail does not jump to the end`() {
         val session = startSession()
         // PotPlayer reads Matroska Cues a few bytes from EOF right after opening.

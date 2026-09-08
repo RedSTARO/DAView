@@ -99,6 +99,12 @@ class PlaybackService(
         /** Current position: reported when the player tells us, estimated otherwise. */
         fun positionMs(): Long {
             reportedPositionMs?.let { return it }
+            // An in-app player reports its own position. Until it has, nothing is
+            // known to be playing, and running the clock anyway is how an episode
+            // nobody watched ends up marked watched: the session sits open, the
+            // estimate walks past 90% of the runtime, and the resume point is
+            // cleared. Estimation is only for players that cannot report.
+            if (!isExternal) return 0
             val elapsed = if (paused) 0 else System.currentTimeMillis() - anchorWallClock
             var estimated = anchorPositionMs + elapsed
             // Playback cannot be past what the player has actually downloaded.
@@ -284,6 +290,9 @@ class PlaybackService(
     }
 
     private fun persist(session: Session, finished: Boolean) {
+        // An in-app session that never reported has no progress to write, not
+        // even on the way out.
+        if (!session.isExternal && session.reportedPositionMs == null) return
         val position = session.positionMs()
         if (!finished && position < MIN_PERSIST_POSITION_MS) return
         repository.saveProgress(

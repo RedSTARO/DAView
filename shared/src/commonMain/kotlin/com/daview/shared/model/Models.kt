@@ -147,12 +147,34 @@ data class MediaItemDto(
      */
     val lockedProvider: MetadataProvider? = null,
     val childCount: Int? = null,
+    /** Episodes under this item: within a season, across a whole series. */
+    val episodeCount: Int? = null,
+    /** How many of those are marked watched. */
+    val playedEpisodeCount: Int? = null,
     val path: String? = null,
     val sizeBytes: Long? = null,
     val mediaStreams: List<MediaStreamDto> = emptyList(),
     val userData: UserDataDto = UserDataDto()
 ) {
     val isPlayable: Boolean get() = kind == ItemKind.MOVIE || kind == ItemKind.EPISODE
+
+    /**
+     * Watched state for any kind of item. A film or episode carries its own
+     * flag; a series or season is read from its episodes, which keeps the two
+     * from disagreeing after a scan adds or removes files.
+     */
+    val playedState: PlayedState
+        get() = when {
+            isPlayable -> when {
+                userData.played -> PlayedState.PLAYED
+                userData.positionMs > 0 -> PlayedState.PARTIAL
+                else -> PlayedState.NONE
+            }
+            (episodeCount ?: 0) == 0 -> PlayedState.NONE
+            playedEpisodeCount == episodeCount -> PlayedState.PLAYED
+            (playedEpisodeCount ?: 0) > 0 -> PlayedState.PARTIAL
+            else -> PlayedState.NONE
+        }
 
     /** `S01E03` style label, or null for non-episodes. */
     val episodeLabel: String?
@@ -161,6 +183,8 @@ data class MediaItemDto(
             indexNumber?.let { append("E").append(it.toString().padStart(2, '0')) }
         }.takeIf { it.isNotEmpty() }
 }
+
+enum class PlayedState { NONE, PARTIAL, PLAYED }
 
 @Serializable
 data class ItemPage(

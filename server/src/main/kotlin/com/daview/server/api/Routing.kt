@@ -311,8 +311,20 @@ fun Route.apiRoutes(context: ServerContext) {
 
     post("/api/items/{id}/played") {
         call.requireAuth(context) ?: return@post
+        val id = call.parameters["id"].orEmpty()
         val value = call.request.queryParameters["value"]?.toBoolean() ?: true
-        call.respond(context.repository.setPlayed(call.parameters["id"].orEmpty(), value))
+        // A series or a season has no bytes of its own, so marking one watched
+        // means marking the episodes under it; its own row would just be a
+        // second answer to the same question, free to drift from the episodes.
+        val episodes = context.repository.episodeIdsUnder(id)
+        if (episodes.isEmpty()) {
+            call.respond(context.repository.setPlayed(id, value))
+        } else {
+            withContext(Dispatchers.IO) {
+                episodes.forEach { context.repository.setPlayed(it, value) }
+            }
+            call.respond(context.repository.userData(id))
+        }
     }
 
     // ------------------------------------------------------------ manual identify

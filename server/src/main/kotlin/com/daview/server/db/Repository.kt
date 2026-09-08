@@ -429,6 +429,17 @@ class Repository(private val db: Database) {
         return userData(itemId)
     }
 
+    /**
+     * Every episode under an item, whether it hangs off a series or a season.
+     * Used to mark a whole run watched in one go.
+     */
+    fun episodeIdsUnder(itemId: String): List<String> = db.read { connection ->
+        connection.statement(
+            "SELECT id FROM items WHERE kind = 'EPISODE' AND (series_id = ? OR parent_id = ?)"
+        ).apply { setString(1, itemId); setString(2, itemId) }
+            .useQuery { rs -> rs.map { it.requireString("id") } }
+    }
+
     fun setPlayed(itemId: String, played: Boolean): UserDataDto {
         db.transaction { connection ->
             connection.statement(
@@ -563,6 +574,8 @@ class Repository(private val db: Database) {
         lockedProvider = rs.getString("locked_provider")
             ?.let { name -> MetadataProvider.entries.firstOrNull { it.name == name } },
         childCount = rs.getIntOrNull("child_count"),
+        episodeCount = rs.getIntOrNull("episode_count"),
+        playedEpisodeCount = rs.getIntOrNull("played_episode_count"),
         path = rs.getString("path"),
         sizeBytes = rs.getLongOrNull("size_bytes"),
         mediaStreams = runCatching { json.decodeFromString(streamListSerializer, rs.requireString("media_streams")) }
@@ -604,6 +617,14 @@ class Repository(private val db: Database) {
                    u.position_ms, u.played, u.play_count, u.favorite, u.last_played_at,
                    u.audio_stream_index, u.subtitle_stream_index,
                    (SELECT COUNT(*) FROM items c WHERE c.parent_id = i.id) AS child_count,
+                   -- Episodes hang off a series by series_id and off a season by
+                   -- parent_id, so one pair of subqueries answers for both.
+                   (SELECT COUNT(*) FROM items e
+                     WHERE e.kind = 'EPISODE' AND (e.series_id = i.id OR e.parent_id = i.id)) AS episode_count,
+                   (SELECT COUNT(*) FROM items e
+                     LEFT JOIN user_data ue ON ue.item_id = e.id
+                     WHERE e.kind = 'EPISODE' AND (e.series_id = i.id OR e.parent_id = i.id)
+                       AND COALESCE(ue.played, 0) = 1) AS played_episode_count,
                    (SELECT s.name FROM items s WHERE s.id = i.series_id) AS series_name,
                    (SELECT s.poster_url FROM items s WHERE s.id = i.series_id) AS series_poster
             FROM items i
