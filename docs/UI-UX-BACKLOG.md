@@ -5,9 +5,9 @@
 
 | 状态 | 条数 |
 |---|---|
-| 已修复 | 81 |
+| 已修复 | 86 |
 | 部分修复 | 16 |
-| 未开始 | 47 |
+| 未开始 | 42 |
 
 标记说明：`[x]` 已修复，`[~]` 部分修复（后面写明还差什么），`[ ]` 未开始。
 
@@ -127,9 +127,8 @@
       - 已修复：「从继续观看中移除」，保留进度
 - [~] **UX-43**（严重）扫描结束后停在首页不会自动刷新，后台同步拉回来的进度也不刷新，且没有下拉刷新
       - 部分修复：扫描结束会刷新首页；同步拉回与下拉刷新仍无
-- [ ] **UX-44**（严重）停止播放不触发上传，进度只等进程内定时器——划掉 App 换设备最坏会看到十分钟前的旧进度
-      - 位置：`core/src/core/com/daview/server/api/MediaFacade.kt:386-392`
-      - 改法：在 stopPlayback 成功之后（或 Activity 的 ON_STOP）触发一次立即上传，绕开 minIntervalMinutes 节流；再用 WorkManager 排一个 OneTimeWorkRequest（约束 NETWORK_CONNECTED）兜底，这样即使进程当场被杀，系统也会稍后替你补上。
+- [x] **UX-44**（严重）停止播放不触发上传，进度只等进程内定时器——划掉 App 换设备最坏会看到十分钟前的旧进度
+      - 已修复：停止播放立即上传一次
 - [x] **UX-45**（严重）同步文件会静默覆写本机的存储地址与播放设置，两台设备用不同地址访问同一份存储时互相打架
       - 已修复：同步不再覆写本机存储地址与播放设置
 - [ ] **UX-46**（打磨）同步其实是定时自动跑的，界面从头到尾没说，也看不到上次跑的时间和间隔
@@ -252,9 +251,8 @@
       - 已修复：媒体库读取失败留在屏幕上并可重试
 - [x] **UI-18**（严重）搜索无加载态：新一轮搜索的首个字符必然先闪 ≥250ms 的「没有匹配的结果」，且「正在查」与「查完为空」长得一模一样
       - 已修复：搜索有加载态，且会取消上一次查询
-- [ ] **UI-19**（严重）全应用唯一的页面转场是无方向的交叉溶解：进入与返回播放同一套动画，两屏叠加期约 110ms
-      - 位置：`App.kt:160-164、Theme.kt:145、Theme.kt:6`
-      - 改法：transitionSpec 改成方向感知的 fade through：比较 backStack 是增是减，前进 `fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()) + scaleIn(initialScale = 0.92f) togetherWith fadeOut(tween(90))`，后退把 scale 换成 1.08f 起。最低成本版本是只把 fadeOut 换成 `tween(90)`，让它先走完再淡入，双重曝光即消失。
+- [x] **UI-19**（严重）全应用唯一的页面转场是无方向的交叉溶解：进入与返回播放同一套动画，两屏叠加期约 110ms
+      - 已修复：转场按前进/后退给方向，淡入淡出错开
 - [ ] **UI-20**（打磨 · 桌面）悬停反馈只做了一半：遮罩与播放键一帧硬跳无淡入，tonalElevation 因色角色选错静默失效所以卡片不「抬起」，指针也仍是箭头
       - 位置：`Components.kt:157、Components.kt:134-135、Components.kt:189-193、Components.kt:223-241、Components.kt:385、Theme.kt:38、Theme.kt:55、Theme.kt:145`
       - 改法：遮罩与播放键包一层 `AnimatedVisibility(hovered, fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()), fadeOut(...))`；把 `tonalElevation` 换成 `shadowElevation = if (hovered) 6.dp else 0.dp`（或 hover 时把 color 切到 surfaceContainerHighest，用色阶表达抬升）；卡片加 `Modifier.pointerHoverIcon(PointerIcon.Hand)`。
@@ -319,9 +317,8 @@
 
 - [x] **UI-39**（阻断 · 桌面）默认窗口 1360×900 物理像素从不与屏幕工作区取交集：1366×768 笔记本、1080p 上开 125%/150% 缩放的机器首次启动就有一大块在工作区外
       - 已修复：窗口居中、限最小尺寸
-- [ ] **UI-40**（严重 · 桌面）桌面上所有横排用滚轮推不动——纵向滚轮增量在 Horizontal scrollable 上被算成 0 并冒泡去滚整页，行两端也没有箭头或滚动条
-      - 位置：`Components.kt:311-314、HomeScreen.kt:222-225、HomeScreen.kt:66、DetailScreen.kt:94、DetailScreen.kt:107-119、DetailScreen.kt:605-621、DetailScreen.kt:630-633、AppState.kt:220`
-      - 改法：两件事各自独立见效：给 MediaRow 与分集行加 `Modifier.onPointerEvent(PointerEventType.Scroll)`，把 scrollDelta.y 转成对 rememberLazyListState 的 scrollBy；在行左右两端加 hover 时才出现的圆形箭头按钮（滚到头时隐藏对应一侧），每次滚一屏宽——两者都只需要把 LazyRow 的 state 提上来。
+- [x] **UI-40**（严重 · 桌面）桌面上所有横排用滚轮推不动——纵向滚轮增量在 Horizontal scrollable 上被算成 0 并冒泡去滚整页，行两端也没有箭头或滚动条
+      - 已修复：桌面滚轮可推动横排
 - [x] **UI-41**（严重 · 桌面）右键菜单用 DropdownMenu 的 offset 当光标坐标，而 offset 的垂直基准是锚点底边——菜单落在光标下方整整一张海报的高度
       - 已修复：右键菜单落在光标处
 - [~] **UI-42**（严重 · 桌面）桌面端一个快捷键、一条菜单栏都没有：Alt+← / Backspace 不返回、Ctrl+F 不跳搜索、F5 不刷新，唯一返回入口是左上角那个图标按钮
@@ -344,14 +341,12 @@
       - 已修复：F11 与工具栏按钮切全屏
 - [x] **UI-49**（严重 · 桌面）桌面 PlayerBar 是无溢出处理的单行 Row：GPU 型号排在片名前面吃满宽度，150% 缩放下字幕轨名换行把 bar 撑到 112dp、「结束播放」退化成压在字幕按钮上的 48dp 空白热区
       - 已修复：标题让位给控件，控件改用图标
-- [ ] **UI-50**（严重）播放中点侧栏/底栏的「搜索」「设置」「某个媒体库」：去不了目标页，绕一圈回来重启一次解码，再自己多退一级
-      - 位置：`App.kt:133-147、App.kt:230、App.kt:237、App.kt:246、App.kt:160-173、AppState.kt:124-127、PlayerScreen.kt:45-55、PlayerScreen.kt:51-54、PlaybackController.kt:176-183、InternalPlayer.desktop.kt:239-246、InternalPlayer.android.kt:116-122`
-      - 改法：根因是 onClose 里的 `state.back()` 与外部 navigate 抢同一个回退栈。最小改法：PlayerScreen 的 onClose 改成只在 current 仍是 Screen.Player 时才 back()（或用 popIfCurrent(Screen.Player)）；同时把 PlaybackController.stop 里的 `info = null` 提到 scope.launch 之外先置空，避免旧 info 被重新播一次。设计上更该做的是让 Screen.Player 成为覆盖整个窗口、不带导航骨架的一层。
+- [x] **UI-50**（严重）播放中点侧栏/底栏的「搜索」「设置」「某个媒体库」：去不了目标页，绕一圈回来重启一次解码，再自己多退一级
+      - 已修复：播放中切换导航会先停止播放
 - [x] **UI-51**（严重 · Android）Android 播放器的标题与音轨/字幕按钮是纯白文字直接压在视频帧上，没有 scrim 也没有阴影，亮画面下低至 1.00:1
       - 已修复：标题与按钮加 scrim
-- [ ] **UI-52**（严重）退出内置播放器：Android 上引擎比页面多活约 0.33 秒声音继续响，桌面则在淡出中途先闪出「没有正在播放的内容」，两端画面都不参与淡入淡出
-      - 位置：`PlayerScreen.kt:37-43、PlayerScreen.kt:51-54、PlaybackController.kt:176-183、MediaFacade.kt:386-392、InternalPlayer.desktop.kt:239-246、InternalPlayer.desktop.kt:272、InternalPlayer.android.kt:116-122、App.kt:161、App.kt:186`
-      - 改法：两处 onClose 回调里先关引擎再退栈（`player?.close()` / `player.release()` 放到 `state.back()` 之前，DisposableEffect 保留作兜底）；同时在 App.kt:161 的 transitionSpec 里对 `Screen.Player` 这一分支返回 `EnterTransition.None togetherWith ExitTransition.None`，让播放器进出是干净的瞬切，而不是一个做不到的假淡入淡出。
+- [x] **UI-52**（严重）退出内置播放器：Android 上引擎比页面多活约 0.33 秒声音继续响，桌面则在淡出中途先闪出「没有正在播放的内容」，两端画面都不参与淡入淡出
+      - 已修复：先释放引擎再离开播放页
 - [x] **UI-53**（打磨 · 桌面）桌面 PlayerBar 跟随应用主题：切到浅色主题后，纯黑画面上方是一条横贯全宽、64dp 高的近白色带
       - 已修复：播放条固定深色
 - [x] **UI-54**（打磨 · Android）Android 播放失败时一张卡片浮在画面正中央、永不消失、没有任何出口，文案还是 ERROR_CODE_IO_BAD_HTTP_STATUS 这样的英文枚举
