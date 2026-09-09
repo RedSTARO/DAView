@@ -6,8 +6,11 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -68,6 +71,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.daview.app.data.AppState
@@ -214,7 +218,7 @@ private fun DetailHeader(state: AppState, playback: PlaybackController, item: Me
         { state.navigate(Screen.Detail(id)) }
     }
 
-    Box(Modifier.fillMaxWidth().heightIn(min = 320.dp)) {
+    BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min = 320.dp)) {
         // The band is only as tall as the column beside the poster, and that
         // height is not known until the column has been measured.
         // `matchParentSize` runs in Box's second pass and so picks it up;
@@ -241,76 +245,116 @@ private fun DetailHeader(state: AppState, playback: PlaybackController, item: Me
             )
         )
 
-        Row(Modifier.padding(24.dp), verticalAlignment = Alignment.Bottom) {
-            item.posterUrl?.let { poster ->
-                Surface(
-                    modifier = Modifier.width(160.dp).height(240.dp),
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh
-                ) {
-                    AsyncImage(
-                        model = poster,
-                        contentDescription = item.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
+        // A phone cannot carry the poster and everything beside it at once. At
+        // 400dp wide the poster and the padding leave that column about 130dp
+        // — narrower than the play button on its own — so the row of actions
+        // ran off the screen with the external-player button squeezed into a
+        // stack of single characters. Under the threshold the blurb and the
+        // actions take the full width instead, below a smaller poster.
+        val sideBySide = maxWidth >= 600.dp
+
+        if (sideBySide) {
+            Row(Modifier.padding(24.dp), verticalAlignment = Alignment.Bottom) {
+                HeroPoster(item, width = 160.dp, height = 240.dp, gap = 20.dp)
+                Column(Modifier.weight(1f)) {
+                    HeroTitle(item, openSeries)
+                    HeroBlurb(item)
+                    Spacer(Modifier.height(18.dp))
+                    PlayActions(state, playback, item)
                 }
-                Spacer(Modifier.width(20.dp))
             }
-
-            Column(Modifier.weight(1f)) {
-                item.seriesName?.let { name ->
-                    LinkText(
-                        name,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.secondary,
-                        onClick = openSeries
-                    )
+        } else {
+            Column(Modifier.padding(20.dp)) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    HeroPoster(item, width = 120.dp, height = 180.dp, gap = 16.dp)
+                    Column(Modifier.weight(1f)) { HeroTitle(item, openSeries) }
                 }
-                Text(item.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                item.originalName?.takeIf { it != item.name }?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    item.year?.let { Chip(it.toString()) }
-                    item.runtimeMs?.let { Chip(formatDuration(it)) }
-                    item.communityRating?.let { Chip("★ ${(it * 10).toInt() / 10.0}") }
-                    item.childCount?.takeIf { item.kind == ItemKind.SERIES }?.let { Chip("$it 季") }
-                    Chip(watchedLabel(item))
-                }
-
-                if (item.genres.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        item.genres.joinToString(" · "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                item.overview?.let {
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 5,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                Spacer(Modifier.height(18.dp))
+                HeroBlurb(item)
+                Spacer(Modifier.height(16.dp))
                 PlayActions(state, playback, item)
             }
         }
     }
 }
 
+@Composable
+private fun HeroPoster(item: MediaItemDto, width: Dp, height: Dp, gap: Dp) {
+    val poster = item.posterUrl ?: return
+    Surface(
+        modifier = Modifier.width(width).height(height),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        AsyncImage(
+            model = poster,
+            contentDescription = item.name,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+    }
+    Spacer(Modifier.width(gap))
+}
+
+/** What names the item: the show it belongs to, its own title, and its facts. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ColumnScope.HeroTitle(item: MediaItemDto, openSeries: (() -> Unit)?) {
+    item.seriesName?.let { name ->
+        LinkText(
+            name,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.secondary,
+            onClick = openSeries
+        )
+    }
+    Text(item.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+    item.originalName?.takeIf { it != item.name }?.let {
+        Text(
+            it,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    Spacer(Modifier.height(10.dp))
+    // A film carries up to five of these, which is more than sits beside a
+    // poster on a phone, so they wrap instead of running off the edge.
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        item.year?.let { Chip(it.toString()) }
+        item.runtimeMs?.let { Chip(formatDuration(it)) }
+        item.communityRating?.let { Chip("★ ${(it * 10).toInt() / 10.0}") }
+        item.childCount?.takeIf { item.kind == ItemKind.SERIES }?.let { Chip("$it 季") }
+        Chip(watchedLabel(item))
+    }
+}
+
+/** Genres and synopsis — the part that reads best across the full width. */
+@Composable
+private fun ColumnScope.HeroBlurb(item: MediaItemDto) {
+    if (item.genres.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            item.genres.joinToString(" · "),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+
+    item.overview?.let {
+        Spacer(Modifier.height(12.dp))
+        Text(
+            it,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 5,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PlayActions(state: AppState, playback: PlaybackController, item: MediaItemDto) {
     val target = if (item.isPlayable) item else state.detailEpisodes.firstOrNull { !it.userData.played }
@@ -327,7 +371,15 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
     }
 
     Column {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Play, external player and up to four icon buttons come to some
+        // 350dp together, which is more than a phone has even across the
+        // full width, so they wrap onto a second line rather than off the
+        // edge of the screen.
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            itemVerticalAlignment = Alignment.CenterVertically
+        ) {
             if (target != null) {
                 Button(onClick = { playback.playInternalOrExternal(target) }) {
                     Icon(Icons.Filled.PlayArrow, contentDescription = null)
