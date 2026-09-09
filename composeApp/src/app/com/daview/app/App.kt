@@ -1,6 +1,8 @@
 package com.daview.app
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -165,7 +167,9 @@ private fun Library(state: AppState, scope: CoroutineScope) {
 
         // Android's back gesture is the primary way back; unhandled it finishes
         // the activity from whatever screen the user is on.
-        PlatformBackHandler(enabled = state.backStack.size > 1) { state.back() }
+        PlatformBackHandler(enabled = state.backStack.size > 1) {
+            if (immersive) playback.stopAndLeave() else state.back()
+        }
 
         Box(Modifier.fillMaxSize()) {
             when {
@@ -223,7 +227,18 @@ private fun Library(state: AppState, scope: CoroutineScope) {
 private fun Content(state: AppState, playback: PlaybackController) {
     AnimatedContent(
         targetState = state.current,
-        transitionSpec = { fadeIn() togetherWith fadeOut() },
+        // Going in and coming back played the same animation, so the two
+        // directions were indistinguishable and the middle of every transition
+        // had both screens half-drawn over each other. A short slide says which
+        // way the stack moved; the fade is offset so they do not overlap.
+        transitionSpec = {
+            val forward = state.movingForward
+            val offset = { size: Int -> if (forward) size / 12 else -size / 12 }
+            (
+                fadeIn(animationSpec = tween(180, delayMillis = 90)) +
+                    slideInHorizontally(animationSpec = tween(240), initialOffsetX = offset)
+                ) togetherWith fadeOut(animationSpec = tween(120))
+        },
         label = "screen"
     ) { screen ->
         when (screen) {

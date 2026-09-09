@@ -1,5 +1,14 @@
 package com.daview.app.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.MutableState
@@ -40,3 +49,20 @@ actual fun SystemBarAppearance(darkTheme: Boolean) = Unit
 /** No system-level back gesture on the desktop; the on-screen arrow is it. */
 @Composable
 actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) = Unit
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
+@Composable
+actual fun Modifier.wheelScrollsHorizontally(state: LazyListState): Modifier {
+    val scope = rememberCoroutineScope()
+    return onPointerEvent(PointerEventType.Scroll) { event ->
+        val delta = event.changes.firstOrNull()?.scrollDelta ?: return@onPointerEvent
+        // A horizontal wheel, where there is one, takes precedence; otherwise
+        // the vertical one is what the hand actually turned.
+        val amount = if (delta.x != 0f) delta.x else delta.y
+        if (amount == 0f) return@onPointerEvent
+        scope.launch { state.scrollBy(amount * WHEEL_STEP) }
+    }
+}
+
+/** How far one wheel notch moves a poster row: about two thirds of a tile. */
+private const val WHEEL_STEP = 100f

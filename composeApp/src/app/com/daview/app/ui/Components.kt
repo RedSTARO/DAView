@@ -3,6 +3,7 @@ package com.daview.app.ui
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -416,7 +417,10 @@ fun MediaRow(
     if (items.isEmpty()) return
     Column(Modifier.fillMaxWidth()) {
         SectionHeader(title, trailing)
+        val rowState = rememberLazyListState()
         LazyRow(
+            state = rowState,
+            modifier = Modifier.wheelScrollsHorizontally(rowState),
             contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             // Cards in one row are the same width but not the same shape — a

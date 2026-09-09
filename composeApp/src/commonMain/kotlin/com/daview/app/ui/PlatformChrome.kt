@@ -1,6 +1,8 @@
 package com.daview.app.ui
 
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 
 /** How a playing video would like the display turned. */
 enum class ScreenOrientation {
@@ -41,3 +43,15 @@ expect fun SystemBarAppearance(darkTheme: Boolean)
  */
 @Composable
 expect fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit)
+
+/**
+ * Lets a mouse wheel move a horizontal list.
+ *
+ * A vertical wheel over a horizontal list scrolls nothing: the delta is
+ * projected onto the list's own axis, comes out zero, and bubbles up to scroll
+ * the page instead — which on the desktop left the poster rows immovable, since
+ * they have neither a scrollbar nor arrows. Touch already drags them, so this
+ * is a no-op everywhere a wheel is not the input.
+ */
+@Composable
+expect fun Modifier.wheelScrollsHorizontally(state: LazyListState): Modifier

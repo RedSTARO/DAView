@@ -205,10 +205,22 @@ class AppState(private val scope: CoroutineScope) {
 
     // ------------------------------------------------------------ navigation
 
+    /**
+     * How to stop playback, registered by the controller. AppState owns the
+     * navigation and the controller owns the engine, and the destinations in
+     * the navigation bars are on the wrong side of that line.
+     */
+    var leavingPlayer: (() -> Unit)? = null
+
+    /** Which way the last move went, so the transition can say so. */
+    var movingForward by mutableStateOf(true)
+        private set
+
     fun navigate(screen: Screen) {
         // Already there: pressing a destination you are on should do nothing,
         // not push a second copy that the back arrow then has to walk out of.
         if (current == screen) return
+        movingForward = true
         backStack.add(screen)
         onEnter(screen)
     }
@@ -222,6 +234,10 @@ class AppState(private val scope: CoroutineScope) {
      */
     fun switchTo(screen: Screen) {
         if (current == screen) return
+        // Anything that leaves the player has to stop it first; otherwise the
+        // engine kept running under the new page, the transition went round the
+        // houses, and the stack came to rest one level below where it started.
+        leavingPlayer?.takeIf { current is Screen.Player }?.invoke()
         // Anything above the root goes; the root itself is replaced.
         while (backStack.size > 1) backStack.removeAt(backStack.lastIndex)
         backStack[0] = screen
@@ -236,6 +252,7 @@ class AppState(private val scope: CoroutineScope) {
 
     fun back(): Boolean {
         if (backStack.size <= 1) return false
+        movingForward = false
         backStack.removeAt(backStack.lastIndex)
         onEnter(current)
         return true

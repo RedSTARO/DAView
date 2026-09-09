@@ -430,6 +430,20 @@ class MediaFacade(private val context: ServerContext) {
         context.pipe.release(request.sessionId)
     }
 
+    /**
+     * Pushes the watch state up as soon as something stops playing.
+     *
+     * The upload was otherwise left entirely to a timer inside this process:
+     * every sixty seconds, and only if ten minutes had passed since the last
+     * one. Swiping the app away after an episode — which is what phones invite
+     * you to do — meant the other device saw a position up to ten minutes
+     * stale, on the one feature the whole design exists for.
+     */
+    suspend fun syncAfterPlayback() = io {
+        if (context.config.sync.enabled) runCatching { context.sync.upload(automatic = true) }
+        Unit
+    }
+
     suspend fun sessions(): List<SessionStateDto> = io { context.playback.activeSessions() }
 
     /** Keeps a session from being retired while its player is merely paused. */

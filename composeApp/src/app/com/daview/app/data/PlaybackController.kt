@@ -43,6 +43,24 @@ class PlaybackController(
 
     private var handle: ExternalPlaybackHandle? = null
 
+    init {
+        // The navigation bars can take the user off the player screen, and only
+        // this class knows how to shut the engine down.
+        state.leavingPlayer = { stopWithoutLeaving() }
+    }
+
+    /** Ends the session, leaving where to go next to whoever asked. */
+    private fun stopWithoutLeaving() {
+        val current = info ?: return
+        info = null
+        handle?.stop()
+        scope.launch {
+            runCatching { state.library.stopPlayback(PlaybackStopRequest(current.sessionId, -1)) }
+            state.refreshHome()
+            runCatching { state.library.syncAfterPlayback() }
+        }
+    }
+
     /**
      * [replaceScreen] is for rolling from one episode into the next: the player
      * screen is already on top of the stack, so pushing another would mean the
@@ -238,12 +256,39 @@ class PlaybackController(
         return true
     }
 
+    /**
+     * Ends playback and leaves the player screen, in that order.
+     *
+     * Leaving first let the screen animate out while the engine was still
+     * running, so the sound carried on over the page underneath for the length
+     * of the transition.
+     */
+    fun stopAndLeave() {
+        val current = info
+        if (current == null) {
+            state.back()
+            return
+        }
+        // Cleared first so the player composable leaves the tree and releases
+        // the engine before anything else happens.
+        info = null
+        state.back()
+        scope.launch {
+            runCatching { state.library.stopPlayback(PlaybackStopRequest(current.sessionId, -1)) }
+            state.refreshHome()
+            runCatching { state.library.syncAfterPlayback() }
+        }
+    }
+
     fun stop(positionMs: Long) {
         val sessionId = info?.sessionId ?: return
         scope.launch {
             runCatching { state.library.stopPlayback(PlaybackStopRequest(sessionId, positionMs)) }
             info = null
             state.refreshHome()
+            // Straight away, rather than waiting for the periodic upload: this
+            // is the moment the other device wants.
+            runCatching { state.library.syncAfterPlayback() }
         }
     }
 
