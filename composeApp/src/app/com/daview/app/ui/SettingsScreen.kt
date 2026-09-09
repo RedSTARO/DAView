@@ -18,6 +18,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -881,7 +883,7 @@ private fun WebDavPickerDialog(state: AppState, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("选择媒体库目录") },
         text = {
-            Column(Modifier.heightIn(max = 460.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
                         onClick = { load("/" + path.trim('/').substringBeforeLast('/', "")) },
@@ -895,8 +897,8 @@ private fun WebDavPickerDialog(state: AppState, onDismiss: () -> Unit) {
                 if (loading) {
                     LinearWavyProgressIndicator(Modifier.fillMaxWidth())
                 }
-                LazyColumn(Modifier.weight(1f, fill = false).heightIn(max = 240.dp)) {
-                    items(entries.filter { it.isDirectory }, key = { it.path }) { entry ->
+                Column {
+                    entries.filter { it.isDirectory }.forEach { entry ->
                         Surface(
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                             shape = MaterialTheme.shapes.small,

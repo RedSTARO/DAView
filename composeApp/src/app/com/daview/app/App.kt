@@ -172,7 +172,18 @@ private fun Library(state: AppState, scope: CoroutineScope) {
                     SideNavigation(state)
                     Column(Modifier.fillMaxSize()) {
                         TopRow(state)
-                        Content(state, playback)
+                        // A cap on how wide the content runs. Nothing in the app
+                        // had one, so a maximised window put a synopsis on lines
+                        // of over a hundred Chinese characters and stretched a
+                        // single-line URL field across the whole desktop.
+                        Box(
+                            Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.TopCenter
+                        ) {
+                            Box(Modifier.widthIn(max = 1180.dp)) {
+                                Content(state, playback)
+                            }
+                        }
                     }
                 }
 

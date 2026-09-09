@@ -5,10 +5,14 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /**
  * A single expressive palette in two tones. The accent is a saturated violet
@@ -121,6 +125,44 @@ val DaViewLightColors: ColorScheme = ColorScheme(
     onTertiaryFixedVariant = Color(0xFF005141)
 )
 
+/**
+ * The M3 scale, opened up for Chinese.
+ *
+ * The default line heights are drawn for Latin, whose lower case sits well
+ * inside its em box; a Han glyph fills that box, so the same numbers leave the
+ * lines visibly tighter than the characters are tall — bodySmall's 16sp on a
+ * 12sp glyph is narrower than the font's own natural leading. Every style here
+ * keeps its size and takes about 1.55x of it as leading, and the two smallest
+ * body sizes go up a point, because 11sp of Han on a desktop at 100% scaling is
+ * eleven physical pixels of a character with up to twenty strokes.
+ *
+ * Sizes are otherwise left alone: this is about the space between lines, not a
+ * different scale.
+ */
+private val DaViewTypography: Typography = Typography().let { base ->
+    fun TextStyle.forHan(size: TextUnit = fontSize, ratio: Float = 1.55f) = copy(
+        fontSize = size,
+        lineHeight = size * ratio
+    )
+    base.copy(
+        displayLarge = base.displayLarge.forHan(ratio = 1.25f),
+        displayMedium = base.displayMedium.forHan(ratio = 1.28f),
+        displaySmall = base.displaySmall.forHan(ratio = 1.3f),
+        headlineLarge = base.headlineLarge.forHan(ratio = 1.35f),
+        headlineMedium = base.headlineMedium.forHan(ratio = 1.38f),
+        headlineSmall = base.headlineSmall.forHan(ratio = 1.4f),
+        titleLarge = base.titleLarge.forHan(ratio = 1.45f),
+        titleMedium = base.titleMedium.forHan(ratio = 1.5f),
+        titleSmall = base.titleSmall.forHan(ratio = 1.5f),
+        bodyLarge = base.bodyLarge.forHan(),
+        bodyMedium = base.bodyMedium.forHan(),
+        bodySmall = base.bodySmall.forHan(13.sp),
+        labelLarge = base.labelLarge.forHan(ratio = 1.45f),
+        labelMedium = base.labelMedium.forHan(ratio = 1.45f),
+        labelSmall = base.labelSmall.forHan(12.sp, ratio = 1.45f)
+    )
+}
+
 /** Expressive shapes lean on larger, less uniform radii than the baseline set. */
 private val DaViewShapes = Shapes(
     extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
@@ -141,6 +183,7 @@ fun DaViewTheme(
     androidx.compose.runtime.CompositionLocalProvider(LocalDarkTheme provides darkTheme) {
         MaterialExpressiveTheme(
             colorScheme = if (darkTheme) DaViewDarkColors else DaViewLightColors,
+            typography = DaViewTypography,
             shapes = DaViewShapes,
             motionScheme = MotionScheme.expressive(),
             content = content

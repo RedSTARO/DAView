@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -718,7 +719,10 @@ private fun EpisodeRow(
 
     // The menu hangs off the box rather than the card's own content column, so
     // the offset the gesture reported is measured from the same corner it was.
-    Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp)) {
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp)) {
+        // A third of the row, held between something legible and something that
+        // does not dwarf the text beside it on a wide window.
+        val thumbnailWidth = (maxWidth * 0.32f).coerceIn(96.dp, 220.dp)
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -728,14 +732,21 @@ private fun EpisodeRow(
                 )
                 .combinedClickable(
                     onClick = onPlay,
-                    onLongClick = { if (lastPointer == PointerType.Touch) menuAt = Offset.Zero }
+                    onLongClickLabel = "打开菜单",
+                    onLongClick = { if (lastPointer != PointerType.Mouse) menuAt = Offset.Zero }
                 ),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
             shape = MaterialTheme.shapes.medium
         ) {
             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Surface(
-                    modifier = Modifier.width(148.dp).height(84.dp),
+                    // Proportional, not a fixed 148dp: on a 360dp phone the
+                    // still, the padding and the trailing button left the text
+                    // column 86dp, which is about six Chinese characters of
+                    // title with the metadata folded onto three lines.
+                    modifier = Modifier
+                        .width(thumbnailWidth)
+                        .aspectRatio(16f / 9f),
                     shape = MaterialTheme.shapes.small,
                     color = MaterialTheme.colorScheme.surfaceContainerHighest
                 ) {

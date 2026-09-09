@@ -3,13 +3,14 @@ package com.daview.app.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -92,7 +93,7 @@ fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("合并重复条目") },
         text = {
-            Column(Modifier.heightIn(max = 520.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     "被选中的条目会并入「${item.name}」：它们的季与分集移到这里，自己不再单独出现。" +
                         "原始记录会保留，随时可以拆分，重新扫描也会自动重新应用。",
@@ -149,8 +150,8 @@ fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                     Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
 
-                LazyColumn(Modifier.heightIn(max = 240.dp)) {
-                    items(results, key = { it.id }) { candidate ->
+                Column {
+                    results.forEach { candidate ->
                         val checked = candidate.id in selected
                         Surface(
                             color = MaterialTheme.colorScheme.surfaceContainerLow,

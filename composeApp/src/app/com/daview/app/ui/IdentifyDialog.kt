@@ -3,6 +3,8 @@ package com.daview.app.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -10,7 +12,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
@@ -131,7 +132,7 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("手动指定刮削条目") },
         text = {
-            Column(Modifier.heightIn(max = 520.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 val loaded = context
                 Text(
                     "文件夹识别为「${loaded?.defaultQuery ?: item.name}」" +
@@ -234,8 +235,8 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                     )
                 }
 
-                LazyColumn(Modifier.heightIn(max = 220.dp)) {
-                    items(candidates, key = { it.providerId }) { candidate ->
+                Column {
+                    candidates.forEach { candidate ->
                         CandidateRow(candidate) { apply(candidate.providerId) }
                     }
                 }
