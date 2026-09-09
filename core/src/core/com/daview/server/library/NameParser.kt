@@ -21,10 +21,24 @@ object NameParser {
 
     val subtitleExtensions = setOf("srt", "ass", "ssa", "sub", "vtt", "sup", "idx", "smi")
 
+    /**
+     * Directories that hold something other than the run.
+     *
+     * The names come from what release groups actually ship, which is why the
+     * singular and the plural of the same word both appear: a folder called
+     * `SPs` or `menu` was not matched by `sp` or `menus`, so the scanner read
+     * it as a nested film and produced a movie titled "SPs".
+     *
+     * `specials` is deliberately absent — `parseSeasonFolder` already reads it
+     * as season zero, which is what it is.
+     */
     private val extrasFolders = setOf(
         "extras", "featurettes", "trailers", "behind the scenes", "deleted scenes",
         "interviews", "scenes", "shorts", "samples", "other", "specials extras",
-        "sp", "cd", "cds", "nc", "menus", "花絮", "特典", "预告", "彩蛋"
+        "sp", "sps", "cd", "cds", "nc", "ncop", "nced", "ncop&nced", "nc op&ed",
+        "menu", "menus", "pv", "pvs", "cm", "cms", "scans", "scan", "fonts", "font",
+        "previews", "preview", "bonus", "bd", "bdmenu",
+        "花絮", "特典", "特典映像", "映像特典", "预告", "彩蛋", "菜单", "扫图"
     )
 
     private val subtitleFlags = setOf("default", "forced", "sdh", "hi", "cc", "full", "normal")

@@ -91,6 +91,31 @@ class NameParserTest {
         assertFalse(NameParser.isExtrasFolder("Season 01"))
     }
 
+    /**
+     * The names release groups actually use. Every one of these was read as a
+     * nested film instead, which is how a movie library ends up holding entries
+     * called "SPs", "menu" and "NCOP&NCED" — titled after the folder, and with
+     * nothing for a scraper to match.
+     */
+    @Test
+    fun `the folders release groups really ship are not films`() {
+        listOf("SPs", "menu", "NCOP&NCED", "PV", "Scans", "Fonts", "CDs", "特典映像")
+            .forEach { assertTrue(NameParser.isExtrasFolder(it), "$it should be extras") }
+    }
+
+    /**
+     * `Specials` is season zero, not a bin of extras — `parseSeasonFolder`
+     * claims it first, and treating it as noise would drop a real run. Nested
+     * `Title (Year)` folders are films and must survive too.
+     */
+    @Test
+    fun `a specials season and a nested film are not extras`() {
+        assertEquals(0, NameParser.parseSeasonFolder("Specials"))
+        assertFalse(NameParser.isExtrasFolder("Movie -Take On Me"))
+        assertFalse(NameParser.isExtrasFolder("K-On!"))
+        assertFalse(NameParser.isExtrasFolder("Sound! Euphonium The Movie - May the Melody Reach You! (2017)"))
+    }
+
     @Test
     fun `sort names drop leading articles and pad numbers`() {
         assertTrue(NameParser.sortName("The Matrix") < NameParser.sortName("Matrix Reloaded"))
