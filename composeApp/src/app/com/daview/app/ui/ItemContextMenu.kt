@@ -3,8 +3,7 @@ package com.daview.app.ui
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircleOutline
+import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.OpenInNew
@@ -139,12 +138,15 @@ fun ColumnScope.ItemMenuItems(
     // episode under it — so the label says how wide the change reaches.
     if (item.isPlayable || (item.episodeCount ?: 0) > 0) {
         DropdownMenuItem(
+            // A menu item's icon says what the command is, not what state the
+            // item is in. Drawing a filled tick for "not watched yet" made the
+            // same mark mean opposite things on a card and in the menu covering
+            // it — and on an episode row both are on screen at once.
             leadingIcon = {
                 Icon(
-                    if (played) Icons.Filled.CheckCircleOutline else Icons.Filled.Check,
+                    Icons.Filled.Done,
                     contentDescription = null,
-                    tint = if (played) MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.colorScheme.primary
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             },
             text = { Text(playedActionLabel(item, played)) },

@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CallMerge
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.OpenInNew
@@ -69,6 +70,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -167,7 +170,12 @@ fun DetailScreen(state: AppState, playback: PlaybackController) {
 
         if (relatedMovies.isNotEmpty()) {
             item {
-                MediaRow("相关影片", relatedMovies, menu = cardMenu(state, playback)) {
+                MediaRow(
+                    "相关影片",
+                    relatedMovies,
+                    menu = cardMenu(state, playback),
+                    onItemPlay = { if (it.isPlayable) playback.playInternalOrExternal(it) }
+                ) {
                     state.navigate(Screen.Detail(it.id))
                 }
             }
@@ -279,18 +287,24 @@ private fun DetailHeader(state: AppState, playback: PlaybackController, item: Me
 
 @Composable
 private fun HeroPoster(item: MediaItemDto, width: Dp, height: Dp, gap: Dp) {
-    val poster = item.posterUrl ?: return
     Surface(
         modifier = Modifier.width(width).height(height),
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
-        AsyncImage(
-            model = poster,
-            contentDescription = item.name,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        )
+        // Holds its place when there is no artwork. Bailing out here took the
+        // gap with it, so a title with a poster and one without laid the whole
+        // header out 180dp apart.
+        if (item.posterUrl == null) {
+            ArtworkPlaceholder(item.kind, Modifier.fillMaxSize())
+        } else {
+            AsyncImage(
+                model = item.posterUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
     Spacer(Modifier.width(gap))
 }
@@ -345,12 +359,18 @@ private fun ColumnScope.HeroBlurb(item: MediaItemDto) {
 
     item.overview?.let {
         Spacer(Modifier.height(12.dp))
-        Text(
-            it,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 5,
-            overflow = TextOverflow.Ellipsis
-        )
+        var expanded by remember(item.id) { mutableStateOf(false) }
+        SelectionContainer {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = if (expanded) Int.MAX_VALUE else 5,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .clickable { expanded = !expanded }
+                    .semantics { contentDescription = "剧情简介，点按展开或收起" }
+            )
+        }
     }
 }
 
@@ -429,7 +449,7 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
             IconButton(onClick = { state.toggleFavorite(item) }) {
                 Icon(
                     if (item.userData.favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                    contentDescription = "收藏",
+                    contentDescription = if (item.userData.favorite) "取消收藏" else "收藏",
                     tint = if (item.userData.favorite) MaterialTheme.colorScheme.error
                     else MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -466,9 +486,16 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
             // can be re-pointed at a different entry.
             if (item.kind == ItemKind.MOVIE || item.kind == ItemKind.SERIES) {
                 IconButton(onClick = { identifyOpen = true }) {
+                    // Two states, two shapes. Colour alone was carrying "this
+                    // one is pinned", and the two tints are neighbours on the
+                    // same hue in the dark theme.
                     Icon(
-                        Icons.Filled.Edit,
-                        contentDescription = "手动指定刮削条目",
+                        if (item.lockedProvider != null) Icons.Filled.EditNote else Icons.Filled.Edit,
+                        contentDescription = if (item.lockedProvider != null) {
+                            "手动指定刮削条目（已钉住 ${item.lockedProvider}）"
+                        } else {
+                            "手动指定刮削条目"
+                        },
                         tint = if (item.lockedProvider != null) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -615,7 +642,8 @@ private fun SeasonEpisodesRow(
                     width = 232.dp,
                     title = episode.episodeLabel ?: episode.name,
                     subtitle = episode.name,
-                    menu = { dismiss -> ItemMenuItems(state, playback, episode, dismiss) }
+                    menu = { dismiss -> ItemMenuItems(state, playback, episode, dismiss) },
+                    onPlay = { playback.playInternalOrExternal(episode) }
                 ) { state.navigate(Screen.Detail(episode.id)) }
             }
         }
@@ -640,6 +668,9 @@ private fun PeopleRow(item: MediaItemDto) {
                         modifier = Modifier.size(80.dp).clip(RoundedCornerShape(50)),
                         color = MaterialTheme.colorScheme.surfaceContainerHigh
                     ) {
+                        if (person.imageUrl == null) {
+                            ArtworkPlaceholder(null, Modifier.fillMaxSize(), person = true)
+                        }
                         person.imageUrl?.let {
                             AsyncImage(
                                 model = it,
@@ -709,6 +740,9 @@ private fun EpisodeRow(
                     color = MaterialTheme.colorScheme.surfaceContainerHighest
                 ) {
                     Box {
+                        if (episode.posterUrl == null) {
+                            ArtworkPlaceholder(ItemKind.EPISODE, Modifier.fillMaxSize())
+                        }
                         episode.posterUrl?.let {
                             AsyncImage(
                                 model = it,

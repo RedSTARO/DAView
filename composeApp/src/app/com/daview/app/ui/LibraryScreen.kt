@@ -86,7 +86,10 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
                     PosterCard(
                         item,
                         width = 150.dp,
-                        menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) }
+                        menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) },
+                        onPlay = if (item.isPlayable) {
+                            { playback.playInternalOrExternal(item) }
+                        } else null
                     ) { state.navigate(Screen.Detail(item.id)) }
                 }
             }

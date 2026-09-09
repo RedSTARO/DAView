@@ -1,11 +1,13 @@
 package com.daview.app.ui
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,17 +26,22 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Slideshow
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ripple
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,10 +62,16 @@ import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.daview.shared.model.ItemKind
@@ -114,6 +127,39 @@ fun LoadingPane(content: @Composable (() -> Unit)? = null) {
     }
 }
 
+/**
+ * What stands in for artwork that is missing or has not arrived.
+ *
+ * One shape for the whole app: the four places that draw a missing image each
+ * had their own answer — a film reel for everything including television, a
+ * bare grey rectangle for an episode still, an empty circle for a face — so
+ * "there is no picture here" looked like three different things, one of which
+ * looked like loading.
+ */
+@Composable
+fun ArtworkPlaceholder(
+    kind: ItemKind?,
+    modifier: Modifier = Modifier,
+    person: Boolean = false
+) {
+    Box(
+        modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = when {
+                person -> Icons.Filled.Person
+                kind == ItemKind.SERIES || kind == ItemKind.SEASON -> Icons.Filled.Tv
+                kind == ItemKind.EPISODE -> Icons.Filled.Slideshow
+                else -> Icons.Filled.Movie
+            },
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(0.32f),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
 @Composable
 fun SectionHeader(title: String, trailing: @Composable (() -> Unit)? = null) {
     Row(
@@ -150,11 +196,22 @@ fun PosterCard(
      * and when to close it, not what is in it.
      */
     menu: (@Composable ColumnScope.(dismiss: () -> Unit) -> Unit)? = null,
+    /**
+     * What the play button on the artwork does. Without it no play button is
+     * drawn — a filled play triangle that opens a detail page is a promise the
+     * tile cannot keep.
+     */
+    onPlay: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
-    val scale by animateFloatAsState(if (hovered) 1.04f else 1f, label = "poster-scale")
+    // Keyboard and D-pad focus reuse the hover treatment. Without it the grid
+    // scrolls itself as focus moves and nothing on screen says which tile it
+    // landed on, which is WCAG 2.4.7 and the whole of TV navigation.
+    val focused by interaction.collectIsFocusedAsState()
+    val lifted = hovered || focused
+    val scale by animateFloatAsState(if (lifted) 1.04f else 1f, label = "poster-scale")
     val aspect = if (item.kind == ItemKind.EPISODE) 16f / 9f else 2f / 3f
 
     // Where the menu was asked for, in pixels from the tile's top-left corner.
@@ -163,6 +220,13 @@ fun PosterCard(
     var menuAt by remember { mutableStateOf<Offset?>(null) }
     var lastPointer by remember { mutableStateOf(PointerType.Unknown) }
     val density = LocalDensity.current
+
+    val progress = item.userData.playedPercentage.toFloat()
+    val watchState = when {
+        item.userData.played -> "已观看"
+        progress > 0.01f -> "已看 ${(progress * 100).toInt()}%"
+        else -> "未观看"
+    }
 
     Column(
         modifier = modifier
@@ -177,50 +241,63 @@ fun PosterCard(
             )
             .combinedClickable(
                 interactionSource = interaction,
-                indication = null,
+                // The default ripple, not null. Suppressing it left the app's
+                // main control with no press feedback at all on a touch screen,
+                // where the hover treatment above can never fire.
+                indication = ripple(),
                 onClick = onClick,
+                onLongClickLabel = if (menu == null) null else "打开菜单",
                 // A held mouse button is not a request for the menu — it already
-                // has the right button. Touch is the only input with nothing else.
+                // has the right button. Anything else, including the synthetic
+                // long press a screen reader dispatches, is.
                 onLongClick = if (menu == null) null else {
-                    { if (lastPointer == PointerType.Touch) menuAt = Offset.Zero }
+                    { if (lastPointer != PointerType.Mouse) menuAt = Offset.Zero }
                 }
             )
+            // One node for the whole tile: the name is already below it, so the
+            // artwork is decorative, and the watch state is spoken here rather
+            // than left to a progress bar that reads as a bare percentage.
+            .semantics(mergeDescendants = true) { stateDescription = watchState }
     ) {
         Surface(
             modifier = Modifier.fillMaxWidth().aspectRatio(aspect).scale(scale),
             shape = MaterialTheme.shapes.large,
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = if (hovered) 6.dp else 0.dp
+            tonalElevation = if (lifted) 6.dp else 0.dp,
+            border = if (focused) BorderStroke(3.dp, MaterialTheme.colorScheme.primary) else null
         ) {
             Box {
                 if (item.posterUrl != null) {
                     AsyncImage(
                         model = item.posterUrl,
-                        contentDescription = item.name,
+                        // Decorative: the title is spelled out directly below,
+                        // and reading it twice is what a screen reader did.
+                        contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    ArtworkPlaceholder(item.kind, Modifier.fillMaxSize())
+                }
+
+                if (item.userData.played) {
+                    // On its own circle rather than bare on the artwork: over a
+                    // pale poster a tinted icon was down at 1.7:1.
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
+                    ) {
                         Icon(
-                            Icons.Filled.Movie,
+                            Icons.Filled.Check,
                             contentDescription = null,
-                            modifier = Modifier.size(40.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.padding(3.dp).size(16.dp)
                         )
                     }
                 }
 
-                if (item.userData.played) {
-                    Icon(
-                        Icons.Filled.CheckCircle,
-                        contentDescription = "已观看",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).size(22.dp)
-                    )
-                }
-
-                if (hovered) {
+                if (lifted && onPlay != null) {
                     Box(
                         Modifier.fillMaxSize().background(
                             Brush.verticalGradient(
@@ -229,10 +306,16 @@ fun PosterCard(
                         ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.primary) {
+                        // Its own click target, so the button that looks like
+                        // play actually plays.
+                        Surface(
+                            onClick = onPlay,
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary
+                        ) {
                             Icon(
                                 Icons.Filled.PlayArrow,
-                                contentDescription = null,
+                                contentDescription = "播放",
                                 tint = MaterialTheme.colorScheme.onPrimary,
                                 modifier = Modifier.padding(8.dp).size(26.dp)
                             )
@@ -240,14 +323,21 @@ fun PosterCard(
                     }
                 }
 
-                val progress = item.userData.playedPercentage.toFloat()
                 if (showProgress && progress > 0.01f && !item.userData.played) {
                     LinearProgressIndicator(
                         progress = { progress },
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
+                            // Inset and rounded: the tile's own 26dp corners
+                            // used to eat both ends of the bar, and a progress
+                            // under about 8% was clipped away entirely.
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                            .clip(CircleShape)
                             .fillMaxWidth()
-                            .height(4.dp),
+                            .height(4.dp)
+                            // Spoken by the tile as a whole; on its own this was
+                            // a second, nameless stop that read out a number.
+                            .clearAndSetSemantics { },
                         color = MaterialTheme.colorScheme.secondary,
                         trackColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.4f),
                         gapSize = 0.dp,
@@ -255,14 +345,17 @@ fun PosterCard(
                     )
                 }
 
-                // Anchored to the artwork, which shares its top-left corner with
-                // the tile, so the offset the gesture reported lands under the
-                // cursor.
+                // The anchor is the artwork, and a dropdown's offset is measured
+                // from the anchor's bottom edge, so the artwork's own height has
+                // to come back out for the menu to open under the cursor.
                 if (menu != null) {
+                    val artworkHeight = width / aspect
                     DropdownMenu(
                         expanded = menuAt != null,
                         onDismissRequest = { menuAt = null },
-                        offset = menuAt.toDpOffset(density)
+                        offset = menuAt.toDpOffset(density).let {
+                            DpOffset(it.x, it.y - artworkHeight)
+                        }
                     ) {
                         menu { menuAt = null }
                     }
@@ -303,6 +396,8 @@ fun MediaRow(
     trailing: @Composable (() -> Unit)? = null,
     /** Per-item menu entries, handed straight to each [PosterCard]. */
     menu: (@Composable ColumnScope.(item: MediaItemDto, dismiss: () -> Unit) -> Unit)? = null,
+    /** What the tiles' play button does, if this row's cards should have one. */
+    onItemPlay: ((MediaItemDto) -> Unit)? = null,
     onItemClick: (MediaItemDto) -> Unit
 ) {
     if (items.isEmpty()) return
@@ -310,13 +405,18 @@ fun MediaRow(
         SectionHeader(title, trailing)
         LazyRow(
             contentPadding = PaddingValues(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            // Cards in one row are the same width but not the same shape — a
+            // 2:3 poster beside a 16:9 still — so they are hung from their
+            // bottom edge and the titles under them share a baseline.
+            verticalAlignment = Alignment.Bottom
         ) {
             items(items, key = { it.id }) { item ->
                 PosterCard(
                     item,
                     width = itemWidth,
-                    menu = menu?.let { entries -> { dismiss -> entries(item, dismiss) } }
+                    menu = menu?.let { entries -> { dismiss -> entries(item, dismiss) } },
+                    onPlay = onItemPlay?.let { play -> { play(item) } }
                 ) { onItemClick(item) }
             }
         }
@@ -376,18 +476,34 @@ fun LinkText(
         return
     }
 
+    // The ripple's state layer already draws hover, focus and press, so nothing
+    // here has to watch those flags to give the link a resting appearance.
     val interaction = remember { MutableInteractionSource() }
-    val hovered by interaction.collectIsHoveredAsState()
     Text(
         text = text,
         modifier = modifier
             .hoverable(interaction)
             .pointerHoverIcon(PointerIcon.Hand)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+            // Padding before clickable, so it counts towards the hit area: the
+            // link used to be exactly one line of text tall — 20dp against the
+            // 48dp a finger needs.
+            .padding(vertical = 12.dp)
+            .clickable(
+                interactionSource = interaction,
+                indication = ripple(),
+                onClick = onClick
+            )
+            .semantics { role = Role.Button },
+        // The caller's colour is honoured rather than overwritten with primary:
+        // three of the four call sites passed one and were quietly ignored, so
+        // the same series name changed colour with the data behind it.
         style = style,
-        color = MaterialTheme.colorScheme.primary,
+        color = color,
         fontWeight = fontWeight,
-        textDecoration = if (hovered) TextDecoration.Underline else null,
+        // Underlined at rest, not only under a cursor. Colour alone cannot
+        // carry "this is a link" (WCAG 1.4.1), and a touch screen has no hover
+        // to reveal it with.
+        textDecoration = TextDecoration.Underline,
         maxLines = maxLines,
         overflow = TextOverflow.Ellipsis
     )

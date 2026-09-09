@@ -53,6 +53,12 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
     val hero = home.resume.firstOrNull() ?: home.nextUp.firstOrNull() ?: home.latest.firstOrNull()
     val itemMenu = cardMenu(state, playback)
 
+    // The play button the tiles draw over their artwork. A series or a season
+    // has no bytes of its own, so it keeps opening its page instead.
+    val onPlay: (MediaItemDto) -> Unit = {
+        if (it.isPlayable) playback.playInternalOrExternal(it)
+    }
+
     if (state.libraries.isEmpty() && home.latest.isEmpty()) {
         EmptyState(
             title = "还没有媒体库",
@@ -87,7 +93,8 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
                 "继续观看",
                 home.resume,
                 itemWidth = 232.dp,
-                menu = itemMenu
+                menu = itemMenu,
+                onItemPlay = onPlay,
             ) { state.navigate(Screen.Detail(it.id)) }
         }
         item {
@@ -95,11 +102,14 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
                 "接下来",
                 home.nextUp,
                 itemWidth = 232.dp,
-                menu = itemMenu
+                menu = itemMenu,
+                onItemPlay = onPlay,
             ) { state.navigate(Screen.Detail(it.id)) }
         }
         item {
-            MediaRow("最近添加", home.latest, menu = itemMenu) { state.navigate(Screen.Detail(it.id)) }
+            MediaRow("最近添加", home.latest, menu = itemMenu, onItemPlay = onPlay) {
+                state.navigate(Screen.Detail(it.id))
+            }
         }
 
         // One row per library rather than a single pooled one: which shelf a
@@ -108,7 +118,8 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
             MediaRow(
                 "${library.name} · 未观看",
                 home.unwatched[library.id].orEmpty(),
-                menu = itemMenu
+                menu = itemMenu,
+                onItemPlay = onPlay,
             ) { state.navigate(Screen.Detail(it.id)) }
         }
 
