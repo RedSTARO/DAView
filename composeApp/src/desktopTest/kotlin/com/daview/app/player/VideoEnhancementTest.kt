@@ -54,6 +54,34 @@ class VideoEnhancementTest {
         )
     }
 
+    /**
+     * Observed on a hybrid laptop with the AMD adapter selected: mpv logs
+     * "NVIDIA RTX Super Resolution enabled." there too, because the filter only
+     * checks the HRESULT and a driver that does not know the GUID answers
+     * success. Video HDR does probe, and said "not supported." in the same run.
+     */
+    @Test
+    fun `enabled is not believed on a GPU it cannot be true on`() {
+        assertEquals(
+            EnhancementState.UNSUPPORTED,
+            EnhancementLog.believable(EnhancementState.ACTIVE, "AMD Radeon 780M Graphics")
+        )
+        assertEquals(
+            EnhancementState.ACTIVE,
+            EnhancementLog.believable(EnhancementState.ACTIVE, "NVIDIA GeForce RTX 4060 Laptop GPU")
+        )
+        // Not yet known is no reason to contradict mpv.
+        assertEquals(
+            EnhancementState.ACTIVE,
+            EnhancementLog.believable(EnhancementState.ACTIVE, null)
+        )
+        // Only "enabled" is in question; a failure is a failure anywhere.
+        assertEquals(
+            EnhancementState.FAILED,
+            EnhancementLog.believable(EnhancementState.FAILED, "AMD Radeon 780M Graphics")
+        )
+    }
+
     /** The strings are mpv's own, from video/filter/vf_d3d11vpp.c. */
     @Test
     fun `mpv's log lines map onto what the player shows`() {

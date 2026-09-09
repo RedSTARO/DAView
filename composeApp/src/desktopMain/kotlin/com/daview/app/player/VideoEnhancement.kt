@@ -97,4 +97,26 @@ object EnhancementLog {
      */
     fun isMaxLumaGuess(line: String): Boolean =
         line.contains("Tagging image output as HDR with max-luma=")
+
+    /**
+     * Discounts "enabled" on a GPU where it cannot be true.
+     *
+     * Super resolution has no capability probe at all — mpv sets the driver
+     * extension and checks the `HRESULT`, nothing more. Observed on a hybrid
+     * laptop with the AMD adapter selected: mpv logs "NVIDIA RTX Super
+     * Resolution enabled." and the picture is untouched, because a driver that
+     * does not know the GUID answers success anyway. Video HDR does probe, and
+     * correctly reported "not supported." in the same run.
+     *
+     * [adapter] null means the adapter is not known yet, and an unknown adapter
+     * is no reason to contradict mpv.
+     */
+    fun believable(state: EnhancementState, adapter: String?): EnhancementState =
+        if (state == EnhancementState.ACTIVE && adapter != null &&
+            !adapter.contains("NVIDIA", ignoreCase = true)
+        ) {
+            EnhancementState.UNSUPPORTED
+        } else {
+            state
+        }
 }

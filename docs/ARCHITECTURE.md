@@ -112,6 +112,10 @@ libmpv `v0.41.0-1023-g69e63f425`，2026-09-03 的 shinchiro 构建）：
 | 输出色彩空间 | `Converting YCBCR_STUDIO_G22_LEFT_P709 to RGB_FULL_G2084_NONE_P2020`，`video-out-params` 1920×1080 → 3840×2160、gamma `pq`、primaries `bt.2020` |
 | 不指定 `--d3d11-adapter` | mpv 落在 **AMD Radeon 780M** 上，NVIDIA 扩展无从谈起 |
 | 指定 `--d3d11-adapter=NVIDIA` | 切到 **RTX 4060**，两项功能启用 |
+| `d3d11-adapter=help` 经 client API | **拿不到**。列表由选项解析器自己的 log 打出，没接到 client 的日志环上；initialize 之后也一样 |
+| `mpv_set_option_string("d3d11-adapter", <名字>)` | 设置时即校验：`NVIDIA` / `AMD` / `Microsoft Basic Render Driver` 返回 0，`Intel` / `Qualcomm` 返回 -7（本机没有） |
+| 匹配方式 | 描述的**前缀**、不区分大小写：`nvidia geforce` 通过，`Radeon` 不通过（它不是 `AMD Radeon 780M Graphics` 的前缀） |
+| 显式选 AMD + 开着 RTX | 渲染落到 780M，`NVIDIA RTX Video HDR not supported.`，但**超分仍然打印 `enabled.`**——它没有能力探测，只看 `HRESULT`，不认识的驱动照样返回成功 |
 | idle 状态下 `sub-add` | **失败**，返回 `-12`（`MPV_ERROR_COMMAND`），`track-list/count` 保持 0 |
 | `loadfile` 之后、收到 `MPV_EVENT_FILE_LOADED` 再 `sub-add` | 成功，`track-list/count` 加一，`sub/ass: Using subtitle decoder srt` |
 
@@ -152,7 +156,10 @@ render API（`MPV_RENDER_API_TYPE_OPENGL`）能把画面渲进自己的 FBO，�
    长得一样，而 mpv 一旦开始关闭就不再回答 `time-pos`。若两者共用"取不到位置就用片长"的兜底，
    用户在画面上按 `q` 会被服务端按 100% 记成看完、续播点清零。现在只有 `EOF` 才允许回退到片长，
    其余情况用最后一次读到的位置。
-10. **`Native.getComponentPointer` 要求组件已经 displayable。** Compose 的 interop 生命周期
+10. **超分的「已启用」不能照抄。** 上表最后一行：在 AMD 适配器上 mpv 一样会打印
+    `NVIDIA RTX Super Resolution enabled.`。所以界面把这句话和实际适配器对一下，
+    描述里没有 NVIDIA 就降级成「不适用」——HDR 那一路有真探测，不需要这层。
+11. **`Native.getComponentPointer` 要求组件已经 displayable。** Compose 的 interop 生命周期
    没有可靠的「peer 已就绪」回调，所以是轮询等待，上限 5 秒。
 
 ### 成功与否只能读日志

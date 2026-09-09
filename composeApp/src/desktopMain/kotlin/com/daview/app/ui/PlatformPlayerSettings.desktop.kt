@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -19,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -29,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import com.daview.app.platform.PlatformInfo
 import com.daview.app.player.MpvNative
 import com.daview.app.player.PlayerPreferences
+import com.daview.app.player.VideoAdapter
 import com.daview.app.player.VideoEnhancement
 import java.awt.FileDialog
 import java.awt.Frame
@@ -49,6 +52,19 @@ import java.io.File
 actual fun PlatformPlayerSettings() {
     var refresh by remember { mutableStateOf(0) }
     var enhancement by remember { mutableStateOf(PlayerPreferences.enhancement) }
+    var adapter by remember { mutableStateOf(PlayerPreferences.adapter) }
+    var adapters by remember { mutableStateOf(emptyList<String>()) }
+    var customAdapter by remember { mutableStateOf("") }
+    var customRejected by remember { mutableStateOf(false) }
+
+    // Asking costs one throwaway mpv instance per candidate, so it happens once
+    // when the page opens rather than on every recomposition.
+    LaunchedEffect(refresh) {
+        adapters = VideoAdapter.available()
+        // A stored choice that is not one of the offered ones is a typed-in
+        // description; keep it in the field so it can be seen and edited.
+        if (adapter != null && adapter !in adapters) customAdapter = adapter.orEmpty()
+    }
 
     fun update(value: VideoEnhancement) {
         enhancement = value
@@ -97,6 +113,80 @@ actual fun PlatformPlayerSettings() {
                     refresh++
                 }) { Text("恢复默认位置") }
             }
+        }
+
+        if (MpvNative.isWindows) {
+            Spacer(Modifier.height(12.dp))
+            Text("显卡", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                "笔记本上画面通常由核显驱动，而 NVIDIA 的视频增强只存在于独显上——" +
+                    "跑错卡时驱动只会把调用失败掉。“自动”在开了 RTX 时会要求走 NVIDIA，" +
+                    "其余情况交给 mpv 自己选。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ToggleButton(
+                    checked = adapter == null,
+                    onCheckedChange = {
+                        adapter = null
+                        PlayerPreferences.adapter = null
+                        customRejected = false
+                    }
+                ) { Text("自动") }
+                adapters.forEach { candidate ->
+                    ToggleButton(
+                        checked = adapter == candidate,
+                        onCheckedChange = {
+                            adapter = candidate
+                            PlayerPreferences.adapter = candidate
+                            customRejected = false
+                        }
+                    ) { Text(candidate) }
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = customAdapter,
+                    onValueChange = { customAdapter = it; customRejected = false },
+                    label = { Text("或填显卡名称前缀") },
+                    singleLine = true,
+                    isError = customRejected,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    enabled = customAdapter.isNotBlank(),
+                    onClick = {
+                        // mpv rejects a name matching no adapter at the moment it
+                        // is set, so a typo can be refused here instead of turning
+                        // into a black screen at the next play.
+                        if (VideoAdapter.accepts(customAdapter)) {
+                            adapter = customAdapter
+                            PlayerPreferences.adapter = customAdapter
+                            customRejected = false
+                        } else {
+                            customRejected = true
+                        }
+                    }
+                ) { Text("使用") }
+            }
+            Text(
+                when {
+                    customRejected -> "没有显卡的名称以它开头"
+                    else -> "按显卡描述的前缀匹配，不区分大小写，取第一个命中的。" +
+                        (PlayerPreferences.lastAdapterInUse?.let { "上次实际用的是：$it" } ?: "")
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (customRejected) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         Spacer(Modifier.height(12.dp))

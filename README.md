@@ -272,7 +272,10 @@ RTX Video Super Resolution 和 RTX Video HDR。
   画面也没有区别。所以超分一定带 `scale > 1`（`VideoEnhancement` 里强制夹紧）。
 - **`nvidia-true-hdr=yes` 会自己强制处理器存在**，所以只开 HDR 时不需要放大，也不该放大。
 - **双显卡笔记本必须指定 `--d3d11-adapter=NVIDIA`。** 实测这台机器（RTX 4060 Laptop +
-  Radeon 780M）不指定时 mpv 落在 780M 上，NVIDIA 扩展只会失败。
+  Radeon 780M）不指定时 mpv 落在 780M 上，NVIDIA 扩展只会失败。设置页里可以自己选显卡
+  （「自动」在开着 RTX 时就等于要求 NVIDIA）；列表是**问出来的**——`--d3d11-adapter=help`
+  的输出拿不到，但设置这个选项时 mpv 会当场校验名字，所以只列出这台机器真的接受的。
+  匹配是描述的前缀、不区分大小写，取第一个命中的。
 - **要用 mpv 的 git master 构建，不能用编号版本。** RTX Video HDR 的两个关键提交
   （输出格式改 `X2BGR10`、按 HDR10 重新打标）在 0.41.0 之后才进 master，任何编号版本上
   这个开关都只是设了扩展、什么也不做。shinchiro 的 Windows 构建跟 master，可以直接用。

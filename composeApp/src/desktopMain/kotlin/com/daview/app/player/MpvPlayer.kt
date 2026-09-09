@@ -117,11 +117,16 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
             // and the film starts from zero.
             option("start", String.format(Locale.ROOT, "%.3f", it / 1000.0))
         }
-        if (config.enhancement.enabled && MpvNative.isWindows) {
+        if (MpvNative.isWindows) {
             // A laptop with a discrete GPU usually drives the display from the
-            // integrated one, and the NVIDIA extensions simply fail there. The
-            // match is a case-insensitive prefix of the adapter description.
-            option("d3d11-adapter", "NVIDIA")
+            // integrated one, and the NVIDIA extensions simply fail there. So
+            // with no choice made, asking for either of them still means asking
+            // for NVIDIA; an explicit choice is honoured either way, including
+            // one that will make those features fail — which the player screen
+            // then reports rather than quietly overriding.
+            val adapter = config.adapter
+                ?: "NVIDIA".takeIf { config.enhancement.enabled }
+            adapter?.let { option(VideoAdapter.OPTION, it) }
         }
         // Lets the swapchain be told it is showing HDR. Without it the frames
         // the filter retags as PQ/BT.2020 get tone-mapped back down.
@@ -136,7 +141,9 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
 
     data class Config(
         val startPositionMs: Long = 0,
-        val enhancement: VideoEnhancement = VideoEnhancement()
+        val enhancement: VideoEnhancement = VideoEnhancement(),
+        /** Prefix of the GPU description to render on; null lets the app decide. */
+        val adapter: String? = null
     )
 
     // ------------------------------------------------------------ commands

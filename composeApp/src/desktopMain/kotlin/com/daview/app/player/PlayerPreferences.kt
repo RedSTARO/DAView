@@ -20,6 +20,20 @@ object PlayerPreferences {
             MpvNative.overridePath = value
         }
 
+    /**
+     * Which GPU to render on, as a prefix of the adapter description, or null
+     * for "let the app decide" — which still means NVIDIA when an RTX feature
+     * is on, because that is the only adapter those features exist on.
+     */
+    var adapter: String?
+        get() = store.getString(KEY_ADAPTER)
+        set(value) = store.putString(KEY_ADAPTER, value?.takeIf { it.isNotBlank() })
+
+    /** The adapter mpv reported using last time, for the settings page to show. */
+    var lastAdapterInUse: String?
+        get() = store.getString(KEY_LAST_ADAPTER)
+        set(value) = store.putString(KEY_LAST_ADAPTER, value?.takeIf { it.isNotBlank() })
+
     var enhancement: VideoEnhancement
         get() = VideoEnhancement(
             superResolution = store.getString(KEY_SUPER_RESOLUTION) == "1",
@@ -41,4 +55,6 @@ object PlayerPreferences {
     private const val KEY_SUPER_RESOLUTION = "player.rtxSuperResolution"
     private const val KEY_VIDEO_HDR = "player.rtxVideoHdr"
     private const val KEY_SCALE = "player.rtxScale"
+    private const val KEY_ADAPTER = "player.adapter"
+    private const val KEY_LAST_ADAPTER = "player.lastAdapterInUse"
 }

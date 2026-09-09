@@ -37,6 +37,7 @@ import com.daview.app.player.MpvNative
 import com.daview.app.player.MpvPlayer
 import com.daview.app.player.PlayerPreferences
 import com.daview.app.player.TrackMapping
+import com.daview.app.player.VideoAdapter
 import com.daview.shared.model.MediaStreamDto
 import com.daview.shared.model.PlaybackInfoDto
 import com.daview.shared.model.StreamType
@@ -91,6 +92,7 @@ actual fun InternalPlayer(
     var superResolution by remember { mutableStateOf(EnhancementState.OFF) }
     var videoHdr by remember { mutableStateOf(EnhancementState.OFF) }
     var maxLumaGuess by remember { mutableStateOf(false) }
+    var adapterInUse by remember { mutableStateOf<String?>(null) }
 
     // onClose both stops the session and pops the screen, and there are two
     // routes to it — the file ending and the screen going away.
@@ -127,8 +129,20 @@ actual fun InternalPlayer(
         val created = runCatching {
             MpvPlayer(object : MpvPlayer.Listener {
                 override fun onLog(prefix: String, level: String, text: String) {
-                    EnhancementLog.superResolution(text)?.let { superResolution = it }
-                    EnhancementLog.videoHdr(text)?.let { videoHdr = it }
+                    // The adapter comes first — the video output is created
+                    // before the filter chain — so it is already known by the
+                    // time the RTX lines arrive, and it is what decides whether
+                    // to believe them.
+                    VideoAdapter.deviceNameFrom(prefix, text)?.let {
+                        adapterInUse = it
+                        PlayerPreferences.lastAdapterInUse = it
+                    }
+                    EnhancementLog.superResolution(text)?.let {
+                        superResolution = EnhancementLog.believable(it, adapterInUse)
+                    }
+                    EnhancementLog.videoHdr(text)?.let {
+                        videoHdr = EnhancementLog.believable(it, adapterInUse)
+                    }
                     if (EnhancementLog.isMaxLumaGuess(text)) maxLumaGuess = true
                 }
 
@@ -160,7 +174,10 @@ actual fun InternalPlayer(
                     if (ending == null) ending = Ending.ABANDONED
                 }
             }).apply {
-                open(handle, MpvPlayer.Config(info.startPositionMs, enhancement))
+                open(
+                    handle,
+                    MpvPlayer.Config(info.startPositionMs, enhancement, PlayerPreferences.adapter)
+                )
             }
         }.onFailure { failure = it.message ?: "无法启动内置播放器" }.getOrNull() ?: return@LaunchedEffect
 
@@ -235,6 +252,7 @@ actual fun InternalPlayer(
             selectedSubtitle = selectedSubtitle,
             superResolution = superResolution,
             videoHdr = videoHdr,
+            adapterInUse = adapterInUse,
             onAudio = { stream ->
                 selectedAudio = stream.index
                 TrackMapping.audioId(info.item.mediaStreams, stream.index)
@@ -301,6 +319,7 @@ private fun PlayerBar(
     selectedSubtitle: Int?,
     superResolution: EnhancementState,
     videoHdr: EnhancementState,
+    adapterInUse: String?,
     onAudio: (MediaStreamDto) -> Unit,
     onSubtitle: (MediaStreamDto?) -> Unit,
     onClose: () -> Unit
@@ -325,6 +344,15 @@ private fun PlayerBar(
                 modifier = Modifier.weight(1f)
             )
 
+            adapterInUse?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             EnhancementChip("RTX 超分", superResolution)
             EnhancementChip("RTX HDR", videoHdr)
             Spacer(Modifier.width(4.dp))
