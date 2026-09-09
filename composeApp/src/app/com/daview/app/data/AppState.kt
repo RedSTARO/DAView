@@ -118,6 +118,21 @@ class AppState(private val scope: CoroutineScope) {
     var searchResults by mutableStateOf<List<MediaItemDto>>(emptyList())
 
     var toast by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * Bumped with every message. The snackbar host is driven off this rather
+     * than off [toast], so saying the same thing twice in a row — two failed
+     * scans, two "已收藏" — shows twice instead of silently once.
+     */
+    var toastSeq by mutableStateOf(0)
+        private set
+
+    /** Puts one line in front of the user. */
+    fun notify(message: String) {
+        toast = message
+        toastSeq++
+    }
 
     // ------------------------------------------------------------ navigation
 
@@ -199,9 +214,9 @@ class AppState(private val scope: CoroutineScope) {
             try {
                 block()
             } catch (e: MediaFacade.FacadeException) {
-                toast = listOfNotNull(e.message, e.detail).joinToString("：")
+                notify(listOfNotNull(e.message, e.detail).joinToString("："))
             } catch (e: Throwable) {
-                toast = e.message ?: "操作失败"
+                notify(e.message ?: "操作失败")
             }
         }
     }
@@ -298,7 +313,7 @@ class AppState(private val scope: CoroutineScope) {
     fun toggleFavorite(item: MediaItemDto) = run {
         library.setFavorite(item.id, !item.userData.favorite)
         refreshAfterWatchChange(item.id)
-        toast = if (item.userData.favorite) "已取消收藏" else "已收藏"
+        notify(if (item.userData.favorite) "已取消收藏" else "已收藏")
     }
 
     /**
@@ -310,7 +325,7 @@ class AppState(private val scope: CoroutineScope) {
         val markPlayed = item.playedState != PlayedState.PLAYED
         library.setPlayed(item.id, markPlayed)
         refreshAfterWatchChange(item.id)
-        toast = if (markPlayed) "已标记为已观看" else "已标记为未观看"
+        notify(if (markPlayed) "已标记为已观看" else "已标记为未观看")
     }
 
     /**
@@ -344,11 +359,13 @@ class AppState(private val scope: CoroutineScope) {
         // process is reclaimed the moment the user switches away unless
         // something says otherwise.
         onScanStarted()
-        toast = when (mode) {
-            ScanMode.MISSING -> "已开始刮削未刮削的条目"
-            ScanMode.REFRESH -> "已开始重新刮削全部"
-            ScanMode.FULL -> "已开始扫描"
-        }
+        notify(
+            when (mode) {
+                ScanMode.MISSING -> "已开始刮削未刮削的条目"
+                ScanMode.REFRESH -> "已开始重新刮削全部"
+                ScanMode.FULL -> "已开始扫描"
+            }
+        )
         pollScanStatus()
     }
 
@@ -371,26 +388,26 @@ class AppState(private val scope: CoroutineScope) {
 
     fun saveServerSettings(updated: ServerSettingsDto, onDone: (Boolean) -> Unit = {}) = run {
         serverSettings = library.updateSettings(updated)
-        toast = "设置已保存"
+        notify("设置已保存")
         onDone(true)
     }
 
     fun createLibrary(entry: LibraryDto, onDone: () -> Unit = {}) = run {
         library.createLibrary(entry)
         refreshLibraries()
-        toast = "媒体库已创建"
+        notify("媒体库已创建")
         onDone()
     }
 
     fun cancelScan(libraryId: String) = run {
         library.cancelScan(libraryId)
-        toast = "正在停止扫描"
+        notify("正在停止扫描")
     }
 
     fun deleteLibrary(id: String) = run {
         library.deleteLibrary(id)
         refreshLibraries()
-        toast = "媒体库已删除"
+        notify("媒体库已删除")
     }
 
     private companion object {

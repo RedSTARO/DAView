@@ -1,14 +1,28 @@
 package com.daview.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ScreenLockLandscape
+import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -23,8 +37,10 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
@@ -65,6 +81,18 @@ actual fun InternalPlayer(
     var selectedSubtitle by remember { mutableStateOf(info.subtitleStreamIndex) }
 
     var playbackError by remember { mutableStateOf<String?>(null) }
+
+    // Whether the app's own overlay is on screen. media3 fades its transport
+    // controls out after a few seconds; the track buttons and the title used to
+    // ignore that and sit on the picture for the whole film.
+    var controlsVisible by remember { mutableStateOf(true) }
+
+    // Playback presentation: system bars hidden, screen kept awake, and the
+    // display turned. Rotation stays on the sensor until the viewer locks it,
+    // which is the case this exists for — watching lying down with the phone's
+    // own auto-rotate off.
+    var orientation by remember { mutableStateOf(ScreenOrientation.SENSOR) }
+    PlaybackPresentation(orientation)
 
     val player = remember {
         // The stream URL points at the app's own server over http, and that
@@ -130,22 +158,80 @@ actual fun InternalPlayer(
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     this.player = player
                     useController = true
-                    setShowSubtitleButton(true)
+                    // The app draws its own subtitle menu, and it is the only
+                    // one that knows about side-loaded subtitle files; media3's
+                    // button would list a different set under the same idea.
+                    setShowSubtitleButton(false)
+                    setControllerVisibilityListener(
+                        PlayerView.ControllerVisibilityListener { visibility ->
+                            controlsVisible = visibility == android.view.View.VISIBLE
+                        }
+                    )
                 }
             },
             modifier = Modifier.fillMaxSize()
         )
 
-        Row(
-            modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        // Rides with media3's own controls so the picture is clean when they go.
+        AnimatedVisibility(
+            visible = controlsVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter)
         ) {
+            // A scrim under the white text: over a bright frame the title and
+            // the buttons were white on near-white.
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)
+                        )
+                    )
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    info.item.seriesName?.let { "$it · ${info.item.name}" } ?: info.item.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.align(Alignment.CenterStart).padding(start = 8.dp, end = 160.dp)
+                )
+                Row(
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = {
+                        orientation = if (orientation == ScreenOrientation.SENSOR) {
+                            ScreenOrientation.LANDSCAPE
+                        } else {
+                            ScreenOrientation.SENSOR
+                        }
+                    }) {
+                        Icon(
+                            if (orientation == ScreenOrientation.LANDSCAPE) {
+                                Icons.Filled.ScreenLockLandscape
+                            } else {
+                                Icons.Filled.ScreenRotation
+                            },
+                            contentDescription = if (orientation == ScreenOrientation.LANDSCAPE) {
+                                "已锁定横屏，点按恢复自动旋转"
+                            } else {
+                                "锁定为横屏"
+                            },
+                            tint = Color.White
+                        )
+                    }
             Box {
                 TextButton(onClick = { audioMenu = true }) { Text("音轨", color = Color.White) }
                 DropdownMenu(audioMenu, onDismissRequest = { audioMenu = false }) {
@@ -193,6 +279,8 @@ actual fun InternalPlayer(
                     }
                 }
             }
+                }
+            }
         }
 
         playbackError?.let { message ->
@@ -201,23 +289,26 @@ actual fun InternalPlayer(
                 color = MaterialTheme.colorScheme.errorContainer,
                 shape = MaterialTheme.shapes.medium
             ) {
-                Text(
-                    message,
-                    modifier = Modifier.padding(16.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onErrorContainer
-                )
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        "无法播放",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    // A failure used to leave a card floating over a black
+                    // screen with no way off it but the system back gesture.
+                    TextButton(onClick = { onClose(player.currentPosition) }) {
+                        Text("返回")
+                    }
+                }
             }
-        }
-
-        Column(
-            Modifier.align(Alignment.TopStart).padding(12.dp).fillMaxWidth(0.6f)
-        ) {
-            Text(
-                info.item.seriesName?.let { "$it · ${info.item.name}" } ?: info.item.name,
-                style = MaterialTheme.typography.titleMedium,
-                color = Color.White
-            )
         }
     }
 }

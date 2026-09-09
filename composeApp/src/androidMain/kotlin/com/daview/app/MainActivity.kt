@@ -2,6 +2,7 @@ package com.daview.app
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -11,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import com.daview.app.platform.AndroidContextHolder
 import com.daview.app.platform.AndroidFilePicker
+import com.daview.app.platform.createSettingsStore
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -21,6 +23,10 @@ class MainActivity : ComponentActivity() {
         AndroidFilePicker.register(this)
         requestNotificationPermission()
         enableEdgeToEdge()
+        // What shows between the window appearing and the first composed frame.
+        // The theme's own value is the dark ground, so a light-theme user would
+        // otherwise get a near-black flash on every cold start.
+        applyStartupBackground()
         setContent { App() }
     }
 
@@ -38,6 +44,16 @@ class MainActivity : ComponentActivity() {
         if (granted) return
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
             .launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    /**
+     * Reads the same key [com.daview.app.data.AppState] reads, before there is
+     * a composition to ask. Absent or anything but "light" means dark, which is
+     * the app's own default.
+     */
+    private fun applyStartupBackground() {
+        val light = createSettingsStore().getString("theme") == "light"
+        window.setBackgroundDrawable(ColorDrawable(if (light) 0xFFFDF8FF.toInt() else 0xFF0E0D14.toInt()))
     }
 
     override fun onDestroy() {

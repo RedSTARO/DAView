@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app's primary violet, so the launcher icon and the interface agree. -->
+    <color name="ic_launcher_background">#4B2CD6</color>
+</resources>

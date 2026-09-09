@@ -206,11 +206,12 @@ class PlaybackController(
         }
         val player = externalPlayers.firstOrNull { it.executablePath != null || it.viaUrlScheme }
         if (player == null) {
-            error = "没有可用的播放器：内置播放器不可用，也没有找到 PotPlayer / VLC / mpv。" +
+            val message = "没有可用的播放器：内置播放器不可用，也没有找到 PotPlayer / VLC / mpv。" +
                 "可以在设置里指定 libmpv 或自定义播放器。"
+            error = message
             // The detail page shows `error`; the home page and the context menu
             // do not, and they are two of the three places this is reached from.
-            state.toast = error
+            state.notify(message)
             return
         }
         playExternal(item, player)

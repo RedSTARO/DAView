@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon foreground: 108x108dp with only the middle 72dp guaranteed to
+  survive the launcher's mask, so the mark is drawn inside a 66dp box centred at
+  54,54. A play triangle over a rounded frame — the same two ideas the app's own
+  poster tiles use.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:pathData="M32,30h44a8,8 0 0 1 8,8v32a8,8 0 0 1 -8,8h-44a8,8 0 0 1 -8,-8v-32a8,8 0 0 1 8,-8z"
+        android:strokeWidth="5"
+        android:strokeColor="#E8DEFF"
+        android:fillColor="#00000000" />
+
+    <path
+        android:pathData="M48,44l22,10l-22,10z"
+        android:fillColor="#E8DEFF" />
+</vector>

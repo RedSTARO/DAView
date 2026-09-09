@@ -1,8 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      The status and navigation bar colours are deliberately absent. The window
+      is drawn edge to edge, which makes both bars transparent and hands their
+      icon colour to WindowInsetsControllerCompat; the app sets that from its
+      own light/dark switch (SystemBarAppearance) rather than from the system's
+      night setting. Painting them here only fought that and left black icons
+      on a near-black bar whenever the phone was in light mode.
+
+      windowBackground is what shows between the window appearing and the first
+      frame. MainActivity overwrites it from the saved theme; this value is the
+      one used before that has been read, and matches the default dark ground.
+    -->
     <style name="Theme.DaView" parent="android:Theme.Material.NoActionBar">
-        <item name="android:statusBarColor">#0E0D14</item>
-        <item name="android:navigationBarColor">#0E0D14</item>
         <item name="android:windowBackground">#0E0D14</item>
     </style>
 </resources>

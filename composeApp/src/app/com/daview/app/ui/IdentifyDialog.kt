@@ -115,7 +115,7 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                     IdentifyRequest(provider = source, providerId = id),
                     state.links
                 )
-                state.toast = "已指定为 ${updated.name}"
+                state.notify("已指定为 ${updated.name}")
                 state.loadDetail(item.id)
                 state.refreshLibraries()
                 onDismiss()
