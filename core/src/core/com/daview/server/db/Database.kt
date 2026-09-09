@@ -160,6 +160,19 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                 "ALTER TABLE user_data ADD COLUMN hidden_from_resume INTEGER NOT NULL DEFAULT 0"
             ),
             listOf(
+                // Libraries this device has deliberately removed. Without it a
+                // delete lasted until the next pull: the sync file still held
+                // the library, applyBackup upserted it straight back, and the
+                // user was left with an empty library they had already deleted
+                // and whose scraped rows were genuinely gone.
+                """
+                CREATE TABLE IF NOT EXISTS deleted_libraries (
+                    id TEXT PRIMARY KEY,
+                    deleted_at INTEGER NOT NULL
+                )
+                """.trimIndent()
+            ),
+            listOf(
                 // How the metadata was arrived at: matched, fell back to a
                 // secondary source, was pinned by hand, or found nothing.
                 "ALTER TABLE items ADD COLUMN scrape_status TEXT"

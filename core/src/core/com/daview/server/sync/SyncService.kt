@@ -185,7 +185,7 @@ class SyncService(
             DaViewJson.decodeFromString(BackupFileDto.serializer(), raw.decodeToString())
         }.getOrElse { return Merge.Unreadable(it.message ?: it::class.simpleName ?: "未知错误") }
 
-        val summary = runCatching { applyBackup(context, backup, mergeUserDataByTimestamp = true) }
+        val summary = runCatching { applyBackup(context, backup, mergeUserDataByTimestamp = true, machineLocal = true) }
             .getOrElse { return Merge.Unreadable(it.message ?: "格式不符") }
         context.updateConfig {
             it.copy(sync = it.sync.copy(lastPullAt = System.currentTimeMillis(), lastError = null))

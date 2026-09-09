@@ -113,6 +113,11 @@ class MediaFacade(private val context: ServerContext) {
     suspend fun libraries(): List<LibraryDto> = io { context.repository.libraries() }
 
     suspend fun createLibrary(incoming: LibraryDto): LibraryDto = io {
+        // Adding it back by hand is the clearest possible statement that the
+        // earlier delete no longer stands.
+        context.repository.forgetDeletedLibrary(
+            incoming.id.ifBlank { Scanner.libraryId(incoming.path) }
+        )
         val library = incoming.copy(
             // Derived from the path, not random: another device pointed at the
             // same folder has to reach the same id by itself, or the item ids

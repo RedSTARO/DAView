@@ -157,7 +157,14 @@ fun applyBackup(
      * Sync passes true so the newer side of each row wins. A restore leaves it
      * false: the file the user picked is meant to be authoritative.
      */
-    mergeUserDataByTimestamp: Boolean = false
+    mergeUserDataByTimestamp: Boolean = false,
+    /**
+     * True when the file came from the sync loop rather than from a person
+     * choosing it. Settings that describe this machine rather than the library
+     * — the address it reaches the share on, its player timeouts — are then left
+     * alone: two devices legitimately hold different values for them.
+     */
+    machineLocal: Boolean = false
 ): BackupSummaryDto {
     require(backup.format == BACKUP_FORMAT) { "不是 DAView 备份文件" }
     require(backup.version <= BACKUP_VERSION) {
@@ -169,7 +176,14 @@ fun applyBackup(
         context.updateConfig { current ->
             current.copy(
                 serverName = settings.serverName.ifBlank { current.serverName },
-                storage = current.storage.copy(
+                // How this machine reaches the share is this machine's business.
+                // Two devices legitimately use different addresses for the same
+                // storage — a LAN address on the desktop, a public one on the
+                // phone — and carrying it in the sync file meant each rewrote
+                // the other's every few minutes, silently. A file the user
+                // imported by hand may still set it, because that is a
+                // migration and the whole point is to carry it across.
+                storage = if (machineLocal) current.storage else current.storage.copy(
                     url = settings.storage.url.ifBlank { current.storage.url },
                     username = settings.storage.username.ifBlank { current.storage.username },
                     password = settings.storage.password.ifBlank { current.storage.password }
@@ -181,13 +195,22 @@ fun applyBackup(
                     language = settings.scraper.language.ifBlank { current.scraper.language },
                     tmdbImageBase = settings.scraper.tmdbImageBase.ifBlank { current.scraper.tmdbImageBase }
                 ),
-                trackExternalPlayers = settings.trackExternalPlayers,
-                externalSessionIdleTimeoutSec = settings.externalSessionIdleTimeoutSec
+                // Likewise: whether to proxy an external player, and how long to
+                // wait before retiring its session, depend on what is installed
+                // here. These were applied unconditionally.
+                trackExternalPlayers =
+                    if (machineLocal) current.trackExternalPlayers else settings.trackExternalPlayers,
+                externalSessionIdleTimeoutSec =
+                    if (machineLocal) current.externalSessionIdleTimeoutSec
+                    else settings.externalSessionIdleTimeoutSec
             )
         }
     }
 
-    backup.libraries.forEach { context.repository.upsertLibrary(it) }
+    // A library this device deleted does not come back because another device
+    // has not caught up yet.
+    val deleted = context.repository.deletedLibraryIds()
+    backup.libraries.forEach { if (it.id !in deleted) context.repository.upsertLibrary(it) }
 
     // Pins land before the items, so an item restored in the same file already
     // finds its correction in place. Newer wins, same as the watch state — the

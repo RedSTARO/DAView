@@ -88,7 +88,24 @@ class Repository(private val db: Database) {
         }
     }
 
+    /** Libraries this device removed on purpose, so a sync cannot bring them back. */
+    fun deletedLibraryIds(): Set<String> = db.read { connection ->
+        connection.statement("SELECT id FROM deleted_libraries").useQuery { rs ->
+            buildSet { while (rs.next()) add(rs.requireString("id")) }
+        }
+    }
+
+    /** Undoes the tombstone, for a library the user adds again by hand. */
+    fun forgetDeletedLibrary(id: String) = db.transaction { connection ->
+        connection.statement("DELETE FROM deleted_libraries WHERE id = ?")
+            .use { it.setString(1, id); it.executeUpdate() }
+    }
+
     fun deleteLibrary(id: String) = db.transaction { connection ->
+        connection.statement(
+            "INSERT INTO deleted_libraries (id, deleted_at) VALUES (?, ?) " +
+                "ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at"
+        ).use { it.setString(1, id); it.setLong(2, System.currentTimeMillis()); it.executeUpdate() }
         connection.statement("DELETE FROM user_data WHERE item_id IN (SELECT id FROM items WHERE library_id = ?)")
             .use { it.setString(1, id); it.executeUpdate() }
         connection.statement("DELETE FROM items WHERE library_id = ?")
