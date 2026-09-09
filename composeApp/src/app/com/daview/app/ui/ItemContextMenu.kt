@@ -4,6 +4,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.OpenInNew
@@ -30,6 +32,7 @@ import androidx.compose.ui.unit.DpOffset
 import com.daview.app.data.AppState
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
+import com.daview.shared.model.DownloadState
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.PlayedState
@@ -202,6 +205,42 @@ fun ColumnScope.ItemMenuItems(
             onClick = {
                 dismiss()
                 state.hideFromResume(item)
+            }
+        )
+    }
+
+    // Only a playable item has bytes worth keeping.
+    if (item.isPlayable) {
+        val existing = state.downloads.firstOrNull { it.itemId == item.id }
+        DropdownMenuItem(
+            leadingIcon = {
+                Icon(
+                    if (existing?.state == DownloadState.DONE) Icons.Filled.DownloadDone
+                    else Icons.Filled.Download,
+                    contentDescription = null,
+                    tint = if (existing?.state == DownloadState.DONE) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            },
+            text = {
+                Text(
+                    when (existing?.state) {
+                        DownloadState.DONE -> "删除本地文件"
+                        DownloadState.RUNNING, DownloadState.QUEUED -> "取消下载"
+                        else -> "下载到本机"
+                    }
+                )
+            },
+            onClick = {
+                dismiss()
+                when (existing?.state) {
+                    DownloadState.DONE -> state.removeDownload(item.id)
+                    DownloadState.RUNNING, DownloadState.QUEUED -> state.cancelDownload(item)
+                    else -> state.download(item)
+                }
             }
         )
     }

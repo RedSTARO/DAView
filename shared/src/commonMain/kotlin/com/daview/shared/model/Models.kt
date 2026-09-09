@@ -270,6 +270,29 @@ enum class PlayerKind {
     @SerialName("external") EXTERNAL
 }
 
+/** Where a local copy has got to. */
+@Serializable
+enum class DownloadState { QUEUED, RUNNING, DONE, FAILED }
+
+/**
+ * One item kept on this device.
+ *
+ * Downloads are per device on purpose and never travel in the sync file: what
+ * one phone has room for says nothing about what another one wants.
+ */
+@Serializable
+data class DownloadDto(
+    val itemId: String,
+    val name: String,
+    val state: DownloadState,
+    val totalBytes: Long = 0,
+    val downloadedBytes: Long = 0,
+    val error: String? = null
+) {
+    val fraction: Float
+        get() = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
+}
+
 @Serializable
 data class PlaybackStartRequest(
     val itemId: String,

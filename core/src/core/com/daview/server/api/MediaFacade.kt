@@ -553,6 +553,32 @@ class MediaFacade(private val context: ServerContext) {
      */
     suspend fun clearImageCache() = io { context.images.clear() }
 
+    // ------------------------------------------------------------ offline
+
+    /**
+     * Keeps a copy of an item on this device.
+     *
+     * Everything else in the app is a window onto the share, so away from the
+     * network there was nothing to watch at all. Once a copy is here, every
+     * reader finds it — both players and the local pipe go through the same
+     * byte source — so playback, seeking and progress work exactly as before,
+     * without a request leaving the device.
+     */
+    suspend fun downloadItem(id: String) = io {
+        context.repository.item(id) ?: notFound("条目不存在")
+        context.offline.start(id)
+    }
+
+    /** Stops a download in flight. What arrived stays, ready to resume. */
+    suspend fun cancelDownload(id: String) = io { context.offline.cancel(id) }
+
+    /** Forgets a copy and deletes its bytes. */
+    suspend fun removeDownload(id: String) = io { context.offline.remove(id) }
+
+    suspend fun downloads(): List<DownloadDto> = io { context.offline.all() }
+
+    suspend fun downloadedBytes(): Long = io { context.offline.usedBytes() }
+
     // ------------------------------------------------------------ artwork
 
     /** Rewrites the provider's artwork URL to an address the caller can fetch. */

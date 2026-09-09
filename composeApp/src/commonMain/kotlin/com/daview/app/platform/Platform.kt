@@ -90,3 +90,10 @@ expect fun createSettingsStore(): SettingsStore
  */
 expect fun onScanStarted()
 
+/**
+ * Tells the platform a download has started, for the same reason as
+ * [onScanStarted]: on Android the process is reclaimed the moment the user
+ * switches away, and a download of a whole film takes minutes.
+ */
+expect fun onDownloadStarted()
+

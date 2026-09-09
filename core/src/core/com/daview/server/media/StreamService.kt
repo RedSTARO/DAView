@@ -19,6 +19,14 @@ class StreamService(
     private val davProvider: () -> WebDavClient?,
     private val repository: Repository
 ) {
+    /**
+     * Where to look for a copy already on this device, set once the offline
+     * library exists. It is a lambda rather than a constructor argument because
+     * the offline library reads bytes through this service, and one of the two
+     * has to be built first.
+     */
+    var offlineFile: ((String) -> java.nio.file.Path?)? = null
+
     private val log = LoggerFactory.getLogger(StreamService::class.java)
 
     private data class CachedUrl(val url: String, val expiresAt: Long)
@@ -34,6 +42,9 @@ class StreamService(
      * never dies half way through.
      */
     fun directUrl(path: String): String? {
+        // A file already on this device has no direct link, and offering one
+        // would send a player back to the network for bytes that are on disk.
+        if (offlineFile?.invoke(path) != null) return null
         val cached = directUrls[path]
         if (cached != null && cached.expiresAt > System.currentTimeMillis()) return cached.url
         val resolved = runCatching { dav().resolveDirectUrl(path) }
@@ -54,6 +65,11 @@ class StreamService(
      * request instead of two (redirect + fetch).
      */
     fun openRange(path: String, start: Long, end: Long?): WebDavClient.RangeStream {
+        // The whole point of downloading something is that this read stops
+        // going to the network. Both players and the local pipe come through
+        // here, so one check covers all of them — and progress tracking for an
+        // external player keeps working exactly as it did.
+        offlineFile?.invoke(path)?.let { return localRange(it, start, end) }
         val direct = directUrl(path)
         return if (direct != null) {
             runCatching { dav().openRangeAt(direct, start, end, useAuth = false) }
@@ -67,7 +83,40 @@ class StreamService(
         }
     }
 
-    fun fileSize(path: String): Long? = dav().size(path)
+    fun fileSize(path: String): Long? =
+        offlineFile?.invoke(path)?.let { runCatching { java.nio.file.Files.size(it) }.getOrNull() }
+            ?: dav().size(path)
+
+    /** A range over a file on disk, shaped like the one the share would return. */
+    private fun localRange(file: java.nio.file.Path, start: Long, end: Long?): WebDavClient.RangeStream {
+        val size = java.nio.file.Files.size(file)
+        val stream = java.nio.file.Files.newInputStream(file)
+        stream.skip(start)
+        val limit = (end?.plus(1) ?: size) - start
+        return WebDavClient.RangeStream(
+            stream = java.io.BufferedInputStream(stream).let { buffered ->
+                object : java.io.FilterInputStream(buffered) {
+                    private var left = limit
+                    override fun read(): Int {
+                        if (left <= 0) return -1
+                        val value = super.read()
+                        if (value >= 0) left--
+                        return value
+                    }
+
+                    override fun read(b: ByteArray, off: Int, len: Int): Int {
+                        if (left <= 0) return -1
+                        val read = super.read(b, off, minOf(len.toLong(), left).toInt())
+                        if (read > 0) left -= read
+                        return read
+                    }
+                }
+            },
+            totalSize = size,
+            partial = start > 0 || end != null,
+            response = null
+        )
+    }
 
     /**
      * Reader that resolves the direct link once and then issues plain range

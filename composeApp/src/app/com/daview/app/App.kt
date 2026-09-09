@@ -145,8 +145,12 @@ private fun Library(state: AppState, scope: CoroutineScope) {
     }
 
     // A scan outlives the screen that started it, and may well have been
-    // running before this process was.
-    LaunchedEffect(Unit) { state.pollScanStatus() }
+    // running before this process was. So does a download.
+    LaunchedEffect(Unit) {
+        state.pollScanStatus()
+        state.refreshDownloads()
+        state.pollDownloads()
+    }
 
     // A host rather than a hand-placed Snackbar: it animates in and out, holds
     // the message for the platform's own reading time, and announces itself to

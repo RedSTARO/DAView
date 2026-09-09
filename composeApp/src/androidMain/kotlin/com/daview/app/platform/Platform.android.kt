@@ -90,6 +90,12 @@ actual fun onScanStarted() {
     }
 }
 
+actual fun onDownloadStarted() {
+    if (AndroidContextHolder.isInitialised) {
+        com.daview.app.DownloadForegroundService.start(AndroidContextHolder.context)
+    }
+}
+
 actual fun createSettingsStore(): SettingsStore = object : SettingsStore {
     private val preferences = AndroidContextHolder.context
         .getSharedPreferences("daview", Context.MODE_PRIVATE)

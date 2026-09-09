@@ -39,6 +39,15 @@ class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
     }
 
     val streams = StreamService({ dav }, repository)
+    /**
+     * Files kept on this device. Built after [streams] because it reads bytes
+     * through it, and handed back to it so every reader — both players and the
+     * local pipe — finds a local copy before reaching for the network.
+     */
+    val offline = com.daview.server.media.OfflineLibrary(dataDir, repository, streams).also {
+        streams.offlineFile = { path -> it.localFile(path) }
+    }
+
     val playback = PlaybackService(repository, streams) { config.externalSessionIdleTimeoutSec }
     val pipe = com.daview.server.media.PlaybackPipe(repository, streams, playback)
     val scans = ScanService(repository, metadata, streams, { dav }, { config })

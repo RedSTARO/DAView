@@ -1,5 +1,7 @@
 package com.daview.server.db
 
+import com.daview.shared.model.DownloadDto
+import com.daview.shared.model.DownloadState
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.LibraryKind
@@ -313,6 +315,96 @@ class Repository(private val db: Database) {
             st.executeUpdate()
         }
     }
+
+    // ------------------------------------------------------------ downloads
+
+    fun downloads(): List<DownloadDto> = db.read { connection ->
+        connection.statement("SELECT * FROM downloads ORDER BY updated_at DESC")
+            .useQuery { it.map(::readDownload) }
+    }
+
+    fun download(itemId: String): DownloadDto? = db.read { connection ->
+        connection.statement("SELECT * FROM downloads WHERE item_id = ?")
+            .apply { setString(1, itemId) }
+            .useQuery { if (it.next()) readDownload(it) else null }
+    }
+
+    /** The row for a media path, which is how the byte reader finds a local copy. */
+    fun downloadForPath(mediaPath: String): DownloadRow? = db.read { connection ->
+        connection.statement("SELECT * FROM downloads WHERE media_path = ?")
+            .apply { setString(1, mediaPath) }
+            .useQuery {
+                if (it.next()) {
+                    DownloadRow(
+                        file = it.requireString("file"),
+                        state = runCatching { DownloadState.valueOf(it.requireString("state")) }
+                            .getOrDefault(DownloadState.FAILED)
+                    )
+                } else null
+            }
+    }
+
+    data class DownloadRow(val file: String, val state: DownloadState)
+
+    fun saveDownload(download: DownloadDto, file: String, mediaPath: String) = db.transaction { connection ->
+        connection.statement(
+            """
+            INSERT INTO downloads(item_id, media_path, file, name, state, total_bytes, downloaded_bytes, error, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            ON CONFLICT(item_id) DO UPDATE SET
+                media_path = excluded.media_path, file = excluded.file, name = excluded.name,
+                state = excluded.state, total_bytes = excluded.total_bytes,
+                downloaded_bytes = excluded.downloaded_bytes, error = NULL,
+                updated_at = excluded.updated_at
+            """.trimIndent()
+        ).use {
+            it.setString(1, download.itemId)
+            it.setString(2, mediaPath)
+            it.setString(3, file)
+            it.setString(4, download.name)
+            it.setString(5, download.state.name)
+            it.setLong(6, download.totalBytes)
+            it.setLong(7, download.downloadedBytes)
+            it.setLong(8, System.currentTimeMillis())
+            it.executeUpdate()
+        }
+    }
+
+    fun updateDownloadState(itemId: String, state: DownloadState, error: String?) =
+        db.transaction { connection ->
+            connection.statement(
+                "UPDATE downloads SET state = ?, error = ?, updated_at = ? WHERE item_id = ?"
+            ).use {
+                it.setString(1, state.name)
+                it.setString(2, error)
+                it.setLong(3, System.currentTimeMillis())
+                it.setString(4, itemId)
+                it.executeUpdate()
+            }
+        }
+
+    fun saveProgressBytes(itemId: String, bytes: Long) = db.transaction { connection ->
+        connection.statement("UPDATE downloads SET downloaded_bytes = ? WHERE item_id = ?").use {
+            it.setLong(1, bytes)
+            it.setString(2, itemId)
+            it.executeUpdate()
+        }
+    }
+
+    fun deleteDownload(itemId: String) = db.transaction { connection ->
+        connection.statement("DELETE FROM downloads WHERE item_id = ?")
+            .use { it.setString(1, itemId); it.executeUpdate() }
+    }
+
+    private fun readDownload(rs: SqlCursor) = DownloadDto(
+        itemId = rs.requireString("item_id"),
+        name = rs.requireString("name"),
+        state = runCatching { DownloadState.valueOf(rs.requireString("state")) }
+            .getOrDefault(DownloadState.FAILED),
+        totalBytes = rs.getLongOrNull("total_bytes") ?: 0L,
+        downloadedBytes = rs.getLongOrNull("downloaded_bytes") ?: 0L,
+        error = rs.getString("error")
+    )
 
     fun deleteItems(ids: Collection<String>) {
         if (ids.isEmpty()) return

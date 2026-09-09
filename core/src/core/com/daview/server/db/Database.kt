@@ -180,6 +180,25 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                 "UPDATE libraries SET language = '' WHERE language = 'zh-CN'"
             ),
             listOf(
+                // Files kept on this device. Deliberately outside the sync
+                // payload: what one phone has room for says nothing about what
+                // another one wants, and the bytes are not portable anyway.
+                """
+                CREATE TABLE IF NOT EXISTS downloads (
+                    item_id TEXT PRIMARY KEY,
+                    media_path TEXT NOT NULL,
+                    file TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    total_bytes INTEGER NOT NULL DEFAULT 0,
+                    downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    updated_at INTEGER NOT NULL
+                )
+                """.trimIndent(),
+                "CREATE INDEX IF NOT EXISTS idx_downloads_path ON downloads(media_path)"
+            ),
+            listOf(
                 // How the metadata was arrived at: matched, fell back to a
                 // secondary source, was pinned by hand, or found nothing.
                 "ALTER TABLE items ADD COLUMN scrape_status TEXT"

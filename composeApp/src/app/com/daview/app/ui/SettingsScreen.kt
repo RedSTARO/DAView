@@ -78,6 +78,7 @@ import com.daview.server.api.BackupOptions
 import com.daview.server.api.backupFileName
 import com.daview.shared.api.DaViewJson
 import com.daview.shared.model.BackupFileDto
+import com.daview.shared.model.DownloadState
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.LibraryKind
 import com.daview.shared.model.ScanMode
@@ -119,6 +120,7 @@ fun SettingsScreen(state: AppState) {
         item { ScraperSection(state) }
         item { SyncSection(state) }
         item { BackupSection(state) }
+        item { DownloadsSection(state) }
         item { PlatformPlayerSettings() }
         item { ClientSection(state) }
     }
@@ -857,6 +859,77 @@ private fun DefaultPlayerRow(state: AppState) {
                 }
             }
         }
+    }
+}
+
+/**
+ * What is kept on this device.
+ *
+ * Everything else in the app streams from the share, so this is the only page
+ * where storage on the device itself is spent, and the only place to get it
+ * back.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun DownloadsSection(state: AppState) {
+    val downloads = state.downloads
+    if (downloads.isEmpty()) return
+
+    Column(Modifier.padding(horizontal = 20.dp)) {
+        SectionTitle("离线内容")
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "下载的文件只留在这台设备上，不会进同步文件。播放时会直接读本地文件，不再走网络。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(8.dp))
+
+        downloads.forEach { download ->
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(download.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        when (download.state) {
+                            DownloadState.DONE -> formatSize(download.totalBytes)
+                            DownloadState.FAILED -> download.error ?: "下载失败"
+                            DownloadState.QUEUED -> "排队中"
+                            DownloadState.RUNNING ->
+                                "${(download.fraction * 100).toInt()}% · " +
+                                    "${formatSize(download.downloadedBytes)} / ${formatSize(download.totalBytes)}"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (download.state == DownloadState.FAILED) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (download.state == DownloadState.RUNNING || download.state == DownloadState.QUEUED) {
+                        Spacer(Modifier.height(4.dp))
+                        // Indeterminate until the size is known, rather than a
+                        // bar sitting at zero while a queued item waits.
+                        if (download.totalBytes > 0) {
+                            LinearWavyProgressIndicator(
+                                progress = { download.fraction },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+                        }
+                    }
+                }
+                TextButton(onClick = { state.removeDownload(download.itemId) }) {
+                    Text(if (download.state == DownloadState.DONE) "删除" else "取消")
+                }
+            }
+        }
+        Spacer(Modifier.height(24.dp))
     }
 }
 

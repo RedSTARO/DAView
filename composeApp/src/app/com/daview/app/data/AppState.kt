@@ -8,10 +8,13 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.daview.app.platform.SettingsStore
 import com.daview.app.platform.createCoreContext
 import com.daview.app.platform.createSettingsStore
+import com.daview.app.platform.onDownloadStarted
 import com.daview.app.platform.onScanStarted
 import com.daview.server.ServerContext
 import com.daview.server.api.AssetLinks
 import com.daview.server.api.MediaFacade
+import com.daview.shared.model.DownloadDto
+import com.daview.shared.model.DownloadState
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.MediaItemDto
@@ -555,6 +558,51 @@ class AppState(private val scope: CoroutineScope) {
         library.setHiddenFromResume(item.id, true)
         refreshHome()
         notify("已从继续观看中移除")
+    }
+
+    /** What is on this device, and how far each one has got. */
+    var downloads by mutableStateOf<List<DownloadDto>>(emptyList())
+        private set
+
+    private var downloadPoll: Job? = null
+
+    fun refreshDownloads() = run { downloads = library.downloads() }
+
+    /**
+     * Keeps a copy of an item here, and follows it while it arrives.
+     *
+     * The poll stops on its own once nothing is moving; a download outlives the
+     * screen that started it, so this is also called on start-up.
+     */
+    fun download(item: MediaItemDto) = run {
+        library.downloadItem(item.id)
+        onDownloadStarted()
+        notify("已加入下载：${item.name}")
+        pollDownloads()
+    }
+
+    fun cancelDownload(item: MediaItemDto) = run {
+        library.cancelDownload(item.id)
+        downloads = library.downloads()
+    }
+
+    fun removeDownload(itemId: String) = run {
+        library.removeDownload(itemId)
+        downloads = library.downloads()
+        notify("已删除本地文件")
+    }
+
+    fun pollDownloads() {
+        if (downloadPoll?.isActive == true) return
+        downloadPoll = scope.launch {
+            while (isActive) {
+                downloads = runCatching { library.downloads() }.getOrDefault(downloads)
+                if (downloads.none { it.state == DownloadState.RUNNING || it.state == DownloadState.QUEUED }) {
+                    return@launch
+                }
+                delay(1500)
+            }
+        }
     }
 
     /** Writes fields a person corrected by hand. Blank fields are cleared. */
