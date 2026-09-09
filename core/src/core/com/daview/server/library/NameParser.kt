@@ -57,6 +57,18 @@ object NameParser {
         ".thumbnails", "@tmp"
     )
 
+    /**
+     * Folders release groups put subtitles in, beside the video rather than
+     * next to it. Common enough in Chinese releases that not looking inside
+     * them reads as "this film has no subtitles".
+     */
+    private val subtitleFolders = setOf(
+        "subs", "sub", "subtitles", "subtitle", "字幕", "中文字幕", "chs", "cht",
+        "chs&jpn", "chs&eng", "gb", "big5", "sc", "tc"
+    )
+
+    fun isSubtitleFolder(name: String) = name.lowercase() in subtitleFolders
+
     fun isSystemFolder(name: String): Boolean {
         val lower = name.lowercase()
         return lower in systemFolders || lower.startsWith("@") || lower.startsWith("#")

@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.DropdownMenuItem
@@ -201,6 +202,24 @@ fun ColumnScope.ItemMenuItems(
             onClick = {
                 dismiss()
                 state.hideFromResume(item)
+            }
+        )
+    }
+
+    // Only whole films and series carry scraped metadata.
+    if (item.kind == ItemKind.MOVIE || item.kind == ItemKind.SERIES) {
+        DropdownMenuItem(
+            leadingIcon = {
+                Icon(
+                    Icons.Filled.Refresh,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            text = { Text("重新刮削") },
+            onClick = {
+                dismiss()
+                state.refreshMetadata(item)
             }
         )
     }

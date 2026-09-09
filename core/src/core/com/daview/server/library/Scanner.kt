@@ -104,6 +104,7 @@ class Scanner(
             !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name)
         }
         val subtitles = children.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
+        val nestedSubs = nestedSubtitles(children)
         val artwork = localArtwork(children)
 
         if (videos.isEmpty()) {
@@ -127,7 +128,7 @@ class Scanner(
             movieFromFile(
                 library,
                 video,
-                subtitles,
+                subtitlesFor(video, subtitles, nestedSubs, soleVideo = videos.size == 1),
                 parentId = null,
                 now = now,
                 // Only the main feature takes the folder's title; the others
@@ -335,7 +336,10 @@ class Scanner(
 
         val children = dav.list(folder.path)
         val videos = children.filter { !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name) }
-        val subtitles = children.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
+        // Beside the episodes, and inside any Subs / 字幕 folder next to them:
+        // a release that files its subtitles that way read as having none.
+        val subtitles = children.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) } +
+            nestedSubtitles(children)
 
         out += videos.mapIndexed { position, video ->
             episodeRecord(library, seriesId, seriesName, seasonId, seasonNumber, video, subtitles, position, now)
@@ -468,7 +472,12 @@ class Scanner(
     ): ItemRecord {
         val parsed = NameParser.parseEpisode(video.name, seasonNumber)
         val episodeNumber = parsed?.episode ?: (fallbackIndex + 1)
+        // `S01E01-E02` is one file holding two episodes. The parser has always
+        // read the second number; nothing read it back, so the list showed
+        // 1, 3, 4 and looked as though a file had been missed.
+        val endEpisode = parsed?.endEpisode?.takeIf { it > episodeNumber }
         val name = parsed?.title?.takeIf { it.isNotBlank() }
+            ?: endEpisode?.let { "第 $episodeNumber-$it 集" }
             ?: "第 $episodeNumber 集"
         return ItemRecord(
             dto = MediaItemDto(
@@ -484,7 +493,10 @@ class Scanner(
                 parentIndexNumber = parsed?.season ?: seasonNumber,
                 path = video.path,
                 sizeBytes = video.size,
-                mediaStreams = externalSubtitleStreams(video, subtitles)
+                mediaStreams = externalSubtitleStreams(
+                    video,
+                    subtitlesFor(video, subtitles, emptyList(), soleVideo = false)
+                )
             ),
             dateCreated = now,
             dateModified = now,
@@ -499,12 +511,44 @@ class Scanner(
      * [EXTERNAL_STREAM_BASE] so they can never clash with the track numbers that
      * [MkvProbe] reports for embedded streams.
      */
-    private fun externalSubtitleStreams(video: DavEntry, candidates: List<DavEntry>): List<MediaStreamDto> {
+    /**
+     * The subtitle files that belong to a video: the ones beside it, plus the
+     * contents of any `Subs` / `字幕` folder in the same directory.
+     *
+     * Only files whose name matches the video are taken, except where the
+     * directory holds exactly one video — then everything is fair game, which
+     * is what rescues the very common case of a folder named after the release
+     * group with subtitles whose names carry a language tag the parser has
+     * never seen ("简日双语", "CHS&JPN").
+     */
+    private fun subtitlesFor(
+        video: DavEntry,
+        siblings: List<DavEntry>,
+        nested: List<DavEntry>,
+        soleVideo: Boolean
+    ): List<DavEntry> {
         val base = video.name.substringBeforeLast('.')
+        val all = siblings + nested
+        val matched = all.filter { candidate ->
+            NameParser.parseSubtitle(candidate.name)
+                ?.videoBaseName?.equals(base, ignoreCase = true) == true
+        }
+        if (matched.isNotEmpty() || !soleVideo) return matched
+        return all
+    }
+
+    /** Subtitle files inside a `Subs` / `字幕` folder next to the video. */
+    private fun nestedSubtitles(children: List<DavEntry>): List<DavEntry> =
+        children.filter { it.isDirectory && NameParser.isSubtitleFolder(it.name) }
+            .flatMap { folder ->
+                runCatching { dav.list(folder.path) }.getOrDefault(emptyList())
+                    .filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
+            }
+
+    private fun externalSubtitleStreams(video: DavEntry, candidates: List<DavEntry>): List<MediaStreamDto> {
         var next = EXTERNAL_STREAM_BASE
         return candidates.mapNotNull { candidate ->
             val parsed = NameParser.parseSubtitle(candidate.name) ?: return@mapNotNull null
-            if (!parsed.videoBaseName.equals(base, ignoreCase = true)) return@mapNotNull null
             MediaStreamDto(
                 index = next++,
                 type = StreamType.SUBTITLE,

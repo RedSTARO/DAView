@@ -103,6 +103,19 @@ fun formatSize(bytes: Long?): String {
 private fun pad(value: Long) = value.toString().padStart(2, '0')
 
 /**
+ * An ISO date as the day alone.
+ *
+ * The scrapers fetch premiere dates and episode air dates and nothing in the
+ * app ever showed one — there was no date formatting anywhere at all — so the
+ * only time information on screen was a bare year.
+ */
+fun formatDate(iso: String?): String? {
+    val value = iso?.trim().orEmpty()
+    if (value.length < 10) return value.ifBlank { null }
+    return value.substring(0, 10)
+}
+
+/**
  * Holds the space while something is on its way, and only draws the indicator
  * if the wait outlasts a couple of frames.
  *

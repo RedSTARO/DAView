@@ -476,6 +476,17 @@ class AppState(private val scope: CoroutineScope) {
         notify("已从继续观看中移除")
     }
 
+    /** Scrapes one entry again, without re-scraping the library around it. */
+    fun refreshMetadata(item: MediaItemDto) = run {
+        notify("正在重新刮削「${item.name}」…")
+        val updated = library.refreshItem(item.id, links)
+        fun List<MediaItemDto>.withFresh() = map { if (it.id == item.id) updated else it }
+        libraryItems = libraryItems.withFresh()
+        searchResults = searchResults.withFresh()
+        if (detailItem?.id == item.id) loadDetail(item.id) else refreshHome()
+        notify("已重新刮削：${updated.name}")
+    }
+
     fun toggleFavorite(item: MediaItemDto) = run {
         library.setFavorite(item.id, !item.userData.favorite)
         refreshAfterWatchChange(item.id)

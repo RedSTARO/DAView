@@ -338,7 +338,11 @@ private fun ColumnScope.HeroTitle(item: MediaItemDto, openSeries: (() -> Unit)?)
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        item.year?.let { Chip(it.toString()) }
+        // The premiere date where there is one, the year otherwise. All three
+        // scrapers fetch the date and store it; nothing ever showed it, and the
+        // app had no date formatting at all.
+        formatDate(item.premiereDate)?.let { Chip(it) } ?: item.year?.let { Chip(it.toString()) }
+        item.officialRating?.takeIf { it.isNotBlank() }?.let { Chip(it) }
         item.runtimeMs?.let { Chip(formatDuration(it)) }
         item.communityRating?.let { Chip("★ ${(it * 10).toInt() / 10.0}") }
         item.childCount?.takeIf { item.kind == ItemKind.SERIES }?.let { Chip("$it 季") }

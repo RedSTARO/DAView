@@ -144,6 +144,20 @@ class MediaFacade(private val context: ServerContext) {
         context.scans.submit(library, mode)
     }
 
+    /**
+     * Scrapes one item again.
+     *
+     * A fallback match writes scraped_at, and the "只刮削未刮削的" pass keys off
+     * exactly that — so an entry that landed on the wrong title could only be
+     * revisited by re-scraping the whole library, which is minutes to hours of
+     * round trips for one wrong poster.
+     */
+    suspend fun refreshItem(id: String, links: AssetLinks): MediaItemDto = io {
+        val item = context.repository.item(id) ?: notFound("条目不存在")
+        context.metadata.enrichItem(item, context.providerOrderFor(item), context.scraperConfigFor(item))
+        (context.repository.item(id) ?: item).withAssetUrls(links)
+    }
+
     suspend fun scanStatus(): List<ScanProgressDto> = io { context.scans.status() }
 
     suspend fun cancelScan(libraryId: String) = io { context.scans.cancel(libraryId) }
