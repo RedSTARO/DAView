@@ -293,7 +293,14 @@ data class PlaybackInfoDto(
     /** Absolute URLs for external subtitle files, keyed by stream index. */
     val subtitleUrls: Map<Int, String> = emptyMap(),
     val container: String? = null,
-    val runtimeMs: Long? = null
+    val runtimeMs: Long? = null,
+    /**
+     * The episode that follows this one in its run, if there is one. It travels
+     * with the session so a player reaching the end can go straight on instead
+     * of dropping the viewer back on a detail page to find it by hand.
+     */
+    val nextItemId: String? = null,
+    val nextItemName: String? = null
 )
 
 @Serializable

@@ -83,10 +83,12 @@ private enum class Ending { FINISHED, ABANDONED }
 actual fun InternalPlayer(
     info: PlaybackInfoDto,
     onProgress: (positionMs: Long, paused: Boolean, audioIndex: Int?, subtitleIndex: Int?) -> Unit,
-    onClose: (positionMs: Long) -> Unit
+    onClose: (positionMs: Long) -> Unit,
+    onEnded: (positionMs: Long) -> Unit
 ) {
     val latestOnProgress by rememberUpdatedState(onProgress)
     val latestOnClose by rememberUpdatedState(onClose)
+    val latestOnEnded by rememberUpdatedState(onEnded)
 
     val canvas = remember {
         Canvas().apply {
@@ -256,6 +258,13 @@ actual fun InternalPlayer(
             ?: active?.lastPosition
             ?: info.runtimeMs.takeIf { reason == Ending.FINISHED }
             ?: info.startPositionMs
+
+        // A file that ran out is the one case where the next episode is what
+        // the viewer wants. Abandoning it is not, so only FINISHED plays on.
+        if (reason == Ending.FINISHED) {
+            latestOnEnded(position)
+            return@LaunchedEffect
+        }
         finish(position)
     }
 

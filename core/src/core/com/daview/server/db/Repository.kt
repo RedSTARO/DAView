@@ -804,6 +804,55 @@ class Repository(private val db: Database) {
             .useQuery { if (it.next()) readItem(it) else null }
     }
 
+    /**
+     * The episode after this one in its own run: same series, ordered the way
+     * the series page orders it, with specials after the regular seasons.
+     *
+     * The current episode's place in that order is worked out here rather than
+     * in SQL — a row-value comparison would do it in one statement, but this
+     * runs on whatever SQLite the Android device shipped.
+     */
+    fun episodeAfter(itemId: String): MediaItemDto? = db.read { connection ->
+        val current = item(itemId) ?: return@read null
+        val seriesId = current.seriesId ?: return@read null
+        val special = if (current.parentIndexNumber == 0) 1 else 0
+        val season = current.parentIndexNumber ?: 0
+        val episode = current.indexNumber ?: 99999
+
+        connection.statement(
+            """
+            $SELECT_ITEM
+            WHERE i.kind = 'EPISODE' AND i.merged_into IS NULL
+              AND i.series_id = ? AND i.id <> ?
+              AND (
+                ${specialsLast("i")} > ?
+                OR (
+                    ${specialsLast("i")} = ?
+                    AND (
+                        COALESCE(i.parent_index_number, 0) > ?
+                        OR (
+                            COALESCE(i.parent_index_number, 0) = ?
+                            AND COALESCE(i.index_number, 99999) > ?
+                        )
+                    )
+                )
+              )
+            ORDER BY ${specialsLast("i")},
+                     COALESCE(i.parent_index_number, 0),
+                     COALESCE(i.index_number, 99999)
+            LIMIT 1
+            """.trimIndent()
+        ).apply {
+            setString(1, seriesId)
+            setString(2, itemId)
+            setInt(3, special)
+            setInt(4, special)
+            setInt(5, season)
+            setInt(6, season)
+            setInt(7, episode)
+        }.useQuery { if (it.next()) readItem(it) else null }
+    }
+
     fun episodeIdsUnder(itemId: String): List<String> = db.read { connection ->
         connection.statement(
             "SELECT id FROM items WHERE kind = 'EPISODE' AND (series_id = ? OR parent_id = ?)"

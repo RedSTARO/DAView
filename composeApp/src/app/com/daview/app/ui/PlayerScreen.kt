@@ -51,6 +51,16 @@ fun PlayerScreen(state: AppState, playback: PlaybackController) {
             onClose = { position ->
                 playback.stop(position)
                 state.back()
+            },
+            // Reaching the end of a file is a different thing from being closed:
+            // it is the one moment where going on to the next episode is what
+            // the viewer wants, and it used to drop them back on a detail page
+            // to find that episode by hand, once every twenty minutes.
+            onEnded = { position ->
+                if (!playback.playNextIfAny()) {
+                    playback.stop(position)
+                    state.back()
+                }
             }
         )
     } else {

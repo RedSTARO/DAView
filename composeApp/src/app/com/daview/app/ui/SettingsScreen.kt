@@ -445,6 +445,7 @@ private fun ClientSection(state: AppState) {
         SectionTitle("客户端")
         Spacer(Modifier.height(8.dp))
         SwitchRow("深色主题", state.darkTheme) { state.setTheme(it) }
+        SwitchRow("播完自动播下一集", state.autoPlayNext) { state.setAutoPlay(it) }
         Spacer(Modifier.height(8.dp))
         ImageCacheRow(state)
         Spacer(Modifier.height(8.dp))

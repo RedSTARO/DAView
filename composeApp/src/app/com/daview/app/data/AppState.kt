@@ -100,6 +100,20 @@ class AppState(private val scope: CoroutineScope) {
     var scanStatus by mutableStateOf<List<ScanProgressDto>>(emptyList())
     var darkTheme by mutableStateOf(settings.getString(KEY_THEME) != "light")
 
+    /**
+     * Whether the end of an episode rolls straight into the next one. On by
+     * default: an evening of a series otherwise meant repeating "close the
+     * player, find the show, find the episode, press play" once every twenty
+     * minutes.
+     */
+    var autoPlayNext by mutableStateOf(settings.getString(KEY_AUTOPLAY) != "0")
+        private set
+
+    fun setAutoPlay(value: Boolean) {
+        autoPlayNext = value
+        settings.putString(KEY_AUTOPLAY, if (value) "1" else "0")
+    }
+
     var libraryItems by mutableStateOf<List<MediaItemDto>>(emptyList())
 
     /**
@@ -562,6 +576,7 @@ class AppState(private val scope: CoroutineScope) {
         val DESCENDING_BY_DEFAULT = setOf("year", "added", "rating", "played")
 
         const val KEY_THEME = "theme"
+        const val KEY_AUTOPLAY = "player.autoPlayNext"
         const val KEY_SORT = "library.sort"
         const val KEY_SORT_DESC = "library.sortDescending"
     }

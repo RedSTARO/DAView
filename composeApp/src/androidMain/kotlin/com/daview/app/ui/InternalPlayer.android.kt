@@ -71,10 +71,12 @@ import kotlinx.coroutines.delay
 actual fun InternalPlayer(
     info: PlaybackInfoDto,
     onProgress: (positionMs: Long, paused: Boolean, audioIndex: Int?, subtitleIndex: Int?) -> Unit,
-    onClose: (positionMs: Long) -> Unit
+    onClose: (positionMs: Long) -> Unit,
+    onEnded: (positionMs: Long) -> Unit
 ) {
     val context = LocalContext.current
     val latestOnProgress by rememberUpdatedState(onProgress)
+    val latestOnEnded by rememberUpdatedState(onEnded)
     var audioMenu by remember { mutableStateOf(false) }
     var subtitleMenu by remember { mutableStateOf(false) }
     var selectedAudio by remember { mutableStateOf(info.audioStreamIndex) }
@@ -135,6 +137,10 @@ actual fun InternalPlayer(
                 override fun onPlayerError(error: PlaybackException) {
                     android.util.Log.e("DAView", "playback failed", error)
                     playbackError = "${error.errorCodeName}: ${error.message ?: "播放失败"}"
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_ENDED) latestOnEnded(duration)
                 }
             })
             prepare()

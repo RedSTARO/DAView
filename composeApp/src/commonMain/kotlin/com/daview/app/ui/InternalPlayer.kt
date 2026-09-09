@@ -11,5 +11,11 @@ import com.daview.shared.model.PlaybackInfoDto
 expect fun InternalPlayer(
     info: PlaybackInfoDto,
     onProgress: (positionMs: Long, paused: Boolean, audioIndex: Int?, subtitleIndex: Int?) -> Unit,
-    onClose: (positionMs: Long) -> Unit
+    onClose: (positionMs: Long) -> Unit,
+    /**
+     * The file played to its end, as opposed to the screen being left. The
+     * position is passed so the session can still be closed at the right place
+     * when there is nothing to play next.
+     */
+    onEnded: (positionMs: Long) -> Unit
 )

@@ -370,6 +370,11 @@ class MediaFacade(private val context: ServerContext) {
         } else null
         val proxy = request.trackThroughProxy && context.config.trackExternalPlayers
 
+        // Only episodes have a successor; a film has nothing to follow it.
+        val next = if (item.kind == ItemKind.EPISODE) {
+            context.repository.episodeAfter(item.id)
+        } else null
+
         PlaybackInfoDto(
             sessionId = session.id,
             item = item.withAssetUrls(links),
@@ -388,7 +393,11 @@ class MediaFacade(private val context: ServerContext) {
                     stream.index to (subtitleDirect ?: links.subtitle(item.id, stream.index, session.id))
                 },
             container = mediaPath.substringAfterLast('.'),
-            runtimeMs = item.runtimeMs
+            runtimeMs = item.runtimeMs,
+            // Carried with the session so a player that reaches the end can go
+            // straight on. Only for episodes: a film has nothing to follow it.
+            nextItemId = next?.id,
+            nextItemName = next?.let { it.episodeLabel?.plus(" ")?.plus(it.name) ?: it.name }
         )
     }
 

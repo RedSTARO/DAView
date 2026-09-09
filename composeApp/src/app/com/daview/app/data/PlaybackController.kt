@@ -43,7 +43,12 @@ class PlaybackController(
 
     private var handle: ExternalPlaybackHandle? = null
 
-    fun playInternal(item: MediaItemDto) {
+    /**
+     * [replaceScreen] is for rolling from one episode into the next: the player
+     * screen is already on top of the stack, so pushing another would mean the
+     * back arrow walked out through every episode watched that evening.
+     */
+    fun playInternal(item: MediaItemDto, replaceScreen: Boolean = false) {
         scope.launch {
             starting = true
             error = null
@@ -66,7 +71,7 @@ class PlaybackController(
                     state.links
                 )
                 info = playback
-                state.navigate(Screen.Player(item.id))
+                if (!replaceScreen) state.navigate(Screen.Player(item.id))
             } catch (e: Throwable) {
                 error = e.message ?: "无法开始播放"
             } finally {
@@ -171,6 +176,31 @@ class PlaybackController(
                 )
             }
         }
+    }
+
+    /**
+     * Rolls into the episode the session named as next.
+     *
+     * Returns false when there is nothing to roll into, which is what tells the
+     * caller to close the player rather than sit on a finished file.
+     */
+    fun playNextIfAny(): Boolean {
+        val nextId = info?.nextItemId ?: return false
+        if (!state.autoPlayNext) return false
+        scope.launch {
+            val current = info
+            runCatching {
+                current?.let { state.library.stopPlayback(PlaybackStopRequest(it.sessionId, -1)) }
+            }
+            val item = runCatching { state.library.item(nextId, state.links) }.getOrNull()
+            if (item == null) {
+                info = null
+                state.back()
+                return@launch
+            }
+            playInternal(item, replaceScreen = true)
+        }
+        return true
     }
 
     fun stop(positionMs: Long) {
