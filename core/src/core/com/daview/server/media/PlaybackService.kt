@@ -258,6 +258,19 @@ class PlaybackService(
 
     fun activeSessions(): List<SessionStateDto> = sessions.values.map { it.toDto() }
 
+    /**
+     * Says a session is still wanted, even though no bytes have been asked for.
+     *
+     * An external player that is paused stops reading, and after the idle
+     * timeout the session was retired and the local pipe closed — so coming back
+     * from a five-minute pause and touching the seek bar found nothing serving,
+     * and the rest of the film recorded no progress at all. The desktop knows
+     * the player process is alive, so it says so.
+     */
+    fun keepAlive(sessionId: String) {
+        sessions[sessionId]?.lastActivity = System.currentTimeMillis()
+    }
+
     private fun Session.toDto() = SessionStateDto(
         sessionId = id,
         itemId = itemId,

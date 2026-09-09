@@ -418,6 +418,12 @@ class MediaFacade(private val context: ServerContext) {
 
     suspend fun sessions(): List<SessionStateDto> = io { context.playback.activeSessions() }
 
+    /** Keeps a session from being retired while its player is merely paused. */
+    suspend fun keepSessionAlive(sessionId: String) = io { context.playback.keepAlive(sessionId) }
+
+    /** Whether anything is playing, so a window knows not to close silently. */
+    suspend fun hasActiveSessions(): Boolean = io { context.playback.activeSessions().isNotEmpty() }
+
     // ------------------------------------------------------------ sync
 
     suspend fun syncSettings(result: SyncResultDto? = null) = io {

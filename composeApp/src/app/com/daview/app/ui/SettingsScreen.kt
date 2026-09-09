@@ -70,6 +70,7 @@ import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
 import com.daview.app.data.Screen
 import com.daview.app.platform.PlatformInfo
+import com.daview.app.platform.availableExternalPlayers
 import com.daview.app.platform.pickTextFile
 import com.daview.app.platform.saveTextFile
 import com.daview.server.api.BackupOptions
@@ -449,6 +450,8 @@ private fun ClientSection(state: AppState) {
         SwitchRow("深色主题", state.darkTheme) { state.setTheme(it) }
         SwitchRow("播完自动播下一集", state.autoPlayNext) { state.setAutoPlay(it) }
         Spacer(Modifier.height(8.dp))
+        DefaultPlayerRow(state)
+        Spacer(Modifier.height(8.dp))
         ImageCacheRow(state)
         Spacer(Modifier.height(8.dp))
         Text(
@@ -808,6 +811,47 @@ internal fun scanPhaseLabel(phase: String): String = when (phase) {
     "cancelled" -> "已取消"
     "error" -> "出错"
     else -> phase
+}
+
+/**
+ * Which player the plain play button should use.
+ *
+ * The button used to take the first entry of a hardcoded detection order, so
+ * having both PotPlayer and mpv installed meant PotPlayer every time, and the
+ * only way round it was the context menu — once per episode.
+ */
+@Composable
+private fun DefaultPlayerRow(state: AppState) {
+    val players = remember { availableExternalPlayers().filter { it.executablePath != null || it.viaUrlScheme } }
+    if (players.isEmpty()) return
+    var open by remember { mutableStateOf(false) }
+    val chosen = players.firstOrNull { it.id == state.preferredPlayerId }
+
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("默认外部播放器")
+            Text(
+                chosen?.label ?: "自动（按检测顺序）",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Box {
+            TextButton(onClick = { open = true }) { Text("更改") }
+            DropdownMenu(open, onDismissRequest = { open = false }) {
+                DropdownMenuItem(
+                    text = { Text("自动（按检测顺序）") },
+                    onClick = { open = false; state.setPreferredPlayer("") }
+                )
+                players.forEach { player ->
+                    DropdownMenuItem(
+                        text = { Text(player.label) },
+                        onClick = { open = false; state.setPreferredPlayer(player.id) }
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** What the artwork cache is holding, and a way to be rid of it. */

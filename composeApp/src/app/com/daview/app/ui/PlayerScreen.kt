@@ -42,7 +42,10 @@ fun PlayerScreen(state: AppState, playback: PlaybackController) {
         return
     }
 
-    if (PlatformInfo.hasInternalPlayer) {
+    // Which player is running, not which one the platform has: with libmpv
+    // present the desktop can do both, and choosing "用 PotPlayer 播放" used to
+    // render the in-app player over a film playing somewhere else entirely.
+    if (playback.externalPlayerLabel == null && PlatformInfo.hasInternalPlayer) {
         InternalPlayer(
             info = info,
             onProgress = { position, paused, audio, subtitle ->
@@ -144,8 +147,8 @@ fun ExternalPlaybackPanel(state: AppState, playback: PlaybackController) {
 
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    "播放地址指向 DAView 服务器，服务器再跳转到存储直链；" +
-                        "保持这个页面打开，进度会自动同步到所有客户端。",
+                    "播放地址是本机临时地址（127.0.0.1），只在这次播放期间有效，别的设备用不了。" +
+                        "进度先记在本机；开启「跨端同步」后会按设定的间隔写到 WebDAV。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

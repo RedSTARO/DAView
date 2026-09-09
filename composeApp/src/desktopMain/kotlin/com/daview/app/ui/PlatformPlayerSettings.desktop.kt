@@ -30,6 +30,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.daview.app.platform.PlatformInfo
 import com.daview.app.player.MpvNative
+import com.daview.app.platform.customPlayerPath
+import com.daview.app.platform.setCustomPlayerPath
 import com.daview.app.player.PlayerPreferences
 import com.daview.app.player.VideoAdapter
 import com.daview.app.player.VideoEnhancement
@@ -112,6 +114,33 @@ actual fun PlatformPlayerSettings() {
                     PlayerPreferences.libmpvPath = null
                     refresh++
                 }) { Text("恢复默认位置") }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        Text("外部播放器", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            // The entry was always in the menu and always failed: nothing in the
+            // app ever wrote the path it reads.
+            customPlayerPath()?.let { "自定义播放器：$it" }
+                ?: "除了自动探测到的 PotPlayer / VLC / mpv，也可以指定任意一个播放器程序。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = {
+                pickExecutable()?.let {
+                    setCustomPlayerPath(it)
+                    refresh++
+                }
+            }) { Text("指定播放器程序…") }
+            if (customPlayerPath() != null) {
+                TextButton(onClick = {
+                    setCustomPlayerPath(null)
+                    refresh++
+                }) { Text("清除") }
             }
         }
 
@@ -270,6 +299,15 @@ actual fun PlatformPlayerSettings() {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
+}
+
+/** The platform chooser, for picking any player executable. */
+private fun pickExecutable(): String? {
+    val dialog = FileDialog(null as Frame?, "选择播放器程序", FileDialog.LOAD).apply {
+        isVisible = true
+    }
+    val file = dialog.file ?: return null
+    return File(dialog.directory ?: "", file).absolutePath
 }
 
 /** The platform chooser, filtered to shared libraries. */

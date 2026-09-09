@@ -114,6 +114,21 @@ class AppState(private val scope: CoroutineScope) {
         settings.putString(KEY_AUTOPLAY, if (value) "1" else "0")
     }
 
+    /**
+     * Which player the plain play button uses, by id. Blank means "whichever
+     * comes first", which is what it always did — an order written into the
+     * detection list, so someone with both PotPlayer and mpv installed got
+     * PotPlayer every time and had to go through the context menu to say
+     * otherwise, once per episode.
+     */
+    var preferredPlayerId by mutableStateOf(settings.getString(KEY_PLAYER).orEmpty())
+        private set
+
+    fun setPreferredPlayer(id: String) {
+        preferredPlayerId = id
+        settings.putString(KEY_PLAYER, id.ifBlank { null })
+    }
+
     var libraryItems by mutableStateOf<List<MediaItemDto>>(emptyList())
 
     /**
@@ -577,6 +592,7 @@ class AppState(private val scope: CoroutineScope) {
 
         const val KEY_THEME = "theme"
         const val KEY_AUTOPLAY = "player.autoPlayNext"
+        const val KEY_PLAYER = "player.preferred"
         const val KEY_SORT = "library.sort"
         const val KEY_SORT_DESC = "library.sortDescending"
     }

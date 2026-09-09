@@ -115,6 +115,12 @@ class PlaybackController(
                 )
                 info = playback
                 externalPlayerLabel = player.label
+                // The panel that shows what is playing, where it has got to and
+                // how to stop it lives on the player screen — and nothing ever
+                // went there for an external player, so every one of those
+                // controls was unreachable and the app just sat on the page it
+                // was on while something else took over the screen.
+                state.navigate(Screen.Player(item.id))
 
                 val subtitleUrl = playback.subtitleStreamIndex
                     ?.let { playback.subtitleUrls[it] }
@@ -163,7 +169,15 @@ class PlaybackController(
     private fun followExternalSession(sessionId: String) {
         scope.launch {
             val watcher = handle
+            ActivePlayback.externalRunning = true
             while (isActive) {
+                // While the process is alive the session is wanted, whether
+                // or not the player is currently reading bytes: pausing for
+                // longer than the idle timeout used to retire it and close the
+                // pipe underneath a film that was still open.
+                if (watcher == null || !watcher.canObserveExit || watcher.isRunning()) {
+                    runCatching { state.library.keepSessionAlive(sessionId) }
+                }
                 val session = runCatching { state.library.sessions() }.getOrNull().orEmpty()
                     .firstOrNull { it.sessionId == sessionId }
                 externalSession = session
@@ -176,9 +190,13 @@ class PlaybackController(
                 if (session == null && watcher?.canObserveExit != true) break
                 delay(3000)
             }
+            ActivePlayback.externalRunning = false
             externalSession = null
             externalPlayerLabel = null
             handle = null
+            info = null
+            // The player has gone; the panel describing it should go too.
+            if (state.current is Screen.Player) state.back()
             state.refreshHome()
             state.detailItem?.let { state.loadDetail(it.id) }
         }
@@ -251,7 +269,9 @@ class PlaybackController(
             playInternal(item, startPositionMs = startPositionMs)
             return
         }
-        val player = externalPlayers.firstOrNull { it.executablePath != null || it.viaUrlScheme }
+        val usable = externalPlayers.filter { it.executablePath != null || it.viaUrlScheme }
+        // The remembered choice first, then whatever detection turned up.
+        val player = usable.firstOrNull { it.id == state.preferredPlayerId } ?: usable.firstOrNull()
         if (player == null) {
             val message = "没有可用的播放器：内置播放器不可用，也没有找到 PotPlayer / VLC / mpv。" +
                 "可以在设置里指定 libmpv 或自定义播放器。"

@@ -1,6 +1,11 @@
 package com.daview.app
 
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -13,6 +18,7 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.daview.app.data.ActivePlayback
 import com.daview.app.platform.SettingsStore
 import com.daview.app.platform.createSettingsStore
 import com.daview.app.ui.DaViewIcon
@@ -47,11 +53,20 @@ fun main() {
                 if (fullscreen.value) WindowPlacement.Fullscreen else WindowPlacement.Floating
         }
 
+        // Bytes for an external player come from a socket inside this process,
+        // so quitting kills the film that player is showing. Asking first is the
+        // least that can be done about it.
+        var confirmClose by remember { mutableStateOf(false) }
+
+        fun quit() {
+            store.remember(windowState)
+            exitApplication()
+            exitProcess(0)
+        }
+
         Window(
             onCloseRequest = {
-                store.remember(windowState)
-                exitApplication()
-                exitProcess(0)
+                if (ActivePlayback.externalRunning) confirmClose = true else quit()
             },
             title = "DAView",
             icon = DaViewIcon,
@@ -65,6 +80,23 @@ fun main() {
 
             CompositionLocalProvider(LocalWindowFullscreen provides fullscreen) {
                 App()
+            }
+
+            if (confirmClose) {
+                AlertDialog(
+                    onDismissRequest = { confirmClose = false },
+                    title = { Text("还有正在播放的内容") },
+                    text = {
+                        Text(
+                            "外部播放器的画面是从 DAView 取的字节，现在退出会让它当场断流。" +
+                                "已经看到的进度已经记下了。"
+                        )
+                    },
+                    confirmButton = { TextButton(onClick = { quit() }) { Text("仍然退出") } },
+                    dismissButton = {
+                        TextButton(onClick = { confirmClose = false }) { Text("取消") }
+                    }
+                )
             }
         }
     }

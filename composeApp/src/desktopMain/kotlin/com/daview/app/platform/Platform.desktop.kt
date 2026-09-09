@@ -67,8 +67,11 @@ actual fun availableExternalPlayers(): List<ExternalPlayerInfo> {
         val path = paths.firstOrNull { File(it).canExecute() } ?: return@mapNotNull null
         ExternalPlayerInfo(id, label, path)
     }
-    // A custom path always shows up so the user can point at anything.
-    return found + ExternalPlayerInfo("custom", "自定义播放器", customPlayerPath())
+    // Only once it points somewhere. It used to be listed unconditionally, with
+    // nothing in the app able to set the path it reads, so it was a menu entry
+    // that failed every single time it was chosen.
+    val custom = customPlayerPath()?.takeIf { File(it).canExecute() }
+    return found + listOfNotNull(custom?.let { ExternalPlayerInfo("custom", "自定义播放器", it) })
 }
 
 fun customPlayerPath(): String? =
