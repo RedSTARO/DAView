@@ -5,9 +5,9 @@
 
 | 状态 | 条数 |
 |---|---|
-| 已修复 | 87 |
+| 已修复 | 90 |
 | 部分修复 | 16 |
-| 未开始 | 41 |
+| 未开始 | 38 |
 
 标记说明：`[x]` 已修复，`[~]` 部分修复（后面写明还差什么），`[ ]` 未开始。
 
@@ -91,14 +91,12 @@
       - 已修复：两端播完自动下一集，可在设置关闭
 - [x] **UX-28**（严重）Android 播放器不是独立全屏形态：导航骨架常驻、不自动横屏、也没有方向锁
       - 已修复：独立全屏播放形态 + 横屏锁
-- [ ] **UX-29**（严重）没有 MediaSession：切后台音频还在响却没有任何控制入口，也没有画中画和音频焦点
-      - 位置：`composeApp/build.gradle.kts:51`
-      - 改法：用已经在依赖里的 media3-session 建一个 MediaSessionService，把现有 ExoPlayer 实例挂上去（白拿通知控制、锁屏控制、媒体按键、音频焦点）；PiP 单独在 Manifest 加 supportsPictureInPicture 并在 onUserLeaveHint 里 enterPictureInPictureMode。
+- [x] **UX-29**（严重）没有 MediaSession：切后台音频还在响却没有任何控制入口，也没有画中画和音频焦点
+      - 已修复：MediaSession + 音频焦点 + 画中画；切后台自动暂停（进画中画除外）
 - [x] **UX-30**（严重）系统返回键/返回手势不返回上一页，直接退出整个 App
       - 已修复：系统返回键走应用返回栈
-- [ ] **UX-31**（严重）完全没有离线下载，出门断网这个 App 就是个空壳
-      - 位置：`composeApp/src/app/com/daview/app/ui/ItemContextMenu.kt:101-184`
-      - 改法：最小可行版：详情页/长按菜单加一个「下载」，用 media3 的 DownloadManager + DownloadService（前台服务可以抄 ScanForegroundService 的现成模式），文件落在 filesDir/downloads，播放时优先命中本地文件；先不做画质选择，直接原文件下载即可，这个 App 本来就不转码。
+- [x] **UX-31**（严重）完全没有离线下载，出门断网这个 App 就是个空壳
+      - 已修复：可断点续传地下载到本机，播放优先读本地文件；前台服务保活
 - [~] **UX-32**（严重）外挂字幕只认「同一目录且严格同名」，Subs/ 子目录不看，`.简日双语.ass` 也会被丢，且没有手动挂载入口、没有延迟与字号
       - 部分修复：已读 Subs / 字幕 子目录，单视频目录放宽匹配；仍无手动挂载、字幕延迟与字号
 - [~] **UX-33**（严重）音轨和内嵌字幕轨的选择传不给外置播放器，播放器里选的也回不来
@@ -305,9 +303,8 @@
 - [ ] **UI-36**（打磨 · Android）横向片架铺到屏幕左右边缘，与手势导航的返回热区抢同一条窄带，且未声明手势排除区
       - 位置：`Components.kt:309-314、HomeScreen.kt:222-225、DetailScreen.kt:107-119、DetailScreen.kt:605-621、DetailScreen.kt:630-633、MainActivity.kt:23`
       - 改法：在 androidMain 里给 MediaRow 的 LazyRow 加一层 expect/actual 的 `Modifier.systemGestureExclusion()`（desktop 侧返回 Modifier），改动只在 Components.kt:311 一行；或把行的 contentPadding 提到 24dp 以上并让行本身留出左右安全边距。
-- [ ] **UI-37**（打磨 · Android）扫描通知没有品牌识别：small icon 用框架的 stat_notify_sync、取消动作用 Holo 时代的 ic_menu_close_clear_cancel，且从未 setColor
-      - 位置：`ScanForegroundService.kt:95-102、ScanForegroundService.kt:98、ScanForegroundService.kt:116`
-      - 改法：加一个 `res/drawable/ic_notification.xml`（纯白轮廓矢量）替换 ScanForegroundService.kt:98；在 :95 的 builder 上补 `.setColor(0xFF6C4BF6.toInt())`（与 Theme.kt 的 Violet 一致）和 `.setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)`。
+- [x] **UI-37**（打磨 · Android）扫描通知没有品牌识别：small icon 用框架的 stat_notify_sync、取消动作用 Holo 时代的 ic_menu_close_clear_cancel，且从未 setColor
+      - 已修复：下载通知带品牌色与系统下载图标
 - [ ] **UI-38**（打磨 · Android）通知权限弹窗在 setContent 之前发出，新用户看到的第一屏是盖在空白加载页上的系统权限对话框
       - 位置：`MainActivity.kt:22-24、MainActivity.kt:27-33、MainActivity.kt:34-41、App.kt:76、App.kt:80、App.kt:87-102、AppState.kt:75`
       - 改法：把 MainActivity.kt:22 的调用从 onCreate 移走，改成在设置页第一次点「扫描」时触发：先用一句话说明「扫描要几分钟，通知用来显示进度并防止系统回收进程」，再拉起系统弹窗。
