@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.focusable
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
@@ -307,32 +310,72 @@ actual fun InternalPlayer(
                 }
             }
     ) {
+        var audioMenu by remember(info.sessionId) { mutableStateOf(false) }
+        var subtitleMenu by remember(info.sessionId) { mutableStateOf(false) }
+
+        val audioStreams = info.item.mediaStreams.filter { it.type == StreamType.AUDIO }
+        val subtitleStreams = info.item.mediaStreams.filter { it.type == StreamType.SUBTITLE }
+
+        fun chooseAudio(stream: MediaStreamDto) {
+            selectedAudio = stream.index
+            TrackMapping.audioId(info.item.mediaStreams, stream.index)
+                ?.let { player?.selectAudio(it) }
+            player?.positionMs?.let { latestOnProgress(it, false, selectedAudio, selectedSubtitle) }
+        }
+
+        fun chooseSubtitle(stream: MediaStreamDto?) {
+            selectedSubtitle = stream?.index
+            if (stream == null) {
+                player?.disableSubtitle()
+            } else {
+                TrackMapping.subtitleId(info.item.mediaStreams, stream.index)
+                    ?.let { player?.selectSubtitle(it) }
+            }
+            player?.positionMs?.let { latestOnProgress(it, false, selectedAudio, selectedSubtitle) }
+        }
+
         PlayerBar(
             info = info,
             selectedAudio = selectedAudio,
             selectedSubtitle = selectedSubtitle,
+            audioMenu = audioMenu,
+            subtitleMenu = subtitleMenu,
+            onAudioMenu = { audioMenu = it; if (it) subtitleMenu = false },
+            onSubtitleMenu = { subtitleMenu = it; if (it) audioMenu = false },
             superResolution = superResolution,
             videoHdr = videoHdr,
             adapterInUse = adapterInUse,
-            onAudio = { stream ->
-                selectedAudio = stream.index
-                TrackMapping.audioId(info.item.mediaStreams, stream.index)
-                    ?.let { player?.selectAudio(it) }
-                player?.positionMs?.let { latestOnProgress(it, false, selectedAudio, selectedSubtitle) }
-            },
-            onSubtitle = { stream ->
-                selectedSubtitle = stream?.index
-                if (stream == null) {
-                    player?.disableSubtitle()
-                } else {
-                    TrackMapping.subtitleId(info.item.mediaStreams, stream.index)
-                        ?.let { player?.selectSubtitle(it) }
-                }
-                player?.positionMs?.let { latestOnProgress(it, false, selectedAudio, selectedSubtitle) }
-            },
+            onAudio = { chooseAudio(it) },
+            onSubtitle = { chooseSubtitle(it) },
             fullscreen = fullscreen?.value ?: false,
             onToggleFullscreen = { fullscreen?.let { it.value = !it.value } },
             onClose = { finish(player?.positionMs ?: player?.lastPosition ?: info.startPositionMs) }
+        )
+
+        // mpv draws into a native child window parented to a heavyweight AWT
+        // canvas, and a native window is always on top of whatever Compose
+        // paints in the same window — so a DropdownMenu opening over the video
+        // was invisible and unclickable. The list is drawn above the picture
+        // instead, pushing it down, where it is simply a part of the layout.
+        TrackPanel(
+            visible = audioMenu,
+            title = "音轨",
+            entries = audioStreams.map { it.index to it.displayTitle },
+            selected = selectedAudio,
+            onPick = { index ->
+                audioMenu = false
+                audioStreams.firstOrNull { it.index == index }?.let { chooseAudio(it) }
+            }
+        )
+        TrackPanel(
+            visible = subtitleMenu,
+            title = "字幕",
+            entries = listOf(null to "关闭字幕") + subtitleStreams.map { it.index to it.displayTitle },
+            selected = selectedSubtitle,
+            onPick = { index ->
+                subtitleMenu = false
+                chooseSubtitle(subtitleStreams.firstOrNull { it.index == index })
+            }
         )
 
         Box(Modifier.fillMaxSize().weight(1f)) {
@@ -380,6 +423,10 @@ private fun PlayerBar(
     info: PlaybackInfoDto,
     selectedAudio: Int?,
     selectedSubtitle: Int?,
+    audioMenu: Boolean,
+    subtitleMenu: Boolean,
+    onAudioMenu: (Boolean) -> Unit,
+    onSubtitleMenu: (Boolean) -> Unit,
     superResolution: EnhancementState,
     videoHdr: EnhancementState,
     adapterInUse: String?,
@@ -389,8 +436,6 @@ private fun PlayerBar(
     onToggleFullscreen: () -> Unit,
     onClose: () -> Unit
 ) {
-    var audioMenu by remember { mutableStateOf(false) }
-    var subtitleMenu by remember { mutableStateOf(false) }
     val audioStreams = info.item.mediaStreams.filter { it.type == StreamType.AUDIO }
     val subtitleStreams = info.item.mediaStreams.filter { it.type == StreamType.SUBTITLE }
 
@@ -429,37 +474,22 @@ private fun PlayerBar(
             EnhancementChip("RTX 超分", superResolution)
             EnhancementChip("RTX HDR", videoHdr)
 
-            Box {
-                // Icons rather than the track's own name: the name is unbounded
-                // and it is what pushed everything else out of the bar.
-                IconButton(onClick = { audioMenu = true }) {
-                    Icon(Icons.Filled.Audiotrack, contentDescription = "音轨")
-                }
-                DropdownMenu(audioMenu, onDismissRequest = { audioMenu = false }) {
-                    audioStreams.forEach { stream ->
-                        DropdownMenuItem(
-                            text = { Text(stream.displayTitle) },
-                            onClick = { audioMenu = false; onAudio(stream) }
-                        )
-                    }
-                }
+            // Icons rather than the track's own name: the name is unbounded
+            // and it is what pushed everything else out of the bar. These only
+            // toggle the panel below — see the note on the panel itself.
+            IconButton(onClick = { onAudioMenu(!audioMenu) }) {
+                Icon(
+                    Icons.Filled.Audiotrack,
+                    contentDescription = "音轨",
+                    tint = if (audioMenu) MaterialTheme.colorScheme.primary else Color.White
+                )
             }
-            Box {
-                IconButton(onClick = { subtitleMenu = true }) {
-                    Icon(Icons.Filled.ClosedCaption, contentDescription = "字幕")
-                }
-                DropdownMenu(subtitleMenu, onDismissRequest = { subtitleMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("关闭字幕") },
-                        onClick = { subtitleMenu = false; onSubtitle(null) }
-                    )
-                    subtitleStreams.forEach { stream ->
-                        DropdownMenuItem(
-                            text = { Text(stream.displayTitle) },
-                            onClick = { subtitleMenu = false; onSubtitle(stream) }
-                        )
-                    }
-                }
+            IconButton(onClick = { onSubtitleMenu(!subtitleMenu) }) {
+                Icon(
+                    Icons.Filled.ClosedCaption,
+                    contentDescription = "字幕",
+                    tint = if (subtitleMenu) MaterialTheme.colorScheme.primary else Color.White
+                )
             }
             IconButton(onClick = onToggleFullscreen) {
                 Icon(
@@ -469,6 +499,50 @@ private fun PlayerBar(
             }
             IconButton(onClick = onClose) {
                 Icon(Icons.Filled.Close, contentDescription = "结束播放")
+            }
+        }
+    }
+}
+
+/**
+ * A list of tracks, drawn in the layout rather than in a popup.
+ *
+ * Anything Compose puts over the video is behind mpv's own native child window,
+ * so this cannot float; it takes its own room and the picture moves down.
+ */
+@Composable
+private fun ColumnScope.TrackPanel(
+    visible: Boolean,
+    title: String,
+    entries: List<Pair<Int?, String>>,
+    selected: Int?,
+    onPick: (Int?) -> Unit
+) {
+    if (!visible || entries.isEmpty()) return
+    Surface(color = Color(0xFF1A1822), contentColor = Color.White) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.labelMedium,
+                color = Color.White.copy(alpha = 0.7f)
+            )
+            entries.forEach { (index, label) ->
+                val chosen = index == selected
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onPick(index) }
+                        .padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = if (chosen) MaterialTheme.colorScheme.primary else Color.Transparent
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
     }
