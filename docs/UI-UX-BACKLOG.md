@@ -5,9 +5,9 @@
 
 | 状态 | 条数 |
 |---|---|
-| 已修复 | 74 |
-| 部分修复 | 15 |
-| 未开始 | 55 |
+| 已修复 | 81 |
+| 部分修复 | 16 |
+| 未开始 | 47 |
 
 标记说明：`[x]` 已修复，`[~]` 部分修复（后面写明还差什么），`[ ]` 未开始。
 
@@ -109,9 +109,8 @@
       - 已修复：外部播放面板文案改成实际行为
 - [x] **UX-39**（严重）外置播放器一启动，界面就什么都不显示了——整块外部播放面板是不可达的死代码
       - 已修复：外部播放会进入播放页，整块面板可达
-- [ ] **UX-40**（严重）播放失败只有详情页看得到，从首页、媒体库、搜索页点播放失败是彻底静默的；启动过程也没有任何等待反馈
-      - 位置：`composeApp/src/app/com/daview/app/data/PlaybackController.kt:40-41`
-      - 改法：把 error 接到 AppState.toast（已有全局 snackbar，App.kt:118-123），任何页面都能看到；starting 为真时把播放按钮换成 loading 态。
+- [x] **UX-40**（严重）播放失败只有详情页看得到，从首页、媒体库、搜索页点播放失败是彻底静默的；启动过程也没有任何等待反馈
+      - 已修复：播放失败经全局提示，任何页面可见
 - [x] **UX-36**（打磨）没有「从头播放」：看过一半的片，播放键永远是「继续」
       - 已修复：菜单里的「从头播放」
 - [~] **UX-37**（打磨）Android 播放器没有任何手势，自绘的音轨/字幕按钮和标题常驻挡画面，还与 media3 自带字幕按钮形成两套入口
@@ -232,9 +231,8 @@
 
 ### 导航与信息架构
 
-- [ ] **UI-10**（严重）导航项是「入栈」而不是「切换 tab」：重复点当前 tab 也压一层，返回箭头点一次画面纹丝不动，栈没有上限
-      - 位置：`AppState.kt:124-127、AppState.kt:129-140、AppState.kt:37-38、App.kt:222-241、App.kt:256-280、App.kt:178`
-      - 改法：navigate 里加两条：目标与 current 相等时直接 return；顶级目的地（Home/Search/Settings）改走一个 switchTab()，先 popUpTo 到 Home 再 add，让栈深度恒定为 1 或 2。TopRow 的箭头条件从 `size <= 1` 改成「栈顶不是顶级目的地」。
+- [x] **UI-10**（严重）导航项是「入栈」而不是「切换 tab」：重复点当前 tab 也压一层，返回箭头点一次画面纹丝不动，栈没有上限
+      - 已修复：顶层目的地按 tab 切换，不再入栈
 - [x] **UI-11**（严重）进媒体库/详情/播放页后底栏三项同时熄灭，底栏不再指示当前位置；媒体库根本不是底栏目的地
       - 已修复：底栏有媒体库项并正确指示当前位置
 - [x] **UI-12**（严重）NavigationRail 是不滚动的 Column 且只设了最小宽：溢出的媒体库被静默压成 0 高度，长库名又把 rail 从 80dp 撑到约 150dp
@@ -248,12 +246,10 @@
       - 已修复：提示时长交给平台
 - [x] **UI-15**（严重）海报卡显式 indication = null：触摸端按下零反馈、桌面焦点零指示，而同屏的分集卡/设置行走的是默认涟漪
       - 已修复：恢复默认涟漪
-- [ ] **UI-16**（严重）详情页没有加载态：第一次进是整屏空白，之后进会先把上一个条目的整页端出来，连播放按钮都是活的
-      - 位置：`DetailScreen.kt:89、DetailScreen.kt:359-361、DetailScreen.kt:384、AppState.kt:36、AppState.kt:115、AppState.kt:124-127、AppState.kt:143、AppState.kt:268-286、App.kt:160-163`
-      - 改法：onEnter(Screen.Detail) 里先 `detailItem = null; detailChildren = emptyList(); detailEpisodes = emptyList()`（或把 screen.itemId 传给 DetailScreen，`detailItem?.id != screen.itemId` 一律按未加载处理），再把 DetailScreen.kt:89 的 `?: return` 换成 `?: run { LoadingPane(); return }`，把已有的 detailLoading 接上；数据未就绪时禁用播放按钮。
-- [ ] **UI-17**（严重）三个列表屏都没有错误态：媒体库读失败后永远转圈，2.6 秒后连错误都没了，也没有重试
-      - 位置：`AppState.kt:235-261、AppState.kt:197-207、AppState.kt:272、AppState.kt:293-296、LibraryScreen.kt:43、LibraryScreen.kt:47、LibraryScreen.kt:71、Components.kt:101-115、Components.kt:327-346、App.kt:123-128`
-      - 改法：给 AppState 加 `libraryError: String?`（详情、搜索同理），run() 的 catch 里除了 toast 再写进这个字段；LibraryScreen 的 when 里加一个错误分支，复用 EmptyState 并传一个「重试」按钮回调 `state.loadLibrary(libraryId)`。
+- [x] **UI-16**（严重）详情页没有加载态：第一次进是整屏空白，之后进会先把上一个条目的整页端出来，连播放按钮都是活的
+      - 已修复：详情页有加载态，且先清空上一个条目
+- [x] **UI-17**（严重）三个列表屏都没有错误态：媒体库读失败后永远转圈，2.6 秒后连错误都没了，也没有重试
+      - 已修复：媒体库读取失败留在屏幕上并可重试
 - [x] **UI-18**（严重）搜索无加载态：新一轮搜索的首个字符必然先闪 ≥250ms 的「没有匹配的结果」，且「正在查」与「查完为空」长得一模一样
       - 已修复：搜索有加载态，且会取消上一次查询
 - [ ] **UI-19**（严重）全应用唯一的页面转场是无方向的交叉溶解：进入与返回播放同一套动画，两屏叠加期约 110ms
@@ -279,9 +275,8 @@
 
 - [x] **UI-25**（阻断 · Android）系统栏图标明暗只认系统夜间模式、界面底色只认应用内开关：开箱默认组合（系统浅色 + App 深色）下状态栏图标 1.09:1，切主题时系统栏纹丝不动
       - 已修复：系统栏图标跟随应用主题
-- [ ] **UI-26**（严重）设置页库卡与详情页分集卡用色阶最低的 surfaceContainerLow，压在 background 上只有 1.05:1，18dp 圆角与卡片边界等于白画
-      - 位置：`SettingsScreen.kt:114-117、DetailScreen.kt:691-702、HomeScreen.kt:227-232、PlayerScreen.kt:72-76、App.kt:78-79、Theme.kt:38、Theme.kt:53-57`
-      - 改法：定一条容器阶梯并全局照做：页面上的内容卡一律 surfaceContainer 起步（1.10:1 仍偏弱，可把 background 压到 #0B0A10 或把 surfaceContainer 提到 #201D2A 做到 ≥1.3:1），强调项用 surfaceContainerHigh，弹层/面板用 surfaceContainerHighest；分集行如果想保持轻量就改成无卡片 + HorizontalDivider，而不是一张看不见的卡片。
+- [x] **UI-26**（严重）设置页库卡与详情页分集卡用色阶最低的 surfaceContainerLow，压在 background 上只有 1.05:1，18dp 圆角与卡片边界等于白画
+      - 已修复：卡片改用 surfaceContainerHigh，边界可见
 - [ ] **UI-27**（打磨）观看进度条用 secondary，而该角色在两套主题里明暗相反，EpisodeRow 的轨道还是全透明直接压在剧照上
       - 位置：`Components.kt:243-256、DetailScreen.kt:720-730、DetailScreen.kt:726、Theme.kt:28、Theme.kt:79、Theme.kt:64、Theme.kt:115`
       - 改法：两处的 `color` 从 `secondary` 换成 `secondaryFixedDim`（一行改动，两套主题都变成亮暖橙）；DetailScreen.kt:726 的 trackColor 补上和 PosterCard 一致的 `scrim.copy(alpha = 0.4f)`，让 fill 与 track 的对比不再取决于剧照。
@@ -306,9 +301,8 @@
 
 - [x] **UI-33**（阻断 · Android）开了 edge-to-edge 但全仓库零 inset 处理：内容从 y=8dp 起穿过状态栏，二级页返回箭头在 40dp 状态栏机型只露 4dp、48dp 机型完全消失
       - 已修复：状态栏 inset 由 TopRow 承担
-- [ ] **UI-34**（严重 · Android）edge-to-edge 让 adjustResize 失效而应用未接手 IME inset：设置页下半屏的密码 / API Key / 元数据语言输入框会被软键盘盖住
-      - 位置：`AndroidManifest.xml:24、MainActivity.kt:23、SettingsScreen.kt:78-81、SettingsScreen.kt:209-218、SettingsScreen.kt:246-264、App.kt:136、App.kt:142`
-      - 改法：给 App.kt:142（以及 :136）的 Column 加 `Modifier.imePadding()`，一处解决全部输入场景；或只改设置页——把 SettingsScreen.kt:80 的 contentPadding 底部改成 `48.dp + WindowInsets.ime.asPaddingValues().calculateBottomPadding()`。
+- [x] **UI-34**（严重 · Android）edge-to-edge 让 adjustResize 失效而应用未接手 IME inset：设置页下半屏的密码 / API Key / 元数据语言输入框会被软键盘盖住
+      - 已修复：设置页承接 IME inset
 - [x] **UI-35**（严重 · Android）应用根本没有图标资源：桌面、最近任务、Android 12+ 冷启动闪屏全是系统默认的通用图标
       - 已修复：自适应启动图标
 - [ ] **UI-36**（打磨 · Android）横向片架铺到屏幕左右边缘，与手势导航的返回热区抢同一条窄带，且未声明手势排除区
@@ -330,9 +324,8 @@
       - 改法：两件事各自独立见效：给 MediaRow 与分集行加 `Modifier.onPointerEvent(PointerEventType.Scroll)`，把 scrollDelta.y 转成对 rememberLazyListState 的 scrollBy；在行左右两端加 hover 时才出现的圆形箭头按钮（滚到头时隐藏对应一侧），每次滚一屏宽——两者都只需要把 LazyRow 的 state 提上来。
 - [x] **UI-41**（严重 · 桌面）右键菜单用 DropdownMenu 的 offset 当光标坐标，而 offset 的垂直基准是锚点底边——菜单落在光标下方整整一张海报的高度
       - 已修复：右键菜单落在光标处
-- [ ] **UI-42**（严重 · 桌面）桌面端一个快捷键、一条菜单栏都没有：Alt+← / Backspace 不返回、Ctrl+F 不跳搜索、F5 不刷新，唯一返回入口是左上角那个图标按钮
-      - 位置：`Main.kt:19-26、App.kt:186`
-      - 改法：在 Main.kt 的 Window 上挂 `onPreviewKeyEvent`：Alt+Left / Backspace → `state.back()`、Ctrl+F → `state.navigate(Screen.Search)`、F5 → 重新加载当前屏、F11 → 切 WindowState.placement。再配一条 MenuBar 把这些动作显式列出来，让快捷键可被发现。
+- [~] **UI-42**（严重 · 桌面）桌面端一个快捷键、一条菜单栏都没有：Alt+← / Backspace 不返回、Ctrl+F 不跳搜索、F5 不刷新，唯一返回入口是左上角那个图标按钮
+      - 部分修复：已加 Backspace / Ctrl+F / F5 / F11 / Esc；仍无菜单栏
 - [x] **UI-43**（严重 · 桌面）窗口大小、位置、最大化状态、所在显示器一概不记忆，每次启动都回到主屏左上角的 1360×900
       - 已修复：记住窗口尺寸
 - [x] **UI-44**（严重 · 桌面）没有任何窗口图标：标题栏、任务栏、Alt+Tab、安装后的开始菜单快捷方式全是 JDK 默认的咖啡杯
@@ -343,9 +336,8 @@
 
 ### 播放器界面
 
-- [ ] **UI-46**（阻断 · 桌面）桌面内置播放器的「音轨 / 字幕」下拉菜单整个落在 mpv 的 AWT 画布里，被原生子窗口盖住，看不见也点不到
-      - 位置：`InternalPlayer.desktop.kt:248-279、InternalPlayer.desktop.kt:59、InternalPlayer.desktop.kt:333、InternalPlayer.desktop.kt:364、InternalPlayer.desktop.kt:377、MpvPlayer.kt:84、App.kt:177-189`
-      - 改法：不要在这条栏上用 Popup 类组件。两个最小改法二选一：把音轨/字幕交给 mpv 自己（osc 已开，`#`、`j` 现成），顶栏只留标题与「结束播放」；或把菜单改成就地展开的内联行——点「音轨」时在 PlayerBar 下方再插一行 Compose 的 ToggleButton 列表（属于 Column 布局的一部分，会把视频往下挤，不走 popup）。若一定要保留下拉，需在 Main.kt 启动时 `System.setProperty("compose.layers.type", "WINDOW")` 并实测，代价是所有对话框都变成独立窗口。
+- [x] **UI-46**（阻断 · 桌面）桌面内置播放器的「音轨 / 字幕」下拉菜单整个落在 mpv 的 AWT 画布里，被原生子窗口盖住，看不见也点不到
+      - 已修复：音轨/字幕列表画在画面上方，不再被 mpv 画布盖住
 - [x] **UI-47**（严重 · 桌面）桌面播放器把走带控制整个交给 mpv，Compose 侧既不转交按键也从不把焦点还给 Canvas——点过一次工具栏后空格变成「重新弹开刚才那个菜单」，Esc 也无人接管
       - 已修复：空格 / 方向键 / F11 / Esc 由播放页接管
 - [x] **UI-48**（严重 · 桌面）桌面播放器没有任何全屏入口，却把 mpv 那两个在 --wid 内嵌下已经变成空操作的全屏控件原样摆给用户
