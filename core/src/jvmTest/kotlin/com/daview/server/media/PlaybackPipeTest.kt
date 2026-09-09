@@ -7,11 +7,14 @@ import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.PlayerKind
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URI
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -53,6 +56,23 @@ class PlaybackPipeTest {
         } finally {
             disconnect()
         }
+
+    /**
+     * Whether anything still accepts a connection on that address.
+     *
+     * A bare connect rather than a request. What the closing tests are about is
+     * the socket being gone, and asking that through [status] puts proxy
+     * selection, a connection pool and a retry in front of the question — three
+     * layers that answered differently on the CI runner than on any machine
+     * here, which is what made those tests fail there and nowhere else. This
+     * cannot hide a pipe that is genuinely still up: a listening socket accepts.
+     */
+    private fun listening(url: String): Boolean {
+        val address = URI(url).let { InetSocketAddress(it.host, it.port) }
+        return Socket().use { socket ->
+            runCatching { socket.connect(address, 2_000) }.isSuccess
+        }
+    }
 
     @Test
     fun `binds loopback only, on a port the OS picks`() {
@@ -99,8 +119,7 @@ class PlaybackPipeTest {
     fun `releasing the last session closes the socket`() {
         val url = pipe.urlFor("session-1", "item-1", "a.mkv", redirect = false)
         pipe.release("session-1")
-        val failed = runCatching { status(url) }.isFailure
-        assertTrue(failed, "expected the port to be closed")
+        assertFalse(listening(url), "expected the port to be closed")
     }
 
     /**
@@ -113,7 +132,7 @@ class PlaybackPipeTest {
         pipe.urlFor("session-1", "item-1", "a.mkv", redirect = false)
         val subtitle = pipe.subtitleUrlFor("session-1", "item-1", 1000)
         pipe.release("session-1")
-        assertTrue(runCatching { status(subtitle) }.isFailure, "expected the port to be closed")
+        assertFalse(listening(subtitle), "expected the port to be closed")
     }
 
     /**
@@ -132,7 +151,7 @@ class PlaybackPipeTest {
 
         // The ticker sweeps every two seconds; nothing here calls stop().
         idleTimeoutSec = 0
-        val closed = generateSequence { runCatching { status(url) }.isFailure }
+        val closed = generateSequence { !listening(url) }
             .take(150)
             .onEach { if (!it) Thread.sleep(100) }
             .any { it }
