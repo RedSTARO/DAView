@@ -174,6 +174,17 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
     /** Explicitly off, which only the viewer asks for. */
     fun disableSubtitle() = setProperty("sid", "no")
 
+    /**
+     * Transport the app can drive itself.
+     *
+     * mpv has its own key bindings, but they only fire while its window has
+     * keyboard focus — and clicking anything in the toolbar above the picture
+     * takes that away, after which space belonged to the last button pressed.
+     */
+    fun togglePause() = command("cycle", "pause")
+
+    fun seekBy(seconds: Int) = command("seek", seconds.toString(), "relative")
+
     fun applyEnhancement(enhancement: VideoEnhancement) {
         // Windows-only: the filter does not exist on the other platforms, and
         // asking for it there fails the whole chain, taking the picture with it.

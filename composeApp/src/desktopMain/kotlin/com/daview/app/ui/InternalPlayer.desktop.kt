@@ -9,6 +9,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.focusable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Audiotrack
+import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.DropdownMenu
@@ -27,7 +36,15 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.awt.SwingPanel
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -100,6 +117,12 @@ actual fun InternalPlayer(
     fun finish(positionMs: Long) {
         if (closedOnce.compareAndSet(false, true)) latestOnClose(positionMs)
     }
+
+    // mpv cannot go full screen for itself while embedded in someone else's
+    // window (--wid), so its own `f` and the OSC button do nothing here. The
+    // window is what goes full screen, and this is how it is asked.
+    PlaybackPresentation(ScreenOrientation.SENSOR)
+    val fullscreen = LocalWindowFullscreen.current
 
     LaunchedEffect(info.sessionId) {
         // Creation is keyed on the session while disposal is keyed on the screen,
@@ -245,7 +268,36 @@ actual fun InternalPlayer(
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .focusRequester(focusRequester)
+            .focusable()
+            // mpv has its own bindings, but they only fire while its canvas
+            // holds keyboard focus — and clicking anything in the bar above the
+            // picture takes that away, after which space re-triggered whichever
+            // button was pressed last.
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.Spacebar -> { player?.togglePause(); true }
+                    Key.DirectionLeft -> { player?.seekBy(-10); true }
+                    Key.DirectionRight -> { player?.seekBy(10); true }
+                    Key.F11 -> { fullscreen?.let { it.value = !it.value }; true }
+                    Key.Escape -> {
+                        // Leave full screen first, as every other player does;
+                        // a second press ends playback.
+                        if (fullscreen?.value == true) fullscreen.value = false
+                        else finish(player?.positionMs ?: player?.lastPosition ?: info.startPositionMs)
+                        true
+                    }
+                    else -> false
+                }
+            }
+    ) {
         PlayerBar(
             info = info,
             selectedAudio = selectedAudio,
@@ -269,6 +321,8 @@ actual fun InternalPlayer(
                 }
                 player?.positionMs?.let { latestOnProgress(it, false, selectedAudio, selectedSubtitle) }
             },
+            fullscreen = fullscreen?.value ?: false,
+            onToggleFullscreen = { fullscreen?.let { it.value = !it.value } },
             onClose = { finish(player?.positionMs ?: player?.lastPosition ?: info.startPositionMs) }
         )
 
@@ -322,6 +376,8 @@ private fun PlayerBar(
     adapterInUse: String?,
     onAudio: (MediaStreamDto) -> Unit,
     onSubtitle: (MediaStreamDto?) -> Unit,
+    fullscreen: Boolean,
+    onToggleFullscreen: () -> Unit,
     onClose: () -> Unit
 ) {
     var audioMenu by remember { mutableStateOf(false) }
@@ -329,11 +385,14 @@ private fun PlayerBar(
     val audioStreams = info.item.mediaStreams.filter { it.type == StreamType.AUDIO }
     val subtitleStreams = info.item.mediaStreams.filter { it.type == StreamType.SUBTITLE }
 
-    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
+    // Playback chrome stays dark whichever theme the rest of the app is in. In
+    // the light theme this was a near-white band across the top of a black
+    // picture, which is not something any player does.
+    Surface(color = Color(0xFF15131C), contentColor = Color.White) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text(
                 info.item.seriesName?.let { "$it · ${info.item.name}" } ?: info.item.name,
@@ -341,25 +400,31 @@ private fun PlayerBar(
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+                // Takes what is left after the controls instead of competing
+                // with them. The bar was one unwrapped Row, so the GPU name and
+                // a long track title pushed the close button off the edge and
+                // then wrapped the whole thing onto three lines.
+                modifier = Modifier.weight(1f, fill = false)
             )
+            Spacer(Modifier.weight(1f))
 
             adapterInUse?.let {
                 Text(
                     it,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = Color.White.copy(alpha = 0.7f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
             EnhancementChip("RTX 超分", superResolution)
             EnhancementChip("RTX HDR", videoHdr)
-            Spacer(Modifier.width(4.dp))
 
             Box {
-                TextButton(onClick = { audioMenu = true }) {
-                    Text(audioStreams.firstOrNull { it.index == selectedAudio }?.displayTitle ?: "音轨")
+                // Icons rather than the track's own name: the name is unbounded
+                // and it is what pushed everything else out of the bar.
+                IconButton(onClick = { audioMenu = true }) {
+                    Icon(Icons.Filled.Audiotrack, contentDescription = "音轨")
                 }
                 DropdownMenu(audioMenu, onDismissRequest = { audioMenu = false }) {
                     audioStreams.forEach { stream ->
@@ -371,8 +436,8 @@ private fun PlayerBar(
                 }
             }
             Box {
-                TextButton(onClick = { subtitleMenu = true }) {
-                    Text(subtitleStreams.firstOrNull { it.index == selectedSubtitle }?.displayTitle ?: "字幕")
+                IconButton(onClick = { subtitleMenu = true }) {
+                    Icon(Icons.Filled.ClosedCaption, contentDescription = "字幕")
                 }
                 DropdownMenu(subtitleMenu, onDismissRequest = { subtitleMenu = false }) {
                     DropdownMenuItem(
@@ -387,7 +452,15 @@ private fun PlayerBar(
                     }
                 }
             }
-            TextButton(onClick = onClose) { Text("结束播放") }
+            IconButton(onClick = onToggleFullscreen) {
+                Icon(
+                    if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                    contentDescription = if (fullscreen) "退出全屏（F11）" else "全屏（F11）"
+                )
+            }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Filled.Close, contentDescription = "结束播放")
+            }
         }
     }
 }
