@@ -557,6 +557,31 @@ class AppState(private val scope: CoroutineScope) {
         notify("已从继续观看中移除")
     }
 
+    /** Writes fields a person corrected by hand. Blank fields are cleared. */
+    fun updateItem(
+        item: MediaItemDto,
+        name: String,
+        originalName: String,
+        overview: String,
+        year: Int?,
+        genres: List<String>
+    ) = run {
+        val updated = library.updateItem(
+            id = item.id,
+            links = links,
+            name = name.takeIf { it.isNotBlank() },
+            originalName = originalName,
+            overview = overview,
+            year = year,
+            genres = genres
+        )
+        fun List<MediaItemDto>.withFresh() = map { if (it.id == item.id) updated else it }
+        libraryItems = libraryItems.withFresh()
+        searchResults = searchResults.withFresh()
+        if (detailItem?.id == item.id) detailItem = updated
+        notify("已保存")
+    }
+
     /** Scrapes one entry again, without re-scraping the library around it. */
     fun refreshMetadata(item: MediaItemDto) = run {
         notify("正在重新刮削「${item.name}」…")

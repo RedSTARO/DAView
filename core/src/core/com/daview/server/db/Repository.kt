@@ -270,6 +270,50 @@ class Repository(private val db: Database) {
             .forEach { (target, sources) -> mergeItems(target, sources) }
     }
 
+    /**
+     * Writes the fields a person corrected by hand.
+     *
+     * `scraped_at` is stamped so the scanner's upsert leaves them alone (it
+     * keeps the scraper's columns for anything already scraped), and the status
+     * goes to MANUAL so the page says where the values came from. Blank means
+     * "no change", because the dialog only sends what was touched.
+     */
+    fun updateItemFields(
+        itemId: String,
+        name: String?,
+        originalName: String?,
+        overview: String?,
+        year: Int?,
+        genres: List<String>?
+    ) = db.transaction { connection ->
+        val sets = mutableListOf<String>()
+        val binds = mutableListOf<Any?>()
+        name?.let { sets += "name = ?, sort_name = ?"; binds += it; binds += it.lowercase() }
+        originalName?.let { sets += "original_name = ?"; binds += it }
+        overview?.let { sets += "overview = ?"; binds += it }
+        year?.let { sets += "year = ?"; binds += it }
+        genres?.let { sets += "genres = ?"; binds += json.encodeToString(stringListSerializer, it) }
+        if (sets.isEmpty()) return@transaction
+
+        sets += "scrape_status = ?"
+        binds += ScrapeStatus.MANUAL.name
+        sets += "scraped_at = ?"
+        binds += System.currentTimeMillis()
+
+        connection.statement("UPDATE items SET ${sets.joinToString(", ")} WHERE id = ?").use { st ->
+            binds.forEachIndexed { index, value ->
+                when (value) {
+                    is String -> st.setString(index + 1, value)
+                    is Int -> st.setInt(index + 1, value)
+                    is Long -> st.setLong(index + 1, value)
+                    else -> st.setNull(index + 1)
+                }
+            }
+            st.setString(binds.size + 1, itemId)
+            st.executeUpdate()
+        }
+    }
+
     fun deleteItems(ids: Collection<String>) {
         if (ids.isEmpty()) return
         db.transaction { connection ->

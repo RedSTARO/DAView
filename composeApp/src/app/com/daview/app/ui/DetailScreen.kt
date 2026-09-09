@@ -32,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CallMerge
 import androidx.compose.material.icons.filled.CheckCircleOutline
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Favorite
@@ -396,10 +397,14 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
         ?: state.detailEpisodes.firstOrNull()
     var menuOpen by remember { mutableStateOf(false) }
     var identifyOpen by remember { mutableStateOf(false) }
+    var editOpen by remember { mutableStateOf(false) }
     var mergeOpen by remember { mutableStateOf(false) }
 
     if (identifyOpen) {
         IdentifyDialog(state, item, onDismiss = { identifyOpen = false })
+    }
+    if (editOpen) {
+        EditItemDialog(state, item, onDismiss = { editOpen = false })
     }
     if (mergeOpen) {
         MergeDialog(state, item, onDismiss = { mergeOpen = false })
@@ -499,6 +504,15 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
             }
             // Only whole films and series carry scraped metadata, so only they
             // can be re-pointed at a different entry.
+            if (item.kind == ItemKind.MOVIE || item.kind == ItemKind.SERIES) {
+                IconButton(onClick = { editOpen = true }) {
+                    Icon(
+                        Icons.Filled.DriveFileRenameOutline,
+                        contentDescription = "编辑条目信息",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             if (item.kind == ItemKind.MOVIE || item.kind == ItemKind.SERIES) {
                 IconButton(onClick = { identifyOpen = true }) {
                     // Two states, two shapes. Colour alone was carrying "this

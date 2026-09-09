@@ -217,6 +217,29 @@ class MediaFacade(private val context: ServerContext) {
         context.repository.setHiddenFromResume(id, hidden)
     }
 
+    /**
+     * Corrects an entry by hand.
+     *
+     * There was no way to change a single field. A title scraped onto the wrong
+     * remake, or a folder no source has ever heard of and whose name is
+     * therefore "XXX.2019.1080p.WEB-DL", could only be fixed by pointing the
+     * whole entry at a different provider id — or not at all. Only the fields
+     * given are written; the rest keep whatever they had.
+     */
+    suspend fun updateItem(
+        id: String,
+        links: AssetLinks,
+        name: String? = null,
+        originalName: String? = null,
+        overview: String? = null,
+        year: Int? = null,
+        genres: List<String>? = null
+    ): MediaItemDto = io {
+        context.repository.item(id) ?: notFound("条目不存在")
+        context.repository.updateItemFields(id, name, originalName, overview, year, genres)
+        (context.repository.item(id) ?: notFound("条目不存在")).withAssetUrls(links)
+    }
+
     suspend fun setFavorite(id: String, value: Boolean): UserDataDto =
         io { context.repository.setFavorite(id, value) }
 
