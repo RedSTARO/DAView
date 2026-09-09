@@ -109,7 +109,29 @@ class AppState(private val scope: CoroutineScope) {
      */
     var libraryItemsOf by mutableStateOf<String?>(null)
     var libraryLoading by mutableStateOf(false)
-    var librarySort by mutableStateOf("sortName")
+
+    /** How many entries the library holds, as opposed to how many are loaded. */
+    var libraryTotal by mutableStateOf(0)
+        private set
+
+    /** True while another page is on its way in behind the ones on screen. */
+    var libraryLoadingMore by mutableStateOf(false)
+        private set
+
+    var librarySort by mutableStateOf(settings.getString(KEY_SORT) ?: "sortName")
+        private set
+    var librarySortDescending by mutableStateOf(settings.getString(KEY_SORT_DESC) == "1")
+        private set
+
+    /** Narrowing applied to the library page. Null in both means everything. */
+    var libraryOnlyUnwatched by mutableStateOf(false)
+        private set
+    var libraryOnlyFavourite by mutableStateOf(false)
+        private set
+
+    /** Search within the library page, as opposed to the global search screen. */
+    var librarySearch by mutableStateOf("")
+        private set
 
     var detailItem by mutableStateOf<MediaItemDto?>(null)
     var detailChildren by mutableStateOf<List<MediaItemDto>>(emptyList())
@@ -261,32 +283,84 @@ class AppState(private val scope: CoroutineScope) {
         libraryLoading = true
         if (libraryItemsOf != libraryId) libraryItemsOf = null
         try {
-            val kind = when (libraries.firstOrNull { it.id == libraryId }?.kind?.isSeriesLike) {
-                true -> ItemKind.SERIES
-                else -> ItemKind.MOVIE
-            }
-            coroutineScope {
-                val page = async {
-                    library.items(links, libraryId = libraryId, kind = kind, sort = librarySort, limit = 500)
-                }
-                // A series library can still contain stand-alone films (a spin-off
-                // movie folder inside a show); include them so nothing disappears.
-                val extra = async {
-                    if (kind != ItemKind.SERIES) emptyList()
-                    else library
-                        .items(links, libraryId = libraryId, kind = ItemKind.MOVIE, sort = librarySort, limit = 200)
-                        .items.filter { it.parentId == null }
-                }
-                libraryItems = page.await().items + extra.await()
-            }
+            val page = libraryPage(libraryId, offset = 0)
+            libraryItems = page.items
+            libraryTotal = page.total
             libraryItemsOf = libraryId
         } finally {
             libraryLoading = false
         }
     }
 
+    /**
+     * Adds the next page to what is already on screen.
+     *
+     * The page used to ask for 500 entries once and stop there, so a library
+     * with more than that simply did not contain the rest as far as the
+     * interface was concerned — and the header said 500 while the home screen
+     * said the real number.
+     */
+    fun loadMoreLibrary(libraryId: String) {
+        if (libraryLoadingMore || libraryLoading) return
+        if (libraryItemsOf != libraryId) return
+        if (libraryItems.size >= libraryTotal) return
+        libraryLoadingMore = true
+        run {
+            try {
+                val page = libraryPage(libraryId, offset = libraryItems.size)
+                // Guard against the page having moved under us — a re-sort or a
+                // filter change while this was in flight.
+                if (libraryItemsOf == libraryId) {
+                    libraryItems = libraryItems + page.items
+                    libraryTotal = page.total
+                }
+            } finally {
+                libraryLoadingMore = false
+            }
+        }
+    }
+
+    private suspend fun libraryPage(libraryId: String, offset: Int) = library.items(
+        links,
+        libraryId = libraryId,
+        // Series and stand-alone films together, ordered as one list. Asking for
+        // a kind meant a series library ran two queries with two limits and the
+        // films inside it were pinned to the end.
+        topLevelOnly = true,
+        search = librarySearch.takeIf { it.isNotBlank() },
+        favorite = true.takeIf { libraryOnlyFavourite },
+        played = false.takeIf { libraryOnlyUnwatched },
+        sort = librarySort,
+        descending = librarySortDescending,
+        limit = PAGE_SIZE,
+        offset = offset
+    )
+
     fun setSort(sort: String, libraryId: String) {
-        librarySort = sort
+        // Pressing the field that is already chosen flips the direction, which
+        // is how every other catalogue behaves.
+        if (sort == librarySort) librarySortDescending = !librarySortDescending
+        else {
+            librarySort = sort
+            librarySortDescending = sort in DESCENDING_BY_DEFAULT
+        }
+        settings.putString(KEY_SORT, librarySort)
+        settings.putString(KEY_SORT_DESC, if (librarySortDescending) "1" else "0")
+        loadLibrary(libraryId)
+    }
+
+    fun setLibraryFilter(
+        libraryId: String,
+        onlyUnwatched: Boolean = libraryOnlyUnwatched,
+        onlyFavourite: Boolean = libraryOnlyFavourite
+    ) {
+        libraryOnlyUnwatched = onlyUnwatched
+        libraryOnlyFavourite = onlyFavourite
+        loadLibrary(libraryId)
+    }
+
+    fun setLibrarySearch(libraryId: String, query: String) {
+        librarySearch = query
         loadLibrary(libraryId)
     }
 
@@ -448,6 +522,15 @@ class AppState(private val scope: CoroutineScope) {
     private companion object {
         /** One page of search results. The facade caps a page at 500 anyway. */
         const val SEARCH_LIMIT = 60
+
+        /** One page of a library. The facade caps a page at 500. */
+        const val PAGE_SIZE = 200
+
+        /** Sorts whose useful end is the high one. */
+        val DESCENDING_BY_DEFAULT = setOf("year", "added", "rating", "played")
+
         const val KEY_THEME = "theme"
+        const val KEY_SORT = "library.sort"
+        const val KEY_SORT_DESC = "library.sortDescending"
     }
 }

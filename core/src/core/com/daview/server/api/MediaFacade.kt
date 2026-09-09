@@ -149,10 +149,13 @@ class MediaFacade(private val context: ServerContext) {
         links: AssetLinks,
         libraryId: String? = null,
         parentId: String? = null,
+        topLevelOnly: Boolean = false,
         kind: ItemKind? = null,
         search: String? = null,
         favorite: Boolean? = null,
+        played: Boolean? = null,
         sort: String = "sortName",
+        descending: Boolean = false,
         limit: Int = 100,
         offset: Int = 0
     ): ItemPage = io {
@@ -160,10 +163,13 @@ class MediaFacade(private val context: ServerContext) {
             Repository.Query(
                 libraryId = libraryId,
                 parentId = parentId,
+                topLevelOnly = topLevelOnly,
                 kind = kind,
                 search = search,
                 favorite = favorite,
+                played = played,
                 sort = sort,
+                descending = descending,
                 limit = limit.coerceIn(1, 500),
                 offset = offset.coerceAtLeast(0)
             )

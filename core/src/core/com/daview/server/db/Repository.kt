@@ -266,10 +266,19 @@ class Repository(private val db: Database) {
     data class Query(
         val libraryId: String? = null,
         val parentId: String? = null,
+        /**
+         * Only entries that are not inside something else: a library page wants
+         * its series and its stand-alone films, not the episodes under them.
+         */
+        val topLevelOnly: Boolean = false,
         val kind: ItemKind? = null,
         val search: String? = null,
         val favorite: Boolean? = null,
+        /** True for watched only, false for unwatched only, null for both. */
+        val played: Boolean? = null,
         val sort: String = "sortName",
+        /** Reverses whichever order [sort] names. */
+        val descending: Boolean = false,
         val limit: Int = 100,
         val offset: Int = 0
     )
@@ -280,22 +289,47 @@ class Repository(private val db: Database) {
         val binds = ArrayList<Any?>()
         query.libraryId?.let { where.append(" AND i.library_id = ?"); binds += it }
         query.parentId?.let { where.append(" AND i.parent_id = ?"); binds += it }
+        if (query.topLevelOnly) where.append(" AND i.parent_id IS NULL")
         query.kind?.let { where.append(" AND i.kind = ?"); binds += it.name }
         query.favorite?.let { where.append(" AND COALESCE(u.favorite, 0) = ?"); binds += if (it) 1 else 0 }
+        query.played?.let {
+            // A series or season has no watched flag of its own, so "watched"
+            // for one means every episode under it is — the same rule the
+            // detail page states, asked of the catalogue.
+            where.append(
+                if (it) {
+                    " AND (COALESCE(u.played, 0) = 1 OR (i.kind IN ('SERIES','SEASON') AND " +
+                        "${playedEpisodes("i")} = ${totalEpisodes("i")} AND ${totalEpisodes("i")} > 0))"
+                } else {
+                    " AND COALESCE(u.played, 0) = 0 AND NOT (i.kind IN ('SERIES','SEASON') AND " +
+                        "${playedEpisodes("i")} = ${totalEpisodes("i")} AND ${totalEpisodes("i")} > 0)"
+                }
+            )
+        }
         query.search?.takeIf { it.isNotBlank() }?.let {
             where.append(" AND (i.name LIKE ? OR i.original_name LIKE ? OR i.sort_name LIKE ?)")
             val pattern = "%${it.trim()}%"
             binds += pattern; binds += pattern; binds += pattern
         }
 
+        // The field and the direction are separate now. They used to be baked
+        // into one string, so every sort had exactly one direction and there was
+        // no way to ask for oldest-first or lowest-rated — which is the search
+        // for "what did the scraper get wrong".
+        val descending = query.descending
+        fun dir(defaultDescending: Boolean): String =
+            if (defaultDescending != descending) " DESC" else " ASC"
+
         val order = when (query.sort) {
-            "name" -> "i.name COLLATE NOCASE"
-            "year" -> "i.year DESC, i.sort_name"
-            "added" -> "i.date_created DESC"
-            "played" -> "u.last_played_at DESC"
-            "rating" -> "i.community_rating DESC NULLS LAST, i.sort_name"
-            "index" -> "COALESCE(i.parent_index_number, 0), COALESCE(i.index_number, 99999)"
-            else -> "i.sort_name"
+            "name" -> "i.name COLLATE NOCASE${dir(false)}"
+            "year" -> "i.year${dir(true)} NULLS LAST, i.sort_name"
+            "added" -> "i.date_created${dir(true)}"
+            "played" -> "u.last_played_at${dir(true)} NULLS LAST"
+            "rating" -> "i.community_rating${dir(true)} NULLS LAST, i.sort_name"
+            "index" ->
+                "COALESCE(i.parent_index_number, 0)${dir(false)}, " +
+                    "COALESCE(i.index_number, 99999)${dir(false)}"
+            else -> "i.sort_name${dir(false)}"
         }
 
         val total = connection.statement(
@@ -323,6 +357,22 @@ class Repository(private val db: Database) {
      * A null season is *not* season 0. Episodes that sit directly under the
      * series carry no season at all, and they are the main run, not extras.
      */
+    /**
+     * The episode counts SELECT_ITEM exposes as `episode_count` and
+     * `played_episode_count`, as expressions rather than aliases.
+     *
+     * SQLite cannot filter on a select alias, so asking "is this series
+     * finished" in a WHERE clause needs the subquery spelled out again.
+     */
+    private fun totalEpisodes(alias: String) =
+        "(SELECT COUNT(*) FROM items e WHERE e.kind = 'EPISODE' " +
+            "AND (e.series_id = $alias.id OR e.parent_id = $alias.id))"
+
+    private fun playedEpisodes(alias: String) =
+        "(SELECT COUNT(*) FROM items e LEFT JOIN user_data ue ON ue.item_id = e.id " +
+            "WHERE e.kind = 'EPISODE' AND (e.series_id = $alias.id OR e.parent_id = $alias.id) " +
+            "AND COALESCE(ue.played, 0) = 1)"
+
     private fun specialsLast(alias: String) =
         "CASE WHEN $alias.parent_index_number = 0 THEN 1 ELSE 0 END"
 
