@@ -5,9 +5,9 @@
 
 | 状态 | 条数 |
 |---|---|
-| 已修复 | 67 |
-| 部分修复 | 11 |
-| 未开始 | 66 |
+| 已修复 | 74 |
+| 部分修复 | 15 |
+| 未开始 | 55 |
 
 标记说明：`[x]` 已修复，`[~]` 部分修复（后面写明还差什么），`[ ]` 未开始。
 
@@ -29,9 +29,8 @@
       - 改法：在 MetadataProvider 里加一档「本地 NFO」并作为所有库类型 defaultOrder 的第一位：Scanner 收集目录里的 *.nfo，用 4MB 上限的 dav.readFully 读进来解析 title/originaltitle/plot/year/premiered/genre/rating/uniqueid，命中就写 ScrapeStatus.MATCHED 并跳过网络刮削。
 - [x] **UX-05**（严重）设置里的「元数据语言」是个死设置，填什么都没用
       - 已修复：库语言留空即继承；旧库迁移；设置改成四选一
-- [ ] **UX-06**（打磨）S01E01-E02 双集文件只算一集：解析器已解出 endEpisode 却无人读取
-      - 位置：`core/src/core/com/daview/server/library/Scanner.kt:299-300`
-      - 改法：在 episodeRecord 里读上 endEpisode，条目名做成「第 1-2 集」并在 DTO 上带 endIndexNumber；哪怕只做到名字显示成 1-2，也能消除「文件扫漏了」的误判。进一步再把区间集数算进 playedEpisodeCount。
+- [~] **UX-06**（打磨）S01E01-E02 双集文件只算一集：解析器已解出 endEpisode 却无人读取
+      - 部分修复：双集文件名显示为「第 1-2 集」；集数统计仍按文件数
 - [ ] **UX-07**（打磨）建库时的「其他」类型与电影库完全等价，选它扫出 0 项时空态还在劝你「去扫描一次」
       - 位置：`composeApp/src/app/com/daview/app/ui/SettingsScreen.kt:671-677`
       - 改法：把 OTHER 从建库对话框里去掉（显式列三项），或改名为「其他视频（不刮削）」并把 defaultOrder 设为 NONE；扫描结束时若 itemCount == 0，在进度条上写「未发现视频文件」而不是只显示「完成」。
@@ -82,12 +81,10 @@
 
 ### 看片：播放链路与播放器
 
-- [ ] **UX-24**（阻断）关掉 DAView 窗口，正在外置播放器里看的片子会立刻断流，没有任何提示
-      - 位置：`composeApp/src/desktopMain/kotlin/com/daview/app/Main.kt:20-23`
-      - 改法：onCloseRequest 里先问 PlaybackService.activeSessions() 有没有外部会话：有就弹「还有 X 正在播放，关闭会中断」的确认，或最小化到托盘而不是退出。至少把标题栏改成「DAView（正在播放：xxx）」。顺带把 trackExternalPlayers 开关放进设置页。
-- [ ] **UX-25**（阻断）外置播放器暂停超过 5 分钟，会话被回收、本地管道被关掉，之后一拖进度条就断流、后半段进度全丢
-      - 位置：`core/src/core/com/daview/server/media/PlaybackService.kt:281-285`
-      - 改法：桌面端 followExternalSession 每轮在进程存活时给会话打一次 keepalive（facade 加个只刷 lastActivity 的方法），让空闲超时只对真正观察不到进程的端生效；另外把 externalSessionIdleTimeoutSec 放进设置页。
+- [x] **UX-24**（阻断）关掉 DAView 窗口，正在外置播放器里看的片子会立刻断流，没有任何提示
+      - 已修复：关窗前会提示还有外部播放在进行
+- [x] **UX-25**（阻断）外置播放器暂停超过 5 分钟，会话被回收、本地管道被关掉，之后一拖进度条就断流、后半段进度全丢
+      - 已修复：播放器进程活着就给会话续命，暂停不再被回收
 - [x] **UX-26**（阻断）Android 播放中屏幕会按系统超时自动熄灭
       - 已修复：播放时保持屏幕常亮
 - [x] **UX-27**（严重）播完一集就到头了：两端都不自动播下一集，系列页也没有「播放全部」
@@ -102,20 +99,16 @@
 - [ ] **UX-31**（严重）完全没有离线下载，出门断网这个 App 就是个空壳
       - 位置：`composeApp/src/app/com/daview/app/ui/ItemContextMenu.kt:101-184`
       - 改法：最小可行版：详情页/长按菜单加一个「下载」，用 media3 的 DownloadManager + DownloadService（前台服务可以抄 ScanForegroundService 的现成模式），文件落在 filesDir/downloads，播放时优先命中本地文件；先不做画质选择，直接原文件下载即可，这个 App 本来就不转码。
-- [ ] **UX-32**（严重）外挂字幕只认「同一目录且严格同名」，Subs/ 子目录不看，`.简日双语.ass` 也会被丢，且没有手动挂载入口、没有延迟与字号
-      - 位置：`core/src/core/com/daview/server/library/Scanner.kt:332-337`
-      - 改法：按代价排序：(1) 把视频所在目录下名为 subs/subtitles/字幕 的子目录也列一遍并入候选，几行改动救掉一大类片源；(2) 同名匹配失败时退化为「本目录只有一个视频且有 N 个字幕 → 全挂上」；(3) 详情页加一个「挂载字幕文件」入口；(4) 播放器加字幕延迟滑块与字号。
+- [~] **UX-32**（严重）外挂字幕只认「同一目录且严格同名」，Subs/ 子目录不看，`.简日双语.ass` 也会被丢，且没有手动挂载入口、没有延迟与字号
+      - 部分修复：已读 Subs / 字幕 子目录，单视频目录放宽匹配；仍无手动挂载、字幕延迟与字号
 - [~] **UX-33**（严重）音轨和内嵌字幕轨的选择传不给外置播放器，播放器里选的也回不来
       - 部分修复：已把音轨/字幕传给 mpv 与 VLC；播放器里改的选择仍传不回来
-- [ ] **UX-34**（严重）默认用哪个播放器不能选也不会记住，永远按写死的顺序挑第一个
-      - 位置：`composeApp/src/app/com/daview/app/ui/HomeScreen.kt:266-269`
-      - 改法：设置页加「默认外部播放器」下拉（值存 SettingsStore），playInternalOrExternal 先读它、读不到再退回探测顺序；顺便把 externalPlayers 从 val 改成每次打开菜单时刷新，省得装完播放器还要重启。
-- [ ] **UX-35**（严重）外部播放面板的说明文字描述的是一个已经不存在的架构，而且承诺了做不到的事
-      - 位置：`composeApp/src/app/com/daview/app/ui/PlayerScreen.kt:136-141`
-      - 改法：改成说实话：「播放地址是本机临时地址（127.0.0.1），只在本次播放期间有效，其它设备用不了」，以及「进度先记在本机，开启跨端同步后按设定间隔写到 WebDAV」。「复制播放地址」按钮旁注明用途（调试／手动喂给别的本机播放器）。
-- [ ] **UX-39**（严重）外置播放器一启动，界面就什么都不显示了——整块外部播放面板是不可达的死代码
-      - 位置：`composeApp/src/app/com/daview/app/data/PlaybackController.kt:69,78`
-      - 改法：playExternal 成功后也 navigate(Screen.Player(item.id))，PlayerScreen 的分支判断从 PlatformInfo.hasInternalPlayer 改成「这次会话用的是内置还是外置」（PlaybackController 已有 externalPlayerLabel 可判）。一处改动就能把写好的整块面板接回来。
+- [x] **UX-34**（严重）默认用哪个播放器不能选也不会记住，永远按写死的顺序挑第一个
+      - 已修复：设置里可选默认外部播放器并记住
+- [x] **UX-35**（严重）外部播放面板的说明文字描述的是一个已经不存在的架构，而且承诺了做不到的事
+      - 已修复：外部播放面板文案改成实际行为
+- [x] **UX-39**（严重）外置播放器一启动，界面就什么都不显示了——整块外部播放面板是不可达的死代码
+      - 已修复：外部播放会进入播放页，整块面板可达
 - [ ] **UX-40**（严重）播放失败只有详情页看得到，从首页、媒体库、搜索页点播放失败是彻底静默的；启动过程也没有任何等待反馈
       - 位置：`composeApp/src/app/com/daview/app/data/PlaybackController.kt:40-41`
       - 改法：把 error 接到 AppState.toast（已有全局 snackbar，App.kt:118-123），任何页面都能看到；starting 为真时把播放按钮换成 loading 态。
@@ -126,9 +119,8 @@
 - [ ] **UX-38**（打磨）mkv 里的章节从不读取，Android 内置播放器没有章节导航
       - 位置：`core/src/core/com/daview/server/library/MkvProbe.kt:54-83`
       - 改法：MkvProbe 顺手解析 Chapters（复用已有的 SeekHead 定位），详情页与播放器给章节跳转。若想要「跳过片头」的廉价版：库级设置一个片头秒数（如 90），播放开始后前 90 秒在播放器上显示一个「跳过片头」按钮，对同一季固定 OP 的番剧准确率极高。
-- [ ] **UX-41**（打磨）桌面播放器菜单里那条「自定义播放器」永远点不动：写入它的函数全仓库没有调用点
-      - 位置：`composeApp/src/desktopMain/kotlin/com/daview/app/platform/Platform.desktop.kt:71,78`
-      - 改法：要么在设置页加一个「指定播放器程序…」的文件选择（setCustomPlayerPath 已经写好，缺的只是入口，可以照抄新加的「指定 libmpv…」按钮），要么在没有路径时干脆不把这条塞进列表。
+- [x] **UX-41**（打磨）桌面播放器菜单里那条「自定义播放器」永远点不动：写入它的函数全仓库没有调用点
+      - 已修复：桌面设置里可指定播放器程序；未设置时不再列出该项
 
 ### 状态、进度与跨端同步
 
@@ -156,12 +148,10 @@
       - 已修复：删除的媒体库不会被同步恢复
 - [x] **UX-50**（严重）删除媒体库没有任何二次确认，误触一次就抹掉本机全部刮削结果
       - 已修复：删除媒体库需二次确认
-- [ ] **UX-51**（打磨）没有单条「重新刮削」：一个 FALLBACK 匹配会写死 scraped_at，此后只能整库 REFRESH
-      - 位置：`core/src/core/com/daview/server/scraper/MetadataService.kt:177`
-      - 改法：MediaFacade 加 refreshItem(id, replaceAll: Boolean)，内部就是对单个 item 调 MetadataService 那条已有的刮削路径；入口放在 ItemMenuItems 里（这样库网格、搜索页右键都能用）而不是只放详情页。
-- [ ] **UX-52**（打磨）official_rating 是个死字段：三个刮削器一次都没填过，详情页也不显示分级
-      - 位置：`core/src/core/com/daview/server/scraper/MetadataService.kt:283`
-      - 改法：先让 TMDB 刮削多请求一次 release_dates / content_ratings，把分级填进已经存在的 official_rating 列，在 DetailScreen.kt:280 那行 chip 里加 `item.officialRating?.let { Chip(it) }`——光是「看得见分级」就解决掉一半场景。
+- [x] **UX-51**（打磨）没有单条「重新刮削」：一个 FALLBACK 匹配会写死 scraped_at，此后只能整库 REFRESH
+      - 已修复：右键菜单可对单条重新刮削
+- [~] **UX-52**（打磨）official_rating 是个死字段：三个刮削器一次都没填过，详情页也不显示分级
+      - 部分修复：详情页已显示分级；三个刮削器仍未填 official_rating
 
 ### 家庭与多设备
 
@@ -189,9 +179,8 @@
 
 ### 呈现、文案与性能打磨
 
-- [ ] **UX-60**（严重）首播日期、制作方、分级刮回来了却一个都不显示；全 App 看不到任何日期时间
-      - 位置：`composeApp/src/app/com/daview/app/ui/DetailScreen.kt:277-283`
-      - 改法：加一个共用的 formatDate（premiereDate 本来就是 ISO 字符串，截 yyyy-MM-dd 就够，不必引 kotlinx-datetime）。优先补三处：详情页「文件信息」块加「首播日期 / 分级 / 制作」，分集行的元信息串里加播出日期，设置页把「已上传」换成「上次上传 <时间>」并给库卡片加「上次扫描 <时间>」。
+- [~] **UX-60**（严重）首播日期、制作方、分级刮回来了却一个都不显示；全 App 看不到任何日期时间
+      - 部分修复：详情页已显示首播日期与分级；上次扫描/同步时间仍未显示
 - [x] **UX-61**（严重）详情页简介固定截断 5 行，既不能展开也不能选中复制
       - 已修复：简介可展开、可选中
 - [~] **UX-62**（严重）海报下载失败与「压根没刮到图」在界面上无法区分，失败还不记忆——每次滚回视口都重付一次 15s/30s 超时
