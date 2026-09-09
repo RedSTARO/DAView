@@ -471,6 +471,17 @@ class MediaFacade(private val context: ServerContext) {
         context.images.get(remote)?.file
     }
 
+    /** How much disk the artwork cache is holding. */
+    suspend fun imageCacheBytes(): Long = io { context.images.sizeBytes() }
+
+    /**
+     * Empties the artwork cache. Nothing is lost — every image is re-fetched on
+     * demand — and until now the directory only ever grew, with no way to see
+     * its size or clear it; on Android it sits under `filesDir`, out of reach
+     * of the system's own "clear cache".
+     */
+    suspend fun clearImageCache() = io { context.images.clear() }
+
     // ------------------------------------------------------------ artwork
 
     /** Rewrites the provider's artwork URL to an address the caller can fetch. */

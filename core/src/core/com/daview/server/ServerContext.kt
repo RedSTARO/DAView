@@ -27,11 +27,16 @@ class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
     val configStore = ConfigStore(dataDir)
     val database = Database(sql)
     val repository = Repository(database)
-    val images = ImageCache(dataDir)
     val metadata = MetadataService(repository)
 
     @Volatile
     private var dav: WebDavClient? = buildDav(configStore.current)
+
+    val images = ImageCache(dataDir) { path ->
+        // Artwork the scanner found beside the video. It lives on the share, so
+        // it is read with the share's credentials rather than a bare GET.
+        dav?.let { client -> runCatching { client.readFully(path, limit = 8L * 1024 * 1024) }.getOrNull() }
+    }
 
     val streams = StreamService({ dav }, repository)
     val playback = PlaybackService(repository, streams) { config.externalSessionIdleTimeoutSec }

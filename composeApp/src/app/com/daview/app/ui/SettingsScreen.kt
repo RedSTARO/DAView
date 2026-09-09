@@ -446,6 +446,8 @@ private fun ClientSection(state: AppState) {
         Spacer(Modifier.height(8.dp))
         SwitchRow("深色主题", state.darkTheme) { state.setTheme(it) }
         Spacer(Modifier.height(8.dp))
+        ImageCacheRow(state)
+        Spacer(Modifier.height(8.dp))
         Text(
             "平台: ${PlatformInfo.name}",
             style = MaterialTheme.typography.bodySmall,
@@ -803,6 +805,39 @@ internal fun scanPhaseLabel(phase: String): String = when (phase) {
     "cancelled" -> "已取消"
     "error" -> "出错"
     else -> phase
+}
+
+/** What the artwork cache is holding, and a way to be rid of it. */
+@Composable
+private fun ImageCacheRow(state: AppState) {
+    var bytes by remember { mutableStateOf<Long?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) { bytes = state.library.imageCacheBytes() }
+
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("图片缓存")
+            Text(
+                bytes?.let { "海报与背景图占用 ${formatSize(it)}" } ?: "统计中…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        TextButton(
+            enabled = !busy && (bytes ?: 0L) > 0L,
+            onClick = {
+                scope.launch {
+                    busy = true
+                    state.library.clearImageCache()
+                    bytes = state.library.imageCacheBytes()
+                    busy = false
+                    state.notify("图片缓存已清除")
+                }
+            }
+        ) { Text("清除") }
+    }
 }
 
 private fun kindLabel(kind: LibraryKind) = when (kind) {

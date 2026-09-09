@@ -2,6 +2,7 @@ package com.daview.server.library
 
 import com.daview.server.db.ItemRecord
 import com.daview.server.db.Repository
+import com.daview.server.media.ImageCache
 import com.daview.server.storage.DavEntry
 import com.daview.server.storage.WebDavClient
 import com.daview.shared.model.ItemKind
@@ -41,7 +42,13 @@ class Scanner(
 
         progress.report("listing", 0, 1, "读取 ${library.path}")
         val roots = dav.list(library.path)
-        val folders = roots.filter { it.isDirectory && !NameParser.isExtrasFolder(it.name) }
+        val folders = roots.filter {
+            it.isDirectory &&
+                !NameParser.isExtrasFolder(it.name) &&
+                // A NAS puts @eaDir beside every folder and a #recycle at the
+                // share root; each was being read as a title and scraped.
+                !NameParser.isSystemFolder(it.name)
+        }
         val looseVideos = roots.filter { !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name) }
         val looseSubtitles = roots.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
 
@@ -93,17 +100,62 @@ class Scanner(
 
     private fun scanMovieFolder(library: LibraryDto, folder: DavEntry, now: Long): List<ItemRecord> {
         val children = dav.list(folder.path)
-        val videos = children.filter { !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name) }
+        val videos = children.filter {
+            !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name)
+        }
         val subtitles = children.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
+        val artwork = localArtwork(children)
+
         if (videos.isEmpty()) {
             // A folder of folders, e.g. a collection directory.
-            return children.filter { it.isDirectory && !NameParser.isExtrasFolder(it.name) }
+            return children
+                .filter {
+                    it.isDirectory &&
+                        !NameParser.isExtrasFolder(it.name) &&
+                        !NameParser.isSystemFolder(it.name)
+                }
                 .flatMap { scanMovieFolder(library, it, now) }
         }
-        val main = videos.maxByOrNull { it.size ?: 0 } ?: videos.first()
+
+        // Every film in the folder, not only the largest file. Keeping one
+        // meant a category directory of loose films — `/电影/漫威系列/*.mkv` —
+        // contributed exactly one entry and the rest did not exist anywhere in
+        // the app, and a two-part film lost its second half.
         val info = NameParser.parseTitle(folder.name)
-        return listOf(movieFromFile(library, main, subtitles, parentId = null, now = now, override = info))
+        val main = videos.maxByOrNull { it.size ?: 0 } ?: videos.first()
+        return videos.map { video ->
+            movieFromFile(
+                library,
+                video,
+                subtitles,
+                parentId = null,
+                now = now,
+                // Only the main feature takes the folder's title; the others
+                // keep their own file names so two entries are tellable apart.
+                override = info.takeIf { video.path == main.path },
+                artwork = artwork
+            )
+        }
     }
+
+    /** Poster and backdrop sitting next to the video, if whoever built the folder put them there. */
+    private fun localArtwork(children: List<DavEntry>): LocalArtwork {
+        val images = children.filter { !it.isDirectory }
+        return LocalArtwork(
+            poster = images.firstOrNull { NameParser.isPosterImage(it.name) }?.path,
+            backdrop = images.firstOrNull { NameParser.isBackdropImage(it.name) }?.path
+        )
+    }
+
+    /**
+     * Artwork found on the share.
+     *
+     * Worth having because the scrapers need an API key the user has to go and
+     * apply for, and without one every tile is a grey placeholder — while the
+     * folder very often already holds the picture, put there by whatever built
+     * the library before this one.
+     */
+    data class LocalArtwork(val poster: String? = null, val backdrop: String? = null)
 
     private fun movieFromFile(
         library: LibraryDto,
@@ -111,7 +163,8 @@ class Scanner(
         subtitles: List<DavEntry>,
         parentId: String?,
         now: Long,
-        override: NameParser.TitleInfo? = null
+        override: NameParser.TitleInfo? = null,
+        artwork: LocalArtwork = LocalArtwork()
     ): ItemRecord {
         val info = override ?: NameParser.parseTitle(video.name.substringBeforeLast('.'))
         val id = itemId(library.id, video.path)
@@ -127,6 +180,11 @@ class Scanner(
                 providerIds = info.providerIds,
                 path = video.path,
                 sizeBytes = video.size,
+                // A poster the folder already carries. It is only ever a
+                // starting point: a scrape overwrites it, and the upsert leaves
+                // scraped rows alone.
+                posterUrl = artwork.poster?.let { "${ImageCache.STORAGE_SCHEME}$it" },
+                backdropUrl = artwork.backdrop?.let { "${ImageCache.STORAGE_SCHEME}$it" },
                 mediaStreams = externalSubtitleStreams(video, subtitles)
             ),
             dateCreated = now,
@@ -141,6 +199,7 @@ class Scanner(
         val info = NameParser.parseTitle(folder.name)
         val seriesId = itemId(library.id, folder.path)
         val out = mutableListOf<ItemRecord>()
+        val artwork = localArtwork(dav.list(folder.path))
 
         out += ItemRecord(
             dto = MediaItemDto(
@@ -151,7 +210,9 @@ class Scanner(
                 sortName = NameParser.sortName(info.title),
                 year = info.year,
                 providerIds = info.providerIds,
-                path = folder.path
+                path = folder.path,
+                posterUrl = artwork.poster?.let { "${ImageCache.STORAGE_SCHEME}$it" },
+                backdropUrl = artwork.backdrop?.let { "${ImageCache.STORAGE_SCHEME}$it" }
             ),
             dateCreated = now,
             dateModified = now,

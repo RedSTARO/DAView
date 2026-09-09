@@ -21,6 +21,47 @@ object NameParser {
 
     val subtitleExtensions = setOf("srt", "ass", "ssa", "sub", "vtt", "sup", "idx", "smi")
 
+    /** Artwork a scraper-less library can still show, by the names everyone uses. */
+    private val posterNames = setOf("poster", "folder", "cover", "default", "movie", "show")
+    private val backdropNames = setOf("fanart", "backdrop", "background", "banner")
+    private val imageExtensions = setOf("jpg", "jpeg", "png", "webp")
+
+    private fun imageRole(name: String): String? {
+        val dot = name.lastIndexOf('.')
+        if (dot <= 0) return null
+        if (name.substring(dot + 1).lowercase() !in imageExtensions) return null
+        return when (name.substring(0, dot).lowercase().substringBefore('-').trim()) {
+            in posterNames -> "poster"
+            in backdropNames -> "backdrop"
+            else -> null
+        }
+    }
+
+    /** True for `poster.jpg`, `folder.png` and the rest of that family. */
+    fun isPosterImage(name: String) = imageRole(name) == "poster"
+
+    /** True for `fanart.jpg` and friends. */
+    fun isBackdropImage(name: String) = imageRole(name) == "backdrop"
+
+    /**
+     * Directories that belong to the filesystem rather than to the catalogue.
+     *
+     * A share pointed at a NAS carries these everywhere — Synology puts an
+     * `@eaDir` beside every folder, the share root has a `#recycle`, Syncthing
+     * leaves `.stfolder` — and each of them was being read as a title, scraped
+     * against a metadata source, and given whatever poster came back first.
+     */
+    private val systemFolders = setOf(
+        "@eadir", "#recycle", "#snapshot", ".stfolder", ".stversions",
+        "lost+found", "\$recycle.bin", "system volume information", ".ds_store",
+        ".thumbnails", "@tmp"
+    )
+
+    fun isSystemFolder(name: String): Boolean {
+        val lower = name.lowercase()
+        return lower in systemFolders || lower.startsWith("@") || lower.startsWith("#")
+    }
+
     /**
      * Directories that hold something other than the run.
      *
