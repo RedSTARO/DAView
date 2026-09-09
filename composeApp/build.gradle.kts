@@ -114,12 +114,19 @@ android {
 // they happily re-emit a package with an empty `app/resources`. Verified: fetch
 // the DLL, build again, and it is in the staging directory but not in the
 // package. Declaring the directory as an input is what makes the second build
-// notice. Optional, because a checkout that never fetches has no such directory.
+// notice.
+//
+// A file tree rather than `inputs.dir`, because the directory is often not
+// there at all: its contents are fetched, not committed, and git cannot carry
+// an empty directory. `optional(true)` does not cover that — it says the
+// property may have no value, not that a named directory may be missing, so
+// `inputs.dir` failed the Linux and macOS builds at configuration time while
+// Windows passed only because the fetch step had just created it. A tree of a
+// missing directory is simply empty.
 tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask>().configureEach {
-    inputs.dir(project.layout.projectDirectory.dir("nativeResources"))
+    inputs.files(project.fileTree("nativeResources"))
         .withPropertyName("daviewAppResources")
         .withPathSensitivity(PathSensitivity.RELATIVE)
-        .optional(true)
 }
 
 compose.desktop {
