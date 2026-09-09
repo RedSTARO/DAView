@@ -173,6 +173,13 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                 """.trimIndent()
             ),
             listOf(
+                // Every library was created with a hardcoded "zh-CN", which is
+                // why the metadata language in settings had no effect: the
+                // library's own value overrode it on every scrape. Blank now
+                // means "inherit", and existing libraries are moved to it.
+                "UPDATE libraries SET language = '' WHERE language = 'zh-CN'"
+            ),
+            listOf(
                 // How the metadata was arrived at: matched, fell back to a
                 // secondary source, was pinned by hand, or found nothing.
                 "ALTER TABLE items ADD COLUMN scrape_status TEXT"

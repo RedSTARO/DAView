@@ -276,7 +276,14 @@ data class PlaybackStartRequest(
     val player: PlayerKind = PlayerKind.INTERNAL,
     val deviceName: String = "unknown",
     /** Ask the server to stream bytes itself so external players can be tracked. */
-    val trackThroughProxy: Boolean = false
+    val trackThroughProxy: Boolean = false,
+    /**
+     * Where to start, overriding the stored resume point. Null means "carry on
+     * from wherever this was left", which is what every call did before — there
+     * was no way to ask for the beginning short of marking the thing unwatched,
+     * and that threw the resume point away.
+     */
+    val startPositionMs: Long? = null
 )
 
 @Serializable

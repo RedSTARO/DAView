@@ -276,4 +276,5 @@ private fun LibraryShortcuts(libraries: List<LibraryDto>, onClick: (LibraryDto) 
 }
 
 /** Uses the in-app player where one exists, otherwise the first external player. */
-fun PlaybackController.playInternalOrExternal(item: MediaItemDto) = playAnyhow(item)
+fun PlaybackController.playInternalOrExternal(item: MediaItemDto, startPositionMs: Long? = null) =
+    playAnyhow(item, startPositionMs)

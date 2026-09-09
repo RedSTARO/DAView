@@ -933,7 +933,7 @@ private fun WebDavPickerDialog(state: AppState, onDismiss: () -> Unit) {
                 enabled = path.trim('/').isNotEmpty() && name.isNotBlank(),
                 onClick = {
                     state.createLibrary(
-                        LibraryDto(id = "", name = name, kind = kind, path = path, language = "zh-CN")
+                        LibraryDto(id = "", name = name, kind = kind, path = path, language = "")
                     ) { onDismiss() }
                 }
             ) { Text("创建并扫描") }

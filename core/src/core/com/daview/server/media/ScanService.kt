@@ -89,7 +89,12 @@ class ScanService(
             val config = configProvider()
             metadata.enrichLibrary(
                 library,
-                config.scraper.copy(language = library.language),
+                config.scraper.copy(
+                    // Blank means "whatever the app is set to". Libraries
+                    // used to be created with a hardcoded language, so the
+                    // setting on screen never reached a scraper.
+                    language = library.language.ifBlank { config.scraper.language }
+                ),
                 force = mode == ScanMode.REFRESH
             ) { current, total, message ->
                 checkCancelled(library.id)

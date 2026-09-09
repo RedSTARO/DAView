@@ -48,7 +48,12 @@ class PlaybackController(
      * screen is already on top of the stack, so pushing another would mean the
      * back arrow walked out through every episode watched that evening.
      */
-    fun playInternal(item: MediaItemDto, replaceScreen: Boolean = false) {
+    fun playInternal(
+        item: MediaItemDto,
+        replaceScreen: Boolean = false,
+        /** Null carries on from the resume point; 0 is "start it again". */
+        startPositionMs: Long? = null
+    ) {
         scope.launch {
             starting = true
             error = null
@@ -66,7 +71,8 @@ class PlaybackController(
                         // process anyway, so reading through it costs one loopback
                         // hop and buys a link that can be re-resolved when it
                         // expires mid-playback.
-                        trackThroughProxy = true
+                        trackThroughProxy = true,
+                        startPositionMs = startPositionMs
                     ),
                     state.links
                 )
@@ -80,7 +86,11 @@ class PlaybackController(
         }
     }
 
-    fun playExternal(item: MediaItemDto, player: ExternalPlayerInfo) {
+    fun playExternal(
+        item: MediaItemDto,
+        player: ExternalPlayerInfo,
+        startPositionMs: Long? = null
+    ) {
         scope.launch {
             starting = true
             error = null
@@ -98,7 +108,8 @@ class PlaybackController(
                         deviceName = defaultDeviceName(),
                         // Byte-level tracking is what makes progress sync work at
                         // all for players that never report anything back.
-                        trackThroughProxy = true
+                        trackThroughProxy = true,
+                        startPositionMs = startPositionMs
                     ),
                     state.links
                 )
@@ -117,7 +128,13 @@ class PlaybackController(
                         streamUrl = playback.streamUrl,
                         title = buildTitle(playback.item),
                         startPositionMs = playback.startPositionMs,
-                        subtitleUrl = subtitleUrl
+                        subtitleUrl = subtitleUrl,
+                        // The track the viewer chose on another device, or the
+                        // one the server picked. It was computed and stored and
+                        // then not passed on, so an external player fell back to
+                        // its own default — usually the wrong language.
+                        audioTrack = playback.audioStreamIndex,
+                        subtitleTrack = playback.subtitleStreamIndex
                     )
                 )
                 if (handle == null && player.id != "copy") {
@@ -229,9 +246,9 @@ class PlaybackController(
      * state a user can be in, and it used to be expressed as the play button
      * doing nothing whatsoever.
      */
-    fun playAnyhow(item: MediaItemDto) {
+    fun playAnyhow(item: MediaItemDto, startPositionMs: Long? = null) {
         if (canUseInternalPlayer) {
-            playInternal(item)
+            playInternal(item, startPositionMs = startPositionMs)
             return
         }
         val player = externalPlayers.firstOrNull { it.executablePath != null || it.viaUrlScheme }
@@ -244,6 +261,6 @@ class PlaybackController(
             state.notify(message)
             return
         }
-        playExternal(item, player)
+        playExternal(item, player, startPositionMs = startPositionMs)
     }
 }

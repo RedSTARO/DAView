@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -119,6 +120,18 @@ fun ColumnScope.ItemMenuItems(
                 playback.playInternalOrExternal(item)
             }
         )
+        if (item.userData.positionMs > 0) {
+            // Watching something again used to mean marking it unwatched first,
+            // which threw the resume point away in the process.
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Filled.Replay, contentDescription = null) },
+                text = { Text("从头播放") },
+                onClick = {
+                    dismiss()
+                    playback.playInternalOrExternal(item, startPositionMs = 0L)
+                }
+            )
+        }
         playback.externalPlayers.forEach { player ->
             DropdownMenuItem(
                 leadingIcon = { Icon(Icons.Filled.OpenInNew, contentDescription = null) },

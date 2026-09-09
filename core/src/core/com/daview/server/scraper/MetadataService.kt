@@ -65,7 +65,13 @@ class MetadataService(
         targets.forEach { item ->
             done++
             progress.report(done, targets.size, item.name)
-            runCatching { enrichItem(item, order, config.copy(language = library.language)) }
+            runCatching {
+                enrichItem(
+                    item,
+                    order,
+                    config.copy(language = library.language.ifBlank { config.language })
+                )
+            }
                 .onFailure { log.warn("刮削 {} 失败: {}", item.name, it.message) }
         }
         return done

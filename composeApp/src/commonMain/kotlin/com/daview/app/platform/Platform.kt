@@ -14,7 +14,15 @@ data class ExternalPlayRequest(
     val streamUrl: String,
     val title: String,
     val startPositionMs: Long,
-    val subtitleUrl: String? = null
+    val subtitleUrl: String? = null,
+    /**
+     * Which embedded tracks to start on. The app knows — it stores the choice
+     * per item and syncs it between devices — and used to keep that to itself,
+     * so a dual-audio episode opened in PotPlayer on whichever track the player
+     * happened to prefer.
+     */
+    val audioTrack: Int? = null,
+    val subtitleTrack: Int? = null
 )
 
 /**

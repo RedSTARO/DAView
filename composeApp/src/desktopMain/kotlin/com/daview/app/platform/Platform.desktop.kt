@@ -102,6 +102,10 @@ private fun buildCommand(request: ExternalPlayRequest, executable: String): List
             add(request.streamUrl)
             if (seconds > 0) add("--start-time=$seconds")
             request.subtitleUrl?.let { add("--sub-file=$it") }
+            // VLC counts tracks from the file, so the container's own index is
+            // what it wants here.
+            request.audioTrack?.let { add("--audio-track=$it") }
+            request.subtitleTrack?.let { add("--sub-track=$it") }
             add("--meta-title=${request.title}")
         }
         "mpv", "iina" -> buildList {
@@ -109,6 +113,8 @@ private fun buildCommand(request: ExternalPlayRequest, executable: String): List
             add(request.streamUrl)
             if (seconds > 0) add("--start=$seconds")
             request.subtitleUrl?.let { add("--sub-file=$it") }
+            request.audioTrack?.let { add("--aid=$it") }
+            request.subtitleTrack?.let { add("--sid=$it") }
             add("--force-media-title=${request.title}")
         }
         else -> listOf(executable, request.streamUrl)

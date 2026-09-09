@@ -355,7 +355,7 @@ class MediaFacade(private val context: ServerContext) {
             item = item,
             player = request.player,
             deviceName = request.deviceName,
-            startPositionMs = userData.positionMs,
+            startPositionMs = request.startPositionMs ?: userData.positionMs,
             audioStreamIndex = audio,
             subtitleStreamIndex = subtitle
         )
@@ -517,7 +517,10 @@ internal fun pickDefaultSubtitle(item: MediaItemDto): Int? {
 
 /** Scraper credentials, with the language of the library the item belongs to. */
 internal fun ServerContext.scraperConfigFor(item: MediaItemDto) =
-    config.scraper.copy(language = repository.library(item.libraryId)?.language ?: config.scraper.language)
+    config.scraper.copy(
+        language = repository.library(item.libraryId)?.language?.ifBlank { null }
+            ?: config.scraper.language
+    )
 
 internal fun ServerContext.providerOrderFor(item: MediaItemDto): List<MetadataProvider> {
     val library = repository.library(item.libraryId) ?: return emptyList()
