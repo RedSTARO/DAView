@@ -1,6 +1,20 @@
 package com.daview.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -88,7 +102,7 @@ fun SettingsScreen(state: AppState) {
                 Button(onClick = { pickerOpen = true }) {
                     Icon(Icons.Filled.Folder, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
-                    Text("从 WebDAV 添加媒体库")
+                    Text("添加媒体库…")
                 }
             }
         }
@@ -130,7 +144,7 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        "刮削顺序: " + library.providerOrder.joinToString(" → ") { it.name.lowercase() },
+                        "刮削顺序: " + library.providerOrder.joinToString(" → ") { it.displayName },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -164,15 +178,42 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
                         )
                     }
                 }
-                IconButton(onClick = { state.deleteLibrary(library.id) }) {
-                    Icon(Icons.Filled.Delete, contentDescription = "删除")
+                var confirmDelete by remember { mutableStateOf(false) }
+                IconButton(onClick = { confirmDelete = true }) {
+                    Icon(Icons.Filled.Delete, contentDescription = "删除媒体库")
+                }
+                if (confirmDelete) {
+                    // This button sits next to the scan button and used to fire
+                    // straight through, taking every scraped record and every
+                    // watch position in the library with it.
+                    AlertDialog(
+                        onDismissRequest = { confirmDelete = false },
+                        title = { Text("删除媒体库「${library.name}」？") },
+                        text = {
+                            Text(
+                                "本机这个库的 ${library.itemCount} 条刮削结果、观看进度和收藏都会被清除，" +
+                                    "网盘上的文件不受影响。重新添加后需要再扫描一次。"
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                confirmDelete = false
+                                state.deleteLibrary(library.id)
+                            }) {
+                                Text("删除", color = MaterialTheme.colorScheme.error)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { confirmDelete = false }) { Text("取消") }
+                        }
+                    )
                 }
             }
             if (status != null && status.running) {
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "${status.phase} ${status.current}/${status.total} · ${status.message}",
+                        "${scanPhaseLabel(status.phase)} ${status.current}/${status.total} · ${status.message}",
                         style = MaterialTheme.typography.labelSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -196,6 +237,89 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
     }
 }
 
+/** A section heading, so the six of them stop each spelling it out again. */
+@Composable
+private fun SectionTitle(text: String) {
+    Text(text, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+}
+
+/**
+ * A label and a switch that answer to the whole row.
+ *
+ * Written as a bare Row the switch was the only live part: 52dp of a 360dp row,
+ * with the label inert and the row invisible to a screen reader, which read the
+ * switch alone and could not say what it switched.
+ */
+@Composable
+private fun SwitchRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onCheckedChange
+            )
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
+    }
+}
+
+/**
+ * A field whose contents should not be read over a shoulder, or learnt by the
+ * phone keyboard.
+ *
+ * The WebDAV password and the three scraper keys were plain fields: shown in
+ * full while typed, and offered to the IME for prediction and its dictionary.
+ * The eye is here because these are pasted more often than typed, and a paste
+ * that silently went wrong is worse than a briefly visible secret.
+ */
+@Composable
+private fun SecretField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    imeAction: ImeAction = ImeAction.Next,
+    onImeAction: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    var visible by remember { mutableStateOf(false) }
+    OutlinedTextField(
+        value,
+        onValueChange,
+        label = { Text(label) },
+        singleLine = true,
+        visualTransformation =
+            if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Password,
+            imeAction = imeAction
+        ),
+        keyboardActions = KeyboardActions(
+            onNext = { onImeAction() },
+            onDone = { onImeAction() }
+        ),
+        trailingIcon = {
+            IconButton(onClick = { visible = !visible }) {
+                Icon(
+                    if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                    contentDescription = if (visible) "隐藏" else "显示"
+                )
+            }
+        },
+        modifier = modifier
+    )
+}
+
 @Composable
 private fun StorageSection(state: AppState) {
     val settings = state.serverSettings ?: return
@@ -203,26 +327,54 @@ private fun StorageSection(state: AppState) {
     var user by remember(settings) { mutableStateOf(settings.storage.username) }
     var password by remember(settings) { mutableStateOf("") }
 
+    fun save() {
+        state.saveServerSettings(
+            settings.copy(storage = StorageSettingsDto(url = url, username = user, password = password))
+        )
+        password = ""
+    }
+
     Column(Modifier.padding(horizontal = 20.dp)) {
-        Text("WebDAV 存储", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        SectionTitle("WebDAV 存储")
         Spacer(Modifier.height(12.dp))
-        OutlinedTextField(url, { url = it }, label = { Text("地址") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(user, { user = it }, label = { Text("账号") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(
+            url, { url = it },
+            label = { Text("地址") },
+            singleLine = true,
+            // Next rather than the default Done on every field: filling this
+            // form closed the keyboard after each line and needed another tap.
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Uri,
+                imeAction = ImeAction.Next
+            ),
+            supportingText = if (url.startsWith("http://")) {
+                {
+                    Text(
+                        "http 是明文：这里填的账号密码会以可还原的形式在网络上传输。",
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            } else null,
+            modifier = Modifier.fillMaxWidth()
+        )
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
-            password, { password = it },
-            label = { Text(if (settings.storage.passwordSet) "密码（留空保持不变）" else "密码") },
+            user, { user = it },
+            label = { Text("账号") },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        SecretField(
+            password, { password = it },
+            label = if (settings.storage.passwordSet) "密码（留空保持不变）" else "密码",
+            imeAction = ImeAction.Done,
+            onImeAction = { save() },
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(12.dp))
-        Button(onClick = {
-            state.saveServerSettings(
-                settings.copy(storage = StorageSettingsDto(url = url, username = user, password = password))
-            )
-            password = ""
-        }) { Text("保存存储设置") }
+        Button(onClick = { save() }) { Text("保存存储设置") }
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -235,52 +387,54 @@ private fun ScraperSection(state: AppState) {
     var bangumi by remember(settings) { mutableStateOf("") }
     var language by remember(settings) { mutableStateOf(settings.scraper.language) }
 
+    fun save() {
+        state.saveServerSettings(
+            settings.copy(
+                scraper = ScraperSettingsDto(
+                    tmdbApiKey = tmdb,
+                    tvdbApiKey = tvdb,
+                    bangumiToken = bangumi,
+                    language = language
+                )
+            )
+        )
+        tmdb = ""
+        tvdb = ""
+        bangumi = ""
+    }
+
     Column(Modifier.padding(horizontal = 20.dp)) {
-        Text("刮削源", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        SectionTitle("刮削源")
+        Spacer(Modifier.height(4.dp))
         Text(
             "TMDB 与 TheTVDB 需要自行申请 API Key；bangumi.tv 无需密钥，填 Token 只是提高频率限制。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
+        SecretField(
             tmdb, { tmdb = it },
-            label = { Text(if (settings.scraper.tmdbApiKeySet) "TMDB API Key（已设置）" else "TMDB API Key") },
-            singleLine = true, modifier = Modifier.fillMaxWidth()
+            label = if (settings.scraper.tmdbApiKeySet) "TMDB API Key（已设置）" else "TMDB API Key",
+            modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
+        SecretField(
             tvdb, { tvdb = it },
-            label = { Text(if (settings.scraper.tvdbApiKeySet) "TheTVDB API Key（已设置）" else "TheTVDB API Key") },
-            singleLine = true, modifier = Modifier.fillMaxWidth()
+            label = if (settings.scraper.tvdbApiKeySet) "TheTVDB API Key（已设置）" else "TheTVDB API Key",
+            modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
+        SecretField(
             bangumi, { bangumi = it },
-            label = { Text(if (settings.scraper.bangumiTokenSet) "bangumi.tv Token（已设置）" else "bangumi.tv Token（可选）") },
-            singleLine = true, modifier = Modifier.fillMaxWidth()
+            label = if (settings.scraper.bangumiTokenSet) "bangumi.tv Token（已设置）" else "bangumi.tv Token（可选）",
+            modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            language, { language = it },
-            label = { Text("元数据语言") },
-            supportingText = { Text("例如 zh-CN、zh-TW、ja-JP、en-US") },
-            singleLine = true, modifier = Modifier.fillMaxWidth()
-        )
+        // Free text accepted "ja" or "ja_JP" and then quietly returned English.
+        // These four are what the scrapers are actually asked for.
+        LanguageField(language) { language = it }
         Spacer(Modifier.height(12.dp))
-        Button(onClick = {
-            state.saveServerSettings(
-                settings.copy(
-                    scraper = ScraperSettingsDto(
-                        tmdbApiKey = tmdb,
-                        tvdbApiKey = tvdb,
-                        bangumiToken = bangumi,
-                        language = language
-                    )
-                )
-            )
-            tmdb = ""; tvdb = ""; bangumi = ""
-        }) { Text("保存刮削设置") }
+        Button(onClick = { save() }) { Text("保存刮削设置") }
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -288,12 +442,9 @@ private fun ScraperSection(state: AppState) {
 @Composable
 private fun ClientSection(state: AppState) {
     Column(Modifier.padding(horizontal = 20.dp)) {
-        Text("客户端", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        SectionTitle("客户端")
         Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("深色主题", Modifier.weight(1f))
-            Switch(checked = state.darkTheme, onCheckedChange = { state.setTheme(it) })
-        }
+        SwitchRow("深色主题", state.darkTheme) { state.setTheme(it) }
         Spacer(Modifier.height(8.dp))
         Text(
             "平台: ${PlatformInfo.name}",
@@ -361,7 +512,7 @@ private fun SyncSection(state: AppState) {
     }
 
     Column(Modifier.padding(horizontal = 20.dp)) {
-        Text("跨端同步", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        SectionTitle("跨端同步")
         Spacer(Modifier.height(8.dp))
         Text(
             "把观看进度、媒体库定义与服务器设置写成一个文件放在 WebDAV 上，其它设备读回来合并。" +
@@ -373,12 +524,11 @@ private fun SyncSection(state: AppState) {
 
         val current = settings
         Spacer(Modifier.height(10.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("启用同步", Modifier.weight(1f))
-            Switch(
-                checked = current?.enabled == true,
-                enabled = current != null && !busy,
-                onCheckedChange = { want ->
+        SwitchRow(
+            label = "启用同步",
+            checked = current?.enabled == true,
+            enabled = current != null && !busy,
+            onCheckedChange = { want ->
                     apply {
                         val updated = state.library.updateSyncSettings(
                             (current ?: SyncSettingsDto()).copy(enabled = want, remotePath = path)
@@ -392,8 +542,7 @@ private fun SyncSection(state: AppState) {
                         }
                     }
                 }
-            )
-        }
+        )
 
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
@@ -485,7 +634,7 @@ private fun BackupSection(state: AppState) {
     var error by remember { mutableStateOf<String?>(null) }
 
     Column(Modifier.padding(horizontal = 20.dp)) {
-        Text("备份与迁移", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        SectionTitle("备份与迁移")
         Spacer(Modifier.height(8.dp))
         Text(
             "导出一个 JSON：服务器设置、媒体库定义、观看进度（位置 / 已看 / 收藏 / 音轨字幕选择），" +
@@ -494,15 +643,12 @@ private fun BackupSection(state: AppState) {
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ToggleButton(checked = includeItems, onCheckedChange = { includeItems = it }) {
-                Text("包含刮削数据")
-            }
-            ToggleButton(checked = includeSecrets, onCheckedChange = { includeSecrets = it }) {
-                Text("包含凭据")
-            }
-        }
+        Spacer(Modifier.height(4.dp))
+        // Checkboxes, not filled buttons. Selected, these two looked exactly
+        // like the "导出" button ten dp below them — two states and two actions
+        // in one visual register.
+        CheckboxRow("包含刮削数据", includeItems) { includeItems = it }
+        CheckboxRow("包含凭据", includeSecrets) { includeSecrets = it }
         if (includeSecrets) {
             Spacer(Modifier.height(6.dp))
             Text(
@@ -542,7 +688,7 @@ private fun BackupSection(state: AppState) {
                         if (saved == null) error = "没有写入文件"
                     }
                 }
-            ) { Text("导出") }
+            ) { Text("导出…") }
 
             FilledTonalButton(
                 enabled = !busy,
@@ -588,6 +734,75 @@ private fun BackupSection(state: AppState) {
         }
         Spacer(Modifier.height(20.dp))
     }
+}
+
+/** A label and a checkbox that answer to the whole row, as [SwitchRow] does. */
+@Composable
+private fun CheckboxRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(value = checked, role = Role.Checkbox, onValueChange = onCheckedChange)
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null)
+        Spacer(Modifier.width(12.dp))
+        Text(label)
+    }
+}
+
+/**
+ * The metadata language, as the four values the scrapers are actually asked
+ * for. It was a free-text box whose supporting text listed these same four, and
+ * a near miss ("ja", "ja_JP") is not rejected anywhere — TMDB simply answers in
+ * English and nothing says why.
+ */
+@Composable
+private fun LanguageField(value: String, onChange: (String) -> Unit) {
+    val options = listOf(
+        "zh-CN" to "简体中文",
+        "zh-TW" to "繁体中文",
+        "ja-JP" to "日语",
+        "en-US" to "英语"
+    )
+    Column {
+        Text(
+            "元数据语言",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(6.dp))
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            options.forEachIndexed { index, (code, label) ->
+                SegmentedButton(
+                    selected = value == code,
+                    onClick = { onChange(code) },
+                    shape = SegmentedButtonDefaults.itemShape(index, options.size)
+                ) {
+                    Text(label, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The scanner reports its phase as the identifier it uses internally. The
+ * notification already translated these; the app itself showed "scraping" and
+ * "probing" on screen.
+ */
+internal fun scanPhaseLabel(phase: String): String = when (phase) {
+    "queued" -> "排队中"
+    "listing" -> "读取目录"
+    "scanning" -> "扫描"
+    "saving" -> "写入"
+    "scraping" -> "刮削"
+    "probing" -> "解析容器"
+    "done" -> "完成"
+    "cancelled" -> "已取消"
+    "error" -> "出错"
+    else -> phase
 }
 
 private fun kindLabel(kind: LibraryKind) = when (kind) {

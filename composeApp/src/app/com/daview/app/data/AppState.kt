@@ -20,7 +20,10 @@ import com.daview.shared.model.ScanMode
 import com.daview.shared.model.ScanProgressDto
 import com.daview.shared.model.ServerInfoDto
 import com.daview.shared.model.ServerSettingsDto
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -116,6 +119,13 @@ class AppState(private val scope: CoroutineScope) {
 
     var searchQuery by mutableStateOf("")
     var searchResults by mutableStateOf<List<MediaItemDto>>(emptyList())
+
+    /** True between a query being asked for and its answer arriving. */
+    var searchLoading by mutableStateOf(false)
+        private set
+
+    /** The search in flight, so a newer one can cancel it. */
+    private var searchJob: Job? = null
 
     var toast by mutableStateOf<String?>(null)
         private set
@@ -305,9 +315,34 @@ class AppState(private val scope: CoroutineScope) {
         detailEpisodes = library.children(seasonId, links)
     }
 
-    fun search(query: String) = run {
-        searchResults = if (query.isBlank()) emptyList()
-        else library.items(links, search = query, limit = 60).items
+    /**
+     * Runs one search, and cancels whatever search was still in flight.
+     *
+     * Every keystroke used to launch a coroutine that nobody could stop, so the
+     * answer to a shorter, slower query could land after the answer to what the
+     * user had actually finished typing.
+     */
+    fun search(query: String) {
+        searchJob?.cancel()
+        if (query.isBlank()) {
+            searchResults = emptyList()
+            searchLoading = false
+            return
+        }
+        searchLoading = true
+        searchJob = scope.launch {
+            try {
+                searchResults = library.items(links, search = query, limit = SEARCH_LIMIT).items
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: MediaFacade.FacadeException) {
+                notify(listOfNotNull(e.message, e.detail).joinToString("："))
+            } catch (e: Throwable) {
+                notify(e.message ?: "搜索失败")
+            } finally {
+                if (currentCoroutineContext().isActive) searchLoading = false
+            }
+        }
     }
 
     fun toggleFavorite(item: MediaItemDto) = run {
@@ -411,6 +446,8 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     private companion object {
+        /** One page of search results. The facade caps a page at 500 anyway. */
+        const val SEARCH_LIMIT = 60
         const val KEY_THEME = "theme"
     }
 }

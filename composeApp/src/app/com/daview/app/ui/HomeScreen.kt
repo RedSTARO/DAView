@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import com.daview.app.libraryIcon
 import com.daview.app.data.AppState
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
@@ -126,11 +127,12 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
         val running = state.scanStatus.filter { it.running }
         if (running.isNotEmpty()) {
             item {
-                Column(Modifier.padding(horizontal = 20.dp)) {
+                Column {
                     SectionHeader("正在扫描")
                     running.forEach { status ->
                         Text(
-                            "${status.libraryName} · ${status.phase} ${status.current}/${status.total} ${status.message}",
+                            "${status.libraryName} · ${scanPhaseLabel(status.phase)} " +
+                                "${status.current}/${status.total} ${status.message}",
                             style = MaterialTheme.typography.bodySmall,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -248,12 +250,7 @@ private fun LibraryShortcuts(libraries: List<LibraryDto>, onClick: (LibraryDto) 
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Icon(
-                            imageVector = when (library.kind) {
-                                LibraryKind.MOVIE -> Icons.Filled.Movie
-                                LibraryKind.SERIES -> Icons.Filled.Tv
-                                LibraryKind.ANIME -> Icons.AutoMirrored.Filled.PlaylistPlay
-                                LibraryKind.OTHER -> Icons.Filled.Movie
-                            },
+                            imageVector = libraryIcon(library.kind),
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary
                         )
