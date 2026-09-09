@@ -34,7 +34,7 @@ RTX Video Super Resolution 与 RTX Video HDR），也可以把播放交给 PotPl
 
 | 实测 | 结果 | 影响 |
 | --- | --- | --- |
-| `MKCOL` / `PUT` / `DELETE` | `403`，`Allow:` 头里也没有写方法 | 视网盘而定，可能整个是只读的；同步开关会先试写一次再决定 |
+| `MKCOL` / `PUT` / `DELETE` | 曾经 `403`；2026-09-09 复测为 `PUT 201` / `DELETE 204`。两次的 `Allow:` 头都没列 `PUT` | 可写与否会变，且不能从 `Allow:` 读出来；同步开关先试写一次再决定 |
 | `GET` 文件 | `302` 跳转到签名 CDN 直链，支持 `Range`，`Access-Control-Allow-Origin: *`，有效期约 76 小时，且**不绑定 IP** | 播放可以直连 CDN，字节不必经过任何中间层 |
 | 浏览器跨域 `PROPFIND` | 预检返回 `401`，无任何 `Access-Control-Allow-*` | 浏览器**不可能**直连 WebDAV。网页端因此必须有一台常驻服务器，这也是它被移除的原因 |
 
@@ -47,7 +47,10 @@ RTX Video Super Resolution 与 RTX Video HDR），也可以把播放交给 PotPl
 - 浏览 WebDAV 目录树，把任意子目录指定为「电影 / 电视剧 / 番剧 / 其他」媒体库
 - Emby / Jellyfin 命名约定：`片名 (年份)/Season 01/片名 - S01E01.mkv`
 - 识别外挂字幕的语言与标记：`.zh-Hans.default.ass`、`.zh-Hant.ass`、`.zh-Hans.ja.ass`（双语）
-- 跳过 `Extras/`、`.url`、`sample`/`trailer` 等噪音文件
+- 跳过 `.url`、`Thumbs.db`、`sample`/`trailer` 等噪音文件
+- 季目录里的 `SPs/`、`Extras/`、`CDs/` 之类的子目录会被下钻一层，里面的**视频**
+  挂到该剧的「特别篇」（第 0 季）而不是混进正片列表；原声带那类目录里全是音频，
+  `isVideoFile` 本来就不收，所以它们自然进不来
 - 剧集目录里嵌套的 `片名 (年份)` 电影目录（如 `iPartment (2009)/iPartment The Movie (2018)`）
   会被识别成挂在该剧下的「相关影片」，而不是硬塞进某一季
 

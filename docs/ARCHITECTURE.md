@@ -10,15 +10,26 @@
 ```
 OPTIONS /webdav/            → 200, Allow: OPTIONS, LOCK, DELETE, PROPPATCH, COPY, MOVE, UNLOCK, PROPFIND
 OPTIONS 预检 (跨域 PROPFIND) → 401, 无 Access-Control-Allow-* 响应头
-MKCOL / PUT / DELETE        → 403
 GET  <file>                 → 302 → https://<ip>-v3.pd1.cjjd19.com/... ?t=<expiry>&s=<signature>
      跳转后                  → 206 Partial Content, Access-Control-Allow-Origin: *
 ```
 
+写入这一项变过，而且只能靠试：
+
+```
+2026-09 之前   MKCOL / PUT / DELETE → 403
+2026-09-09  PUT → 201、GET → 200、DELETE → 204（同一个账号、同一个网关）
+```
+
+`Allow:` 头从头到尾都没列过 `PUT`，两次都没有——它拒绝写的时候没列，接受写
+的时候也没列。所以同步开关那条“先试写一次再决定”的设计不仅仍然成立，这次变化
+恰好证明了它是对的：把读到的 `Allow:` 当答案的实现，在这两个时间点上都会答错。
+
 三条推论直接决定了架构：
 
 1. **网页端必须有服务端。** 浏览器发不出带 `Authorization` 的跨域 `PROPFIND`。
-2. **跨端进度同步必须有服务端。** 网盘是只读的，没法把状态写回去。
+2. **跨端进度同步不能假定存储可写。** 当初这个网关是只读的，同步因此设计成
+   “启用即一次真实上传，成功才留在开启状态”；现在它可写了，那条设计不需要改。
 3. **播放不必经过服务器转发字节。** 签名直链不绑定 IP（用另一台机器的出口
    请求同一条链接仍返回 `206`），也不需要凭据，所以可以直接给播放器或 `<video>`。
 

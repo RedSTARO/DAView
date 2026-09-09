@@ -25,6 +25,9 @@ class Scanner(
 ) {
     private val log = LoggerFactory.getLogger(Scanner::class.java)
 
+    /** Season zero is the specials folder, in this layout and in Emby's. */
+    private val SPECIALS_SEASON = 0
+
     fun interface ProgressSink {
         fun report(phase: String, current: Int, total: Int, message: String)
     }
@@ -165,9 +168,25 @@ class Scanner(
         }
         val looseSubtitles = children.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
 
+        // Anything that is not the season's own episodes: a `SPs`, `Extras` or
+        // `CDs` folder sitting inside it. Collected here rather than scanned in
+        // place because they all belong to one specials season, not to the
+        // season they happen to live under.
+        val extraFolders = mutableListOf<DavEntry>()
+        var specialsSeasonId: String? = null
+        var specialsEpisodes = 0
+
         seasonFolders.forEach { seasonFolder ->
             val number = NameParser.parseSeasonFolder(seasonFolder.name) ?: 1
-            out += seasonWithEpisodes(library, seriesId, info.title, seasonFolder, number, now)
+            val scanned = seasonWithEpisodes(library, seriesId, info.title, seasonFolder, number, now)
+            out += scanned.records
+            extraFolders += scanned.subFolders
+            if (number == SPECIALS_SEASON) {
+                // A real `Season 00` already is the specials season; the extras
+                // join it instead of a second one appearing beside it.
+                specialsSeasonId = itemId(library.id, seasonFolder.path)
+                specialsEpisodes = scanned.records.count { it.dto.kind == ItemKind.EPISODE }
+            }
         }
 
         if (looseVideos.isNotEmpty()) {
@@ -183,6 +202,20 @@ class Scanner(
             )
         }
 
+        // At the series level these were filtered out of `otherFolders` as noise,
+        // which is right for building seasons and wrong for finding specials.
+        extraFolders += children.filter { it.isDirectory && NameParser.isExtrasFolder(it.name) }
+        out += specialsFrom(
+            library = library,
+            seriesId = seriesId,
+            seriesName = info.title,
+            seriesFolder = folder,
+            folders = extraFolders,
+            existingSeasonId = specialsSeasonId,
+            indexOffset = specialsEpisodes,
+            now = now
+        )
+
         // A nested `Title (Year)` folder inside a series usually holds a film
         // spin-off (`iPartment (2009)/iPartment The Movie (2018)`). Treat it as a
         // movie attached to the series rather than mangling it into a season.
@@ -197,7 +230,7 @@ class Scanner(
 
                 val looksEpisodic = nestedVideos.any { NameParser.parseEpisode(it.name, null)?.season != null }
                 if (looksEpisodic) {
-                    out += seasonWithEpisodes(library, seriesId, info.title, nested, 1, now)
+                    out += seasonWithEpisodes(library, seriesId, info.title, nested, 1, now).records
                 } else {
                     val main = nestedVideos.maxByOrNull { it.size ?: 0 }!!
                     out += movieFromFile(
@@ -218,7 +251,7 @@ class Scanner(
         folder: DavEntry,
         seasonNumber: Int,
         now: Long
-    ): List<ItemRecord> {
+    ): ScannedSeason {
         val seasonId = itemId(library.id, folder.path)
         val out = mutableListOf<ItemRecord>()
         out += ItemRecord(
@@ -245,6 +278,82 @@ class Scanner(
 
         out += videos.mapIndexed { position, video ->
             episodeRecord(library, seriesId, seriesName, seasonId, seasonNumber, video, subtitles, position, now)
+        }
+        return ScannedSeason(out, children.filter { it.isDirectory })
+    }
+
+    /**
+     * What one season folder produced, plus the directories inside it.
+     *
+     * The caller needs those directories because what is in them — menus, PVs,
+     * creditless openings, a soundtrack — is not part of the season's run, and
+     * listing the folder a second time to find them would double the traversal
+     * of a share where every listing is a network round trip.
+     */
+    private data class ScannedSeason(
+        val records: List<ItemRecord>,
+        val subFolders: List<DavEntry>
+    )
+
+    /**
+     * Everything under a series that is not an episode of a season, gathered
+     * into that series' specials season.
+     *
+     * They go to season zero rather than inline, so the run someone is actually
+     * watching stays a clean list and the extras sit in their own tab. Nothing
+     * filters by folder name: what is worth having is decided by the file, and
+     * [NameParser.isVideoFile] already rejects the FLAC albums that make up most
+     * of a `CDs` directory.
+     */
+    private fun specialsFrom(
+        library: LibraryDto,
+        seriesId: String,
+        seriesName: String,
+        seriesFolder: DavEntry,
+        folders: List<DavEntry>,
+        existingSeasonId: String?,
+        indexOffset: Int,
+        now: Long
+    ): List<ItemRecord> {
+        if (folders.isEmpty()) return emptyList()
+
+        val found = mutableListOf<Pair<DavEntry, List<DavEntry>>>()
+        folders.distinctBy { it.path }.forEach { folder ->
+            runCatching {
+                val entries = dav.list(folder.path)
+                val subtitles = entries.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
+                entries.filter {
+                    !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name)
+                }.forEach { found += it to subtitles }
+            }.onFailure { log.warn("特典目录 {} 扫描失败", folder.path, it) }
+        }
+        if (found.isEmpty()) return emptyList()
+
+        val out = mutableListOf<ItemRecord>()
+        val seasonId = existingSeasonId ?: itemId(library.id, seriesFolder.path + "#specials")
+        if (existingSeasonId == null) {
+            out += ItemRecord(
+                dto = MediaItemDto(
+                    id = seasonId,
+                    libraryId = library.id,
+                    kind = ItemKind.SEASON,
+                    parentId = seriesId,
+                    seriesId = seriesId,
+                    seriesName = seriesName,
+                    name = "特别篇",
+                    sortName = SPECIALS_SEASON.toString().padStart(4, '0'),
+                    indexNumber = SPECIALS_SEASON,
+                    path = seriesFolder.path
+                ),
+                dateCreated = now,
+                dateModified = now
+            )
+        }
+        out += found.mapIndexed { position, (video, subtitles) ->
+            episodeRecord(
+                library, seriesId, seriesName, seasonId, SPECIALS_SEASON,
+                video, subtitles, indexOffset + position, now
+            )
         }
         return out
     }
