@@ -56,16 +56,54 @@ import com.daview.app.theme.DaViewTheme
 import com.daview.shared.model.LibraryKind
 import com.daview.app.ui.DetailScreen
 import com.daview.app.ui.HomeScreen
+import com.daview.app.ui.LoadingPane
 import com.daview.app.ui.LibraryScreen
 import com.daview.app.ui.PlayerScreen
 import com.daview.app.ui.SearchScreen
 import com.daview.app.ui.SettingsScreen
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 
 @Composable
 fun App() {
     val scope = rememberCoroutineScope()
     val state = remember { AppState(scope) }
+
+    // Opening the library is disk work — the SQLite driver unpacks itself, the
+    // migrations run — and it used to happen inside composition, which is to
+    // say before the window had anything to show. Now the window comes up
+    // first and this fills it in.
+    LaunchedEffect(Unit) { state.open() }
+
+    DaViewTheme(darkTheme = state.darkTheme) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            if (state.ready) Library(state, scope) else Opening(state.startupError)
+        }
+    }
+}
+
+/** The window while the library is being opened, or if it could not be. */
+@Composable
+private fun Opening(error: String?) {
+    if (error == null) {
+        LoadingPane()
+        return
+    }
+    LoadingPane {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("无法打开媒体库", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                error,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+    }
+}
+
+@Composable
+private fun Library(state: AppState, scope: CoroutineScope) {
     val playback = remember { PlaybackController(state, scope) }
 
     // Artwork resolves against the on-disk cache rather than a URL: the file is
@@ -78,14 +116,9 @@ fun App() {
             .build()
     }
 
-
-    LaunchedEffect(Unit) {
-        state.start()
-        // A scan outlives the screen that started it, and may well have been
-        // running before this process was.
-        state.pollScanStatus()
-    }
-
+    // A scan outlives the screen that started it, and may well have been
+    // running before this process was.
+    LaunchedEffect(Unit) { state.pollScanStatus() }
 
     LaunchedEffect(state.toast) {
         if (state.toast != null) {
@@ -94,34 +127,29 @@ fun App() {
         }
     }
 
-    DaViewTheme(darkTheme = state.darkTheme) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-
-            BoxWithConstraints(Modifier.fillMaxSize()) {
-                val wide = maxWidth >= 720.dp
-                Box(Modifier.fillMaxSize()) {
-                    if (wide) {
-                        Row(Modifier.fillMaxSize()) {
-                            SideNavigation(state)
-                            Column(Modifier.fillMaxSize()) {
-                                TopRow(state)
-                                Content(state, playback)
-                            }
-                        }
-                    } else {
-                        Column(Modifier.fillMaxSize()) {
-                            TopRow(state)
-                            Box(Modifier.weight(1f)) { Content(state, playback) }
-                            BottomNavigation(state)
-                        }
-                    }
-
-                    state.toast?.let { message ->
-                        Snackbar(
-                            modifier = Modifier.align(Alignment.BottomCenter).padding(24.dp)
-                        ) { Text(message) }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wide = maxWidth >= 720.dp
+        Box(Modifier.fillMaxSize()) {
+            if (wide) {
+                Row(Modifier.fillMaxSize()) {
+                    SideNavigation(state)
+                    Column(Modifier.fillMaxSize()) {
+                        TopRow(state)
+                        Content(state, playback)
                     }
                 }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    TopRow(state)
+                    Box(Modifier.weight(1f)) { Content(state, playback) }
+                    BottomNavigation(state)
+                }
+            }
+
+            state.toast?.let { message ->
+                Snackbar(
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(24.dp)
+                ) { Text(message) }
             }
         }
     }

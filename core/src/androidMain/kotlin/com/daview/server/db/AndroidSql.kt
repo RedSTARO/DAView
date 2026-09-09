@@ -51,7 +51,19 @@ class AndroidSqlDatabase(
 
     private val connection by lazy { AndroidConnection(db) }
 
-    override fun <T> read(block: (SqlConnection) -> T): T = lock.withLock { block(connection) }
+    /**
+     * Deliberately unlocked. [AndroidStatement] is built per call and keeps its
+     * bindings to itself, and SQLiteDatabase is safe to use from several
+     * threads, so serialising reads here bought nothing and made the home
+     * screen's five questions wait for each other.
+     *
+     * This does not turn on write-ahead logging's connection pool, which is
+     * what would let the reads genuinely overlap. `synchronous` is a per
+     * connection setting with no platform API behind it, so a pool would leave
+     * it applied to whichever connection happened to run the PRAGMA — a trade
+     * worth making only with a device to measure it on.
+     */
+    override fun <T> read(block: (SqlConnection) -> T): T = block(connection)
 
     override fun <T> transaction(block: (SqlConnection) -> T): T = lock.withLock {
         db.beginTransaction()

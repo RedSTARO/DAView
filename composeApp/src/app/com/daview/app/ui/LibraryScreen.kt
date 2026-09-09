@@ -37,13 +37,20 @@ private val sortOptions = listOf(
 fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: String) {
     val library = state.libraries.firstOrNull { it.id == libraryId }
 
+    // Whether the list in hand is this library's. A re-sort keeps it true, so
+    // the entries stay put while the new order is fetched; moving to another
+    // library makes it false until that library's own entries arrive.
+    val loaded = state.libraryItemsOf == libraryId
+
     Column(Modifier.fillMaxSize()) {
         SectionHeader(library?.name ?: "媒体库") {
-            Text(
-                "${state.libraryItems.size} 项",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            if (loaded) {
+                Text(
+                    "${state.libraryItems.size} 项",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         Row(
@@ -61,9 +68,7 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
         }
 
         when {
-            state.libraryLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                ContainedLoadingIndicator()
-            }
+            !loaded -> LoadingPane()
 
             state.libraryItems.isEmpty() -> EmptyState(
                 title = "这个媒体库还是空的",

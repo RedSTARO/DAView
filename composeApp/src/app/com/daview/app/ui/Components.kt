@@ -29,13 +29,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MediaItemDto
+import kotlinx.coroutines.delay
 
 /** `1:23:45` for anything over an hour, `12:34` otherwise. */
 fun formatDuration(ms: Long?): String {
@@ -84,6 +88,31 @@ fun formatSize(bytes: Long?): String {
 }
 
 private fun pad(value: Long) = value.toString().padStart(2, '0')
+
+/**
+ * Holds the space while something is on its way, and only draws the indicator
+ * if the wait outlasts a couple of frames.
+ *
+ * A library page comes back in about twenty milliseconds. A spinner shown and
+ * withdrawn inside that reads as the content blinking out rather than as
+ * feedback, and it is why moving between libraries felt slower than it was.
+ * Anything genuinely slow still gets one.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun LoadingPane(content: @Composable (() -> Unit)? = null) {
+    var settled by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(150)
+        settled = true
+    }
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        when {
+            content != null -> content()
+            settled -> ContainedLoadingIndicator()
+        }
+    }
+}
 
 @Composable
 fun SectionHeader(title: String, trailing: @Composable (() -> Unit)? = null) {

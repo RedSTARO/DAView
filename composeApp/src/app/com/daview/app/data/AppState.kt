@@ -21,9 +21,14 @@ import com.daview.shared.model.ScanProgressDto
 import com.daview.shared.model.ServerInfoDto
 import com.daview.shared.model.ServerSettingsDto
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 sealed interface Screen {
     data object Home : Screen
@@ -55,9 +60,30 @@ class AppState(private val scope: CoroutineScope) {
 
     private val settings: SettingsStore = createSettingsStore()
 
-    val core: ServerContext = createCoreContext()
-    val library: MediaFacade = core.media
-    val links: AssetLinks = LocalAssetLinks(core)
+    /** Everything that only exists once the library has been opened. */
+    private class Opened(val core: ServerContext) {
+        val media = core.media
+        val links = LocalAssetLinks(core)
+    }
+
+    private var opened by mutableStateOf<Opened?>(null)
+
+    /**
+     * Whether the library is open yet. Screens are composed only once it is,
+     * which is what lets them reach [library] without checking.
+     */
+    val ready: Boolean get() = opened != null
+
+    /** Set instead of [ready] when the library could not be opened at all. */
+    var startupError by mutableStateOf<String?>(null)
+        private set
+
+    val core: ServerContext get() = requireOpen().core
+    val library: MediaFacade get() = requireOpen().media
+    val links: AssetLinks get() = requireOpen().links
+
+    private fun requireOpen(): Opened = opened
+        ?: error("the library is not open yet; screens compose only once ready is true")
 
     var serverInfo by mutableStateOf<ServerInfoDto?>(null)
     var serverSettings by mutableStateOf<ServerSettingsDto?>(null)
@@ -71,6 +97,14 @@ class AppState(private val scope: CoroutineScope) {
     var darkTheme by mutableStateOf(settings.getString(KEY_THEME) != "light")
 
     var libraryItems by mutableStateOf<List<MediaItemDto>>(emptyList())
+
+    /**
+     * Which library [libraryItems] holds, so a screen can tell "still loading"
+     * from "loaded and empty" without a second flag — and, more to the point,
+     * so moving between libraries does not briefly render the previous one's
+     * entries under the new one's name.
+     */
+    var libraryItemsOf by mutableStateOf<String?>(null)
     var libraryLoading by mutableStateOf(false)
     var librarySort by mutableStateOf("sortName")
 
@@ -119,6 +153,28 @@ class AppState(private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * Opens the library, then reads what it already knows.
+     *
+     * Opening costs about a third of a second on a warm machine — the SQLite
+     * driver unpacks its native library, the migrations run, the planner's
+     * statistics are refreshed — and it used to happen while the window was
+     * being composed, so nothing was on screen until it finished. It runs off
+     * the UI thread now and the window is up while it does.
+     */
+    fun open() {
+        if (opened != null) return
+        scope.launch {
+            val context = runCatching { withContext(Dispatchers.IO) { createCoreContext() } }
+                .getOrElse {
+                    startupError = it.message ?: "无法打开媒体库"
+                    return@launch
+                }
+            opened = Opened(context)
+            start()
+        }
+    }
+
     /** Reads what the library already knows, before anything has been asked of it. */
     fun start() = run {
         serverInfo = library.info()
@@ -154,37 +210,51 @@ class AppState(private val scope: CoroutineScope) {
 
     fun loadServerSettings() = run { serverSettings = library.settings() }
 
+    /**
+     * The rows are independent questions, so they are asked at once rather than
+     * one after another: the library serves reads from a pool, and asking in
+     * sequence made the page take the sum of them instead of the longest.
+     */
     fun refreshHome() = run {
         val libs = library.libraries()
         libraries = libs
-        home = HomeData(
-            resume = library.resume(20, links),
-            nextUp = library.nextUp(20, links),
-            latest = library.latest(null, 24, links)
-        )
+        coroutineScope {
+            val resume = async { library.resume(20, links) }
+            val nextUp = async { library.nextUp(20, links) }
+            val latest = async { library.latest(null, 24, links) }
+            home = HomeData(resume.await(), nextUp.await(), latest.await())
+        }
         // One row per library, and they only fill in the bottom of the page, so
         // they are gathered after the rest of it is already on screen.
-        home = home.copy(
-            unwatched = libs.associate { it.id to library.unwatched(it.id, 24, links) }
-                .filterValues { it.isNotEmpty() }
-        )
+        val rows = coroutineScope {
+            libs.map { entry -> async { entry.id to library.unwatched(entry.id, 24, links) } }.awaitAll()
+        }
+        home = home.copy(unwatched = rows.toMap().filterValues { it.isNotEmpty() })
     }
 
     fun loadLibrary(libraryId: String) = run {
         libraryLoading = true
+        if (libraryItemsOf != libraryId) libraryItemsOf = null
         try {
             val kind = when (libraries.firstOrNull { it.id == libraryId }?.kind?.isSeriesLike) {
                 true -> ItemKind.SERIES
                 else -> ItemKind.MOVIE
             }
-            val page = library.items(links, libraryId = libraryId, kind = kind, sort = librarySort, limit = 500)
-            // A series library can still contain stand-alone films (a spin-off
-            // movie folder inside a show); include them so nothing disappears.
-            val extra = if (kind == ItemKind.SERIES) {
-                library.items(links, libraryId = libraryId, kind = ItemKind.MOVIE, sort = librarySort, limit = 200)
-                    .items.filter { it.parentId == null }
-            } else emptyList()
-            libraryItems = page.items + extra
+            coroutineScope {
+                val page = async {
+                    library.items(links, libraryId = libraryId, kind = kind, sort = librarySort, limit = 500)
+                }
+                // A series library can still contain stand-alone films (a spin-off
+                // movie folder inside a show); include them so nothing disappears.
+                val extra = async {
+                    if (kind != ItemKind.SERIES) emptyList()
+                    else library
+                        .items(links, libraryId = libraryId, kind = ItemKind.MOVIE, sort = librarySort, limit = 200)
+                        .items.filter { it.parentId == null }
+                }
+                libraryItems = page.await().items + extra.await()
+            }
+            libraryItemsOf = libraryId
         } finally {
             libraryLoading = false
         }

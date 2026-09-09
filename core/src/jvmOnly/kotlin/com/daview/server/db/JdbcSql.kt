@@ -6,60 +6,97 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.Types
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.io.path.createDirectories
 
 /**
- * [SqlDatabase] over sqlite-jdbc, used by the server and the desktop app.
+ * [SqlDatabase] over sqlite-jdbc, used by the desktop app.
  *
- * Access is funnelled through one connection guarded by a lock: writes during a
- * scan are batched inside short transactions, so contention stays low and
- * SQLITE_BUSY never comes up.
+ * Writes go through one connection under a lock — they are batched inside
+ * short transactions during a scan, so contention stays low and SQLITE_BUSY
+ * never comes up. Reads come from a small pool instead, because WAL lets any
+ * number of readers work while a writer is busy, and one connection made them
+ * queue behind each other: the home screen asks five questions at once and got
+ * them answered one at a time.
+ *
+ * The pool is fixed and callers block for a free connection. Reads are short
+ * and there is no point letting more of them at the file than it can serve in
+ * parallel.
  */
 class JdbcSqlDatabase(dataDir: Path, fileName: String = "daview.db") : SqlDatabase {
 
-    private val lock = ReentrantLock()
-    private val connection: Connection
+    private val file = dataDir.also { it.createDirectories() }.resolve(fileName).toAbsolutePath()
+
+    private val writeLock = ReentrantLock()
+    private val writer: Connection
+    private val readers = ArrayBlockingQueue<JdbcConnection>(READERS)
 
     init {
-        dataDir.createDirectories()
         Class.forName("org.sqlite.JDBC")
-        val file = dataDir.resolve(fileName).toAbsolutePath()
-        connection = DriverManager.getConnection("jdbc:sqlite:$file").apply {
-            autoCommit = true
-            createStatement().use { statement ->
-                statement.execute("PRAGMA journal_mode=WAL")
-                statement.execute("PRAGMA synchronous=NORMAL")
-                statement.execute("PRAGMA foreign_keys=ON")
-                statement.execute("PRAGMA busy_timeout=10000")
-            }
+        // WAL is a property of the file, not of the connection, so the first
+        // one to open sets it for every reader that follows.
+        writer = connect().apply {
+            createStatement().use { it.execute("PRAGMA journal_mode=WAL") }
+        }
+        repeat(READERS) { readers.put(JdbcConnection(connect())) }
+    }
+
+    private fun connect(): Connection = DriverManager.getConnection("jdbc:sqlite:$file").apply {
+        autoCommit = true
+        createStatement().use { statement ->
+            statement.execute("PRAGMA synchronous=NORMAL")
+            statement.execute("PRAGMA foreign_keys=ON")
+            statement.execute("PRAGMA busy_timeout=10000")
         }
     }
 
-    private val wrapper = JdbcConnection(connection)
+    private val writeWrapper = JdbcConnection(writer)
 
-    override fun <T> read(block: (SqlConnection) -> T): T = lock.withLock { block(wrapper) }
-
-    override fun <T> transaction(block: (SqlConnection) -> T): T = lock.withLock {
-        connection.autoCommit = false
+    override fun <T> read(block: (SqlConnection) -> T): T {
+        val connection = readers.take()
         try {
-            val result = block(wrapper)
-            connection.commit()
+            return block(connection)
+        } finally {
+            readers.put(connection)
+        }
+    }
+
+    override fun <T> transaction(block: (SqlConnection) -> T): T = writeLock.withLock {
+        writer.autoCommit = false
+        try {
+            val result = block(writeWrapper)
+            writer.commit()
             result
         } catch (t: Throwable) {
-            runCatching { connection.rollback() }
+            runCatching { writer.rollback() }
             throw t
         } finally {
-            connection.autoCommit = true
+            writer.autoCommit = true
         }
     }
 
-    override fun close() = lock.withLock { connection.close() }
+    override fun close() {
+        writeLock.withLock { writer.close() }
+        // Drains rather than iterates: a reader still in use comes back to the
+        // queue when its caller is done with it.
+        repeat(READERS) { runCatching { readers.take().close() } }
+    }
+
+    private companion object {
+        /**
+         * Enough for the home screen to ask everything it needs at once. Going
+         * wider does not help — the reads are short, and past a handful they
+         * contend on the same pages rather than finishing sooner.
+         */
+        const val READERS = 4
+    }
 }
 
 private class JdbcConnection(private val connection: Connection) : SqlConnection {
     override fun statement(sql: String): SqlStatement = JdbcStatement(connection.prepareStatement(sql))
+    fun close() = connection.close()
 }
 
 private class JdbcStatement(private val statement: PreparedStatement) : SqlStatement {
