@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import com.daview.app.platform.AndroidContextHolder
 import com.daview.app.platform.AndroidFilePicker
 import com.daview.app.platform.createSettingsStore
+import com.daview.app.ui.PipRequest
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,6 +55,16 @@ class MainActivity : ComponentActivity() {
     private fun applyStartupBackground() {
         val light = createSettingsStore().getString("theme") == "light"
         window.setBackgroundDrawable(ColorDrawable(if (light) 0xFFFDF8FF.toInt() else 0xFF0E0D14.toInt()))
+    }
+
+    /**
+     * Leaving the app while something is playing puts the video in a corner
+     * rather than stopping it dead — which is what "I want to reply to this
+     * message without losing my place" actually needs, and the only way the
+     * picture survives leaving at all.
+     */
+    override fun onUserLeaveHint() {
+        if (!PipRequest.enter(this)) super.onUserLeaveHint()
     }
 
     override fun onDestroy() {

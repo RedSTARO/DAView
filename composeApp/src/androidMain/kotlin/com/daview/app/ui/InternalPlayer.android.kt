@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.ScreenLockLandscape
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material3.DropdownMenu
@@ -39,10 +40,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import android.util.Rational
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -55,6 +61,7 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
 import com.daview.shared.model.MediaStreamDto
 import com.daview.shared.model.PlaybackInfoDto
@@ -84,6 +91,12 @@ actual fun InternalPlayer(
 
     var playbackError by remember { mutableStateOf<String?>(null) }
 
+    val activity = remember(context) { context.findActivityOrNull() }
+    val pipSupported = remember(activity) { activity != null && PipRequest.supported(activity) }
+    fun enterPip() {
+        activity?.let { PipRequest.enter(it) }
+    }
+
     // Whether the app's own overlay is on screen. media3 fades its transport
     // controls out after a few seconds; the track buttons and the title used to
     // ignore that and sit on the picture for the whole film.
@@ -94,7 +107,11 @@ actual fun InternalPlayer(
     // which is the case this exists for — watching lying down with the phone's
     // own auto-rotate off.
     var orientation by remember { mutableStateOf(ScreenOrientation.SENSOR) }
-    PlaybackPresentation(orientation)
+    val inPictureInPicture = rememberInPictureInPicture()
+    // In a corner window there is nothing to hide the system bars from, and no
+    // room for a title and four buttons — the tile is a couple of hundred
+    // pixels across.
+    if (!inPictureInPicture) PlaybackPresentation(orientation)
 
     val player = remember {
         // The stream URL points at the app's own server over http, and that
@@ -110,6 +127,16 @@ actual fun InternalPlayer(
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(
                 DefaultMediaSourceFactory(DefaultDataSource.Factory(context, httpFactory))
+            )
+            // Asking for audio focus is what makes a phone call, an alarm or
+            // another app pause the film instead of talking over it. Without it
+            // the player simply ignored everything else on the device.
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .setUsage(C.USAGE_MEDIA)
+                    .build(),
+                /* handleAudioFocus = */ true
             )
             .build().apply {
             val subtitles = info.item.mediaStreams
@@ -147,6 +174,51 @@ actual fun InternalPlayer(
         }
     }
 
+    // A session publishes what is playing to the platform, which is what makes
+    // a headset button, a steering-wheel control or a Bluetooth remote reach
+    // this player at all — none of them did, and the media3 dependency that
+    // provides it was already declared and unused.
+    DisposableEffect(player) {
+        val session = runCatching {
+            MediaSession.Builder(context, player)
+                .setId("daview-" + info.sessionId)
+                .build()
+        }.getOrNull()
+        onDispose { session?.release() }
+    }
+
+    // The video shape the corner window should take.
+    DisposableEffect(player) {
+        PipRequest.wanted = true
+        val listener = object : Player.Listener {
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    PipRequest.aspect = Rational(videoSize.width, videoSize.height)
+                }
+            }
+        }
+        player.addListener(listener)
+        onDispose {
+            player.removeListener(listener)
+            PipRequest.wanted = false
+            PipRequest.aspect = null
+        }
+    }
+
+    // Leaving the app pauses the film — unless it went to the corner, which is
+    // the one case where leaving means "keep it running". Video that carries on
+    // playing invisibly, with no notification and no way to stop it, was the
+    // complaint; this is the fix for it that does not turn a video player into
+    // a background audio player.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, player) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP && !inPictureInPicture) player.pause()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             val position = player.currentPosition
@@ -181,12 +253,13 @@ actual fun InternalPlayer(
                     )
                 }
             },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            update = { view -> view.useController = !inPictureInPicture }
         )
 
         // Rides with media3's own controls so the picture is clean when they go.
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = controlsVisible && !inPictureInPicture,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopCenter)
@@ -217,6 +290,15 @@ actual fun InternalPlayer(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (pipSupported) {
+                        IconButton(onClick = { enterPip() }) {
+                            Icon(
+                                Icons.Filled.PictureInPictureAlt,
+                                contentDescription = "画中画",
+                                tint = Color.White
+                            )
+                        }
+                    }
                     IconButton(onClick = {
                         orientation = if (orientation == ScreenOrientation.SENSOR) {
                             ScreenOrientation.LANDSCAPE
@@ -354,3 +436,12 @@ private fun selectTrack(player: ExoPlayer, trackType: Int, stream: MediaStreamDt
         .setOverrideForType(TrackSelectionOverride(target.mediaTrackGroup, 0))
         .build()
 }
+
+
+/** The activity behind the composition, for the platform calls that need one. */
+private tailrec fun android.content.Context.findActivityOrNull(): android.app.Activity? =
+    when (this) {
+        is android.app.Activity -> this
+        is android.content.ContextWrapper -> baseContext.findActivityOrNull()
+        else -> null
+    }
