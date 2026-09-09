@@ -46,6 +46,7 @@ data class HomeData(
     val resume: List<MediaItemDto> = emptyList(),
     val nextUp: List<MediaItemDto> = emptyList(),
     val latest: List<MediaItemDto> = emptyList(),
+    val favourites: List<MediaItemDto> = emptyList(),
     /** Unwatched entries keyed by library id. Libraries with none are absent. */
     val unwatched: Map<String, List<MediaItemDto>> = emptyMap()
 )
@@ -269,7 +270,24 @@ class AppState(private val scope: CoroutineScope) {
             val resume = async { library.resume(20, links) }
             val nextUp = async { library.nextUp(20, links) }
             val latest = async { library.latest(null, 24, links) }
-            home = HomeData(resume.await(), nextUp.await(), latest.await())
+            // Favourites could be set from two places and read from none, so
+            // marking one was a one-way trip.
+            val favourites = async {
+                library.items(links, favorite = true, sort = "sortName", limit = 24).items
+            }
+            val resumeRows = resume.await()
+            // A series with a part-watched episode is already on the resume
+            // shelf; offering its successor on the next shelf put the same show
+            // in two rows at once, one episode apart, under the same artwork.
+            // The repository keeps answering "the next unwatched episode of a
+            // started series" — which shelf shows it is this screen's call.
+            val onResume = resumeRows.mapNotNullTo(HashSet()) { it.seriesId ?: it.id }
+            home = HomeData(
+                resume = resumeRows,
+                nextUp = nextUp.await().filterNot { (it.seriesId ?: it.id) in onResume },
+                latest = latest.await(),
+                favourites = favourites.await()
+            )
         }
         // One row per library, and they only fill in the bottom of the page, so
         // they are gathered after the rest of it is already on screen.
@@ -419,6 +437,16 @@ class AppState(private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * Stops offering an item on the continue-watching shelf. The alternative
+     * was claiming to have finished it, which threw the position away too.
+     */
+    fun hideFromResume(item: MediaItemDto) = run {
+        library.setHiddenFromResume(item.id, true)
+        refreshHome()
+        notify("已从继续观看中移除")
+    }
+
     fun toggleFavorite(item: MediaItemDto) = run {
         library.setFavorite(item.id, !item.userData.favorite)
         refreshAfterWatchChange(item.id)
@@ -488,6 +516,10 @@ class AppState(private val scope: CoroutineScope) {
                 scanStatus = library.scanStatus()
                 if (scanStatus.none { it.running }) {
                     refreshLibraries()
+                    // The shelves are built from what the scan just wrote. Only
+                    // the library counts used to be refreshed, so a first scan
+                    // finished into a home screen that still looked empty.
+                    refreshHome()
                     return@launch
                 }
                 delay(2000)

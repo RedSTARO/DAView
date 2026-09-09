@@ -8,6 +8,7 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -172,6 +173,24 @@ fun ColumnScope.ItemMenuItems(
             state.toggleFavorite(item)
         }
     )
+
+    // Only where it is actually on that shelf: partly watched, not finished.
+    if (item.isPlayable && item.userData.positionMs > 0 && !item.userData.played) {
+        DropdownMenuItem(
+            leadingIcon = {
+                Icon(
+                    Icons.Filled.VisibilityOff,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            text = { Text("从继续观看中移除") },
+            onClick = {
+                dismiss()
+                state.hideFromResume(item)
+            }
+        )
+    }
 
     if (state.current != Screen.Detail(item.id)) {
         HorizontalDivider()

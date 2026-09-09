@@ -393,6 +393,7 @@ class Repository(private val db: Database) {
     fun resume(limit: Int): List<MediaItemDto> = db.read { connection ->
         connection.statement(
             "$SELECT_ITEM WHERE u.position_ms > 0 AND COALESCE(u.played, 0) = 0 " +
+                "AND COALESCE(u.hidden_from_resume, 0) = 0 " +
                 "AND i.kind IN ('MOVIE','EPISODE') ORDER BY u.last_played_at DESC LIMIT ?"
         ).apply { setInt(1, limit) }.useQuery { it.map(::readItem) }
     }
@@ -437,30 +438,53 @@ class Repository(private val db: Database) {
                         JOIN user_data ue2 ON ue2.item_id = e2.id
                         WHERE e2.kind = 'EPISODE' AND (ue2.played = 1 OR ue2.position_ms > 0)
                   )
-                ORDER BY i.sort_name LIMIT ?
+                ORDER BY $LAST_SERIES_ACTIVITY DESC, i.sort_name LIMIT ?
             )
-            ORDER BY i.sort_name
+            ORDER BY $LAST_SERIES_ACTIVITY DESC, i.sort_name
             """.trimIndent()
         ).apply { setInt(1, limit) }.useQuery { it.map(::readItem) }
     }
 
+    /**
+     * What has appeared in the catalogue lately.
+     *
+     * Episodes count, and they used to be excluded. A series row's
+     * `date_created` is not touched when a new episode lands under it, so a
+     * weekly show never reached this shelf at all: it only moved when a whole
+     * new title was added. One entry per series, carrying that series' newest
+     * episode, so a freshly scanned season cannot fill the shelf by itself.
+     *
+     * No window functions here on purpose — the Android build runs on whatever
+     * SQLite the device shipped, and `ROW_NUMBER` needs 3.25.
+     */
     fun latest(libraryId: String?, limit: Int): List<MediaItemDto> = db.read { connection ->
         val filter = if (libraryId == null) "" else "AND i.library_id = ?"
         connection.statement(
-            "$SELECT_ITEM WHERE i.kind IN ('MOVIE','SERIES') AND i.merged_into IS NULL $filter " +
-                "ORDER BY i.date_created DESC LIMIT ?"
+            """
+            $SELECT_ITEM
+            WHERE i.merged_into IS NULL $filter
+              AND i.id IN (
+                SELECT (
+                    SELECT n2.id FROM items n2
+                     WHERE n2.merged_into IS NULL AND n2.kind IN ('MOVIE','EPISODE')
+                       AND COALESCE(n2.series_id, n2.id) = COALESCE(n.series_id, n.id)
+                     ORDER BY n2.date_created DESC, n2.id
+                     LIMIT 1
+                )
+                FROM items n
+                WHERE n.merged_into IS NULL AND n.kind IN ('MOVIE','EPISODE')
+                GROUP BY COALESCE(n.series_id, n.id)
+              )
+            ORDER BY i.date_created DESC
+            LIMIT ?
+            """.trimIndent()
         ).apply {
-            if (libraryId == null) setInt(1, limit) else { setString(1, libraryId); setInt(2, limit) }
+            var index = 1
+            if (libraryId != null) setString(index++, libraryId)
+            setInt(index, limit)
         }.useQuery { it.map(::readItem) }
     }
 
-    /**
-     * Top-level entries nobody has started. A film qualifies on its own row; a
-     * series qualifies only when no episode under it has been watched or left
-     * part-way, which is the same pair of columns [resume] reads one row at a
-     * time. `played_episode_count` cannot answer this — it is a select alias,
-     * and SQLite cannot filter on one.
-     */
     fun unwatched(libraryId: String?, limit: Int): List<MediaItemDto> = db.read { connection ->
         val filter = if (libraryId == null) "" else "AND i.library_id = ?"
         connection.statement(
@@ -620,7 +644,10 @@ class Repository(private val db: Database) {
                                   last_played_at, audio_stream_index, subtitle_stream_index, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(item_id) DO UPDATE SET
-                position_ms = excluded.position_ms, played = excluded.played,
+                position_ms = excluded.position_ms,
+                -- Watching it again is the clearest possible sign that it
+                -- should be back on the shelf.
+                hidden_from_resume = 0, played = excluded.played,
                 play_count = excluded.play_count, favorite = excluded.favorite,
                 last_played_at = excluded.last_played_at,
                 audio_stream_index = excluded.audio_stream_index,
@@ -688,6 +715,27 @@ class Repository(private val db: Database) {
             }
         }
         return userData(itemId)
+    }
+
+    /**
+     * Takes an entry off the continue-watching shelf without touching where it
+     * had got to. Playing it again puts it back.
+     */
+    fun setHiddenFromResume(itemId: String, hidden: Boolean) = db.transaction { connection ->
+        connection.statement(
+            """
+            INSERT INTO user_data (item_id, hidden_from_resume, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(item_id) DO UPDATE SET
+                hidden_from_resume = excluded.hidden_from_resume,
+                updated_at = excluded.updated_at
+            """.trimIndent()
+        ).use {
+            it.setString(1, itemId)
+            it.setInt(2, if (hidden) 1 else 0)
+            it.setLong(3, System.currentTimeMillis())
+            it.executeUpdate()
+        }
     }
 
     fun setFavorite(itemId: String, favorite: Boolean): UserDataDto {
@@ -925,6 +973,17 @@ class Repository(private val db: Database) {
         runCatching { json.decodeFromString(stringListSerializer, raw ?: "[]") }.getOrDefault(emptyList())
 
     private companion object {
+        /**
+         * When anything under this row's series was last played. The next-up
+         * shelf was ordered by season and episode number, so the show finished
+         * last night sat behind one opened once in the spring — and past the
+         * shelf's limit if enough shows were on the go.
+         */
+        const val LAST_SERIES_ACTIVITY =
+            "(SELECT MAX(ua.last_played_at) FROM items a " +
+                "JOIN user_data ua ON ua.item_id = a.id " +
+                "WHERE a.kind = 'EPISODE' AND a.series_id = i.series_id)"
+
         const val SELECT_ITEM = """
             SELECT i.*,
                    u.position_ms, u.played, u.play_count, u.favorite, u.last_played_at,

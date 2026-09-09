@@ -83,6 +83,20 @@ interface MetadataScraper {
     fun searchManual(title: String, year: Int?, kind: ItemKind, config: ScraperConfig): List<ScrapeCandidate> =
         search(title, year, kind, config)
 
+    /**
+     * This source's own id for an entry already identified by another
+     * database, or null if it cannot say.
+     *
+     * An id from somewhere else is still an exact answer, and a source
+     * that can translate one should, because the alternative is matching
+     * the title again and getting a share of them wrong.
+     */
+    fun fromExternalIds(
+        providerIds: Map<String, String>,
+        kind: ItemKind,
+        config: ScraperConfig
+    ): String? = null
+
     fun details(providerId: String, kind: ItemKind, config: ScraperConfig): ScrapedMetadata?
     fun episodes(providerId: String, config: ScraperConfig): List<ScrapedEpisode> = emptyList()
 }
@@ -293,6 +307,50 @@ class TmdbScraper(repository: Repository?) : HttpScraper(repository), MetadataSc
                 )
             }
         }
+    }
+
+    /**
+     * TMDB indexes the same entries under TheTVDB's and IMDb's ids, so
+     * something already identified by one of those can be looked up here
+     * rather than matched again by title.
+     *
+     * That is what a library carried over from Emby or Jellyfin arrives
+     * with: those record a match as a TVDB id, and the folder names they
+     * leave behind carry it too. Without this the id sits in the row
+     * unused unless TheTVDB itself is configured — a paid account for an
+     * answer TMDB will give for free — and the item falls back to a title
+     * search, re-deciding by guesswork what the other server had already
+     * settled, sometimes by hand.
+     */
+    override fun fromExternalIds(
+        providerIds: Map<String, String>,
+        kind: ItemKind,
+        config: ScraperConfig
+    ): String? {
+        if (!isConfigured(config)) return null
+        val (source, id) = EXTERNAL_SOURCES.firstNotNullOfOrNull { (key, param) ->
+            providerIds[key]?.trim()?.takeIf { it.isNotBlank() }?.let { param to it }
+        } ?: return null
+
+        val url = "${base(config)}/find/${encode(id)}?api_key=${config.tmdbApiKey}" +
+            "&external_source=$source"
+        val found = getJson(url, cacheKey = "tmdb:find:$source:$id").obj ?: return null
+        // The endpoint answers in one bucket per kind of entry, so asking
+        // for a film by a series' id returns an empty list rather than the
+        // wrong thing.
+        val bucket = if (kind == ItemKind.MOVIE) "movie_results" else "tv_results"
+        return found[bucket]?.jsonArray
+            ?.firstOrNull()?.jsonObject
+            ?.int("id")?.toString()
+    }
+
+    private companion object {
+        /**
+         * What TMDB will look an entry up by, and the key each is stored
+         * under here. IMDb first: its ids name one title outright, while a
+         * TVDB id is only unique within TheTVDB's own numbering.
+         */
+        val EXTERNAL_SOURCES = listOf("imdb" to "imdb_id", "tvdb" to "tvdb_id")
     }
 }
 

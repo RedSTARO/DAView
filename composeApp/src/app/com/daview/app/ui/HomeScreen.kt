@@ -112,6 +112,11 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
                 state.navigate(Screen.Detail(it.id))
             }
         }
+        item {
+            MediaRow("收藏", home.favourites, menu = itemMenu, onItemPlay = onPlay) {
+                state.navigate(Screen.Detail(it.id))
+            }
+        }
 
         // One row per library rather than a single pooled one: which shelf a
         // thing sits on is most of what decides whether you want it tonight.

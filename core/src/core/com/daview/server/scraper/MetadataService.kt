@@ -107,7 +107,12 @@ class MetadataService(
             val candidateId = when {
                 pinnedId != null -> pinnedId
                 locked != null -> null
-                else -> bestMatch(item, scraper.search(item.name, item.year, kind, config))?.providerId
+                // An id from another database beats searching by title:
+                // it is an answer somebody already arrived at, and this
+                // is what makes a library moved over from Emby keep the
+                // matches it came with instead of being re-guessed.
+                else -> scraper.fromExternalIds(providerIds, kind, config)
+                    ?: bestMatch(item, scraper.search(item.name, item.year, kind, config))?.providerId
             } ?: continue
 
             val details = scraper.details(candidateId, kind, config) ?: continue

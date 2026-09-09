@@ -6,7 +6,9 @@ import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.Types
-import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Semaphore
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.io.path.createDirectories
@@ -21,9 +23,11 @@ import kotlin.io.path.createDirectories
  * queue behind each other: the home screen asks five questions at once and got
  * them answered one at a time.
  *
- * The pool is fixed and callers block for a free connection. Reads are short
- * and there is no point letting more of them at the file than it can serve in
- * parallel.
+ * Readers are opened on demand rather than up front. A database that is only
+ * ever read from one thread — every test here, and the app before anyone has
+ * touched anything — then costs one connection instead of four, which matters
+ * because each one is a file handle and a chunk of SQLite's own memory, and
+ * the test suite builds a fresh database per test method.
  */
 class JdbcSqlDatabase(dataDir: Path, fileName: String = "daview.db") : SqlDatabase {
 
@@ -31,7 +35,11 @@ class JdbcSqlDatabase(dataDir: Path, fileName: String = "daview.db") : SqlDataba
 
     private val writeLock = ReentrantLock()
     private val writer: Connection
-    private val readers = ArrayBlockingQueue<JdbcConnection>(READERS)
+
+    /** Caps how many readers exist at once; a caller waits here for a turn. */
+    private val slots = Semaphore(READERS)
+    private val idle = ConcurrentLinkedQueue<JdbcConnection>()
+    private val opened = CopyOnWriteArrayList<JdbcConnection>()
 
     init {
         Class.forName("org.sqlite.JDBC")
@@ -40,7 +48,6 @@ class JdbcSqlDatabase(dataDir: Path, fileName: String = "daview.db") : SqlDataba
         writer = connect().apply {
             createStatement().use { it.execute("PRAGMA journal_mode=WAL") }
         }
-        repeat(READERS) { readers.put(JdbcConnection(connect())) }
     }
 
     private fun connect(): Connection = DriverManager.getConnection("jdbc:sqlite:$file").apply {
@@ -55,11 +62,13 @@ class JdbcSqlDatabase(dataDir: Path, fileName: String = "daview.db") : SqlDataba
     private val writeWrapper = JdbcConnection(writer)
 
     override fun <T> read(block: (SqlConnection) -> T): T {
-        val connection = readers.take()
+        slots.acquire()
+        val connection = idle.poll() ?: JdbcConnection(connect()).also { opened += it }
         try {
             return block(connection)
         } finally {
-            readers.put(connection)
+            idle.offer(connection)
+            slots.release()
         }
     }
 
@@ -79,16 +88,20 @@ class JdbcSqlDatabase(dataDir: Path, fileName: String = "daview.db") : SqlDataba
 
     override fun close() {
         writeLock.withLock { writer.close() }
-        // Drains rather than iterates: a reader still in use comes back to the
-        // queue when its caller is done with it.
-        repeat(READERS) { runCatching { readers.take().close() } }
+        // Closes what was actually opened, and says so once: draining the idle
+        // queue instead would block forever the second time round, and on a
+        // reader another thread still holds.
+        opened.forEach { runCatching { it.close() } }
+        opened.clear()
+        idle.clear()
     }
 
     private companion object {
         /**
-         * Enough for the home screen to ask everything it needs at once. Going
-         * wider does not help — the reads are short, and past a handful they
-         * contend on the same pages rather than finishing sooner.
+         * The ceiling, not the count. Enough for the home screen to ask
+         * everything it needs at once; going wider does not help, because the
+         * reads are short and past a handful they contend on the same pages
+         * rather than finishing sooner.
          */
         const val READERS = 4
     }

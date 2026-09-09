@@ -153,6 +153,13 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                 "ALTER TABLE items ADD COLUMN locked_provider TEXT"
             ),
             listOf(
+                // "Stop offering me this one" — distinct from having watched it.
+                // Without it the only way off the continue-watching shelf was to
+                // claim the thing had been finished, which also threw away the
+                // position it had reached.
+                "ALTER TABLE user_data ADD COLUMN hidden_from_resume INTEGER NOT NULL DEFAULT 0"
+            ),
+            listOf(
                 // How the metadata was arrived at: matched, fell back to a
                 // secondary source, was pinned by hand, or found nothing.
                 "ALTER TABLE items ADD COLUMN scrape_status TEXT"

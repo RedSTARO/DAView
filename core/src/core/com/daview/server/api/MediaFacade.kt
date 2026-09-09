@@ -193,6 +193,11 @@ class MediaFacade(private val context: ServerContext) {
     suspend fun children(id: String, links: AssetLinks): List<MediaItemDto> =
         io { context.repository.children(id).map { it.withAssetUrls(links) } }
 
+    /** Takes an item off the continue-watching shelf, keeping its position. */
+    suspend fun setHiddenFromResume(id: String, hidden: Boolean) = io {
+        context.repository.setHiddenFromResume(id, hidden)
+    }
+
     suspend fun setFavorite(id: String, value: Boolean): UserDataDto =
         io { context.repository.setFavorite(id, value) }
 
