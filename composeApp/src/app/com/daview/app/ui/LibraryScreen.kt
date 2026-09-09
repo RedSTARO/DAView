@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -181,6 +182,13 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
         }
 
         when {
+            state.libraryError != null -> EmptyState(
+                title = "读取失败",
+                description = state.libraryError.orEmpty()
+            ) {
+                Button(onClick = { state.loadLibrary(libraryId) }) { Text("重试") }
+            }
+
             !loaded || state.libraryLoading -> LoadingPane()
 
             state.libraryItems.isEmpty() -> EmptyState(

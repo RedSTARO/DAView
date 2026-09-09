@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -93,7 +94,10 @@ fun SettingsScreen(state: AppState) {
     var pickerOpen by remember { mutableStateOf(false) }
 
     LazyColumn(
-        Modifier.fillMaxSize(),
+        // Edge to edge means adjustResize no longer moves the window, so a
+        // field in the lower third of this page sat under the soft keyboard
+        // with no way to scroll it into view.
+        Modifier.fillMaxSize().imePadding(),
         contentPadding = PaddingValues(bottom = 48.dp)
     ) {
         item { SectionHeader("媒体库") }
@@ -130,7 +134,9 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
     val status = state.scanStatus.firstOrNull { it.libraryId == library.id }
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+        // surfaceContainerLow sits 1.05:1 from the page behind it, which with
+        // no elevation and no outline is an invisible card edge.
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

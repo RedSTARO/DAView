@@ -66,6 +66,7 @@ import coil3.ImageLoader
 import coil3.compose.setSingletonImageLoaderFactory
 import coil3.request.crossfade
 import com.daview.app.data.AppState
+import com.daview.app.data.DesktopShortcuts
 import com.daview.app.data.LocalImageFetcher
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
@@ -92,6 +93,10 @@ fun App() {
     // say before the window had anything to show. Now the window comes up
     // first and this fills it in.
     LaunchedEffect(Unit) { state.open() }
+
+    // The desktop window handles keys outside the composition and needs a
+    // way to reach the state they act on.
+    LaunchedEffect(state) { DesktopShortcuts.bind(state) }
 
     DaViewTheme(darkTheme = state.darkTheme) {
         // The app's own switch, not the system's night setting, decides what
@@ -302,21 +307,21 @@ private fun SideNavigation(state: AppState) {
         Spacer(Modifier.height(12.dp))
         NavigationRailItem(
             selected = state.current is Screen.Home,
-            onClick = { state.replaceAll(Screen.Home) },
+            onClick = { state.switchTo(Screen.Home) },
             icon = { Icon(Icons.Filled.Home, contentDescription = null) },
             label = { Text("首页") },
             colors = railColors()
         )
         NavigationRailItem(
             selected = state.current is Screen.Search,
-            onClick = { state.navigate(Screen.Search) },
+            onClick = { state.switchTo(Screen.Search) },
             icon = { Icon(Icons.Filled.Search, contentDescription = null) },
             label = { Text("搜索") },
             colors = railColors()
         )
         NavigationRailItem(
             selected = state.current is Screen.Settings,
-            onClick = { state.navigate(Screen.Settings) },
+            onClick = { state.switchTo(Screen.Settings) },
             icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
             label = { Text("设置") },
             colors = railColors()
@@ -330,7 +335,7 @@ private fun SideNavigation(state: AppState) {
             state.libraries.forEach { library ->
                 NavigationRailItem(
                     selected = (state.current as? Screen.Library)?.libraryId == library.id,
-                    onClick = { state.navigate(Screen.Library(library.id)) },
+                    onClick = { state.switchTo(Screen.Library(library.id)) },
                     icon = { Icon(libraryIcon(library.kind), contentDescription = null) },
                     label = {
                         // Capped, or one long library name drags the whole rail
@@ -354,7 +359,7 @@ private fun BottomNavigation(state: AppState) {
     NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
         NavigationBarItem(
             selected = state.current is Screen.Home,
-            onClick = { state.replaceAll(Screen.Home) },
+            onClick = { state.switchTo(Screen.Home) },
             icon = { Icon(Icons.Filled.Home, contentDescription = null) },
             label = { Text("首页") },
             colors = barColors()
@@ -362,14 +367,14 @@ private fun BottomNavigation(state: AppState) {
         LibrariesItem(state)
         NavigationBarItem(
             selected = state.current is Screen.Search,
-            onClick = { state.navigate(Screen.Search) },
+            onClick = { state.switchTo(Screen.Search) },
             icon = { Icon(Icons.Filled.Search, contentDescription = null) },
             label = { Text("搜索") },
             colors = barColors()
         )
         NavigationBarItem(
             selected = state.current is Screen.Settings,
-            onClick = { state.navigate(Screen.Settings) },
+            onClick = { state.switchTo(Screen.Settings) },
             icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
             label = { Text("设置") },
             colors = barColors()
@@ -395,8 +400,8 @@ private fun RowScope.LibrariesItem(state: AppState) {
         selected = state.current is Screen.Library,
         onClick = {
             when (libraries.size) {
-                0 -> state.navigate(Screen.Settings)
-                1 -> state.navigate(Screen.Library(libraries.first().id))
+                0 -> state.switchTo(Screen.Settings)
+                1 -> state.switchTo(Screen.Library(libraries.first().id))
                 else -> open = true
             }
         },
@@ -412,7 +417,7 @@ private fun RowScope.LibrariesItem(state: AppState) {
                             text = { Text(library.name) },
                             onClick = {
                                 open = false
-                                state.navigate(Screen.Library(library.id))
+                                state.switchTo(Screen.Library(library.id))
                             }
                         )
                     }

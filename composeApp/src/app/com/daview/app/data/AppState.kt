@@ -190,6 +190,13 @@ class AppState(private val scope: CoroutineScope) {
     var toastSeq by mutableStateOf(0)
         private set
 
+    /** Set when a screen could not load, so it can offer to try again. */
+    var libraryError by mutableStateOf<String?>(null)
+        private set
+
+    var detailError by mutableStateOf<String?>(null)
+        private set
+
     /** Puts one line in front of the user. */
     fun notify(message: String) {
         toast = message
@@ -199,7 +206,25 @@ class AppState(private val scope: CoroutineScope) {
     // ------------------------------------------------------------ navigation
 
     fun navigate(screen: Screen) {
+        // Already there: pressing a destination you are on should do nothing,
+        // not push a second copy that the back arrow then has to walk out of.
+        if (current == screen) return
         backStack.add(screen)
+        onEnter(screen)
+    }
+
+    /**
+     * Goes to one of the app's top-level destinations.
+     *
+     * These are tabs, not pages: the bar used to push each one, so bouncing
+     * between 首页 and 搜索 a few times built a stack the back arrow had to be
+     * pressed once per bounce to unwind, with no limit on how deep it went.
+     */
+    fun switchTo(screen: Screen) {
+        if (current == screen) return
+        // Anything above the root goes; the root itself is replaced.
+        while (backStack.size > 1) backStack.removeAt(backStack.lastIndex)
+        backStack[0] = screen
         onEnter(screen)
     }
 
@@ -249,6 +274,20 @@ class AppState(private val scope: CoroutineScope) {
                 }
             opened = Opened(context)
             start()
+        }
+    }
+
+    /** Loads whatever the current screen shows, again. */
+    fun refreshCurrent() {
+        when (val screen = current) {
+            is Screen.Home -> refreshHome()
+            is Screen.Library -> loadLibrary(screen.libraryId)
+            is Screen.Detail -> loadDetail(screen.itemId)
+            is Screen.Settings -> {
+                refreshLibraries()
+                loadServerSettings()
+            }
+            else -> Unit
         }
     }
 
@@ -326,17 +365,33 @@ class AppState(private val scope: CoroutineScope) {
         home = home.copy(unwatched = rows.toMap().filterValues { it.isNotEmpty() })
     }
 
-    fun loadLibrary(libraryId: String) = run {
+    fun loadLibrary(libraryId: String) {
         libraryLoading = true
+        libraryError = null
         if (libraryItemsOf != libraryId) libraryItemsOf = null
-        try {
-            val page = libraryPage(libraryId, offset = 0)
-            libraryItems = page.items
-            libraryTotal = page.total
-            libraryItemsOf = libraryId
-        } finally {
-            libraryLoading = false
+        scope.launch {
+            try {
+                val page = libraryPage(libraryId, offset = 0)
+                libraryItems = page.items
+                libraryTotal = page.total
+                libraryItemsOf = libraryId
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Kept on screen with a retry rather than only flashed past in a
+                // snackbar: a library that cannot be read used to spin forever,
+                // and after a few seconds even the message was gone.
+                libraryError = describe(e)
+            } finally {
+                libraryLoading = false
+            }
         }
+    }
+
+    /** The message worth showing for a failure from the facade. */
+    private fun describe(e: Throwable): String = when (e) {
+        is MediaFacade.FacadeException -> listOfNotNull(e.message, e.detail).joinToString("：")
+        else -> e.message ?: "操作失败"
     }
 
     /**
@@ -413,6 +468,15 @@ class AppState(private val scope: CoroutineScope) {
 
     fun loadDetail(itemId: String) = run {
         detailLoading = true
+        detailError = null
+        // Cleared so the page does not open showing the entry looked at before
+        // it, complete with a live play button, until this one arrives.
+        if (detailItem?.id != itemId) {
+            detailItem = null
+            detailChildren = emptyList()
+            detailEpisodes = emptyList()
+            detailSeasonId = null
+        }
         try {
             val item = library.item(itemId, links)
             detailItem = item

@@ -90,7 +90,17 @@ import com.daview.shared.model.StreamType
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun DetailScreen(state: AppState, playback: PlaybackController) {
-    val item = state.detailItem ?: return
+    state.detailError?.let { message ->
+        EmptyState(title = "读取失败", description = message) {
+            Button(onClick = { state.detailItem?.id?.let { state.loadDetail(it) } }) { Text("重试") }
+        }
+        return
+    }
+    // A blank screen was the whole of "still loading" here.
+    val item = state.detailItem ?: run {
+        if (state.detailLoading) LoadingPane()
+        return
+    }
     val seasons = state.detailChildren.filter { it.kind == ItemKind.SEASON }
     val relatedMovies = state.detailChildren.filter { it.kind == ItemKind.MOVIE }
     val selectedSeason = seasons.firstOrNull { it.id == state.detailSeasonId }
@@ -739,7 +749,7 @@ private fun EpisodeRow(
                     onLongClickLabel = "打开菜单",
                     onLongClick = { if (lastPointer != PointerType.Mouse) menuAt = Offset.Zero }
                 ),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
             shape = MaterialTheme.shapes.medium
         ) {
             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {

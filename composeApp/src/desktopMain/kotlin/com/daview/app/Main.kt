@@ -10,6 +10,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -19,6 +23,7 @@ import androidx.compose.ui.window.WindowState
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.daview.app.data.ActivePlayback
+import com.daview.app.data.DesktopShortcuts
 import com.daview.app.platform.SettingsStore
 import com.daview.app.platform.createSettingsStore
 import com.daview.app.ui.DaViewIcon
@@ -70,7 +75,23 @@ fun main() {
             },
             title = "DAView",
             icon = DaViewIcon,
-            state = windowState
+            state = windowState,
+            // The only way back was the arrow in the corner; nothing on the
+            // keyboard did anything anywhere in the app.
+            onPreviewKeyEvent = { event ->
+                if (event.type != KeyEventType.KeyDown) false
+                else when {
+                    event.key == Key.Escape && fullscreen.value -> {
+                        fullscreen.value = false
+                        true
+                    }
+                    event.key == Key.F11 -> {
+                        fullscreen.value = !fullscreen.value
+                        true
+                    }
+                    else -> DesktopShortcuts.handle(event)
+                }
+            }
         ) {
             // Below this the layout has nowhere left to go: the compact
             // skeleton needs room for a bottom bar and one column of posters.
