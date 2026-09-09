@@ -72,6 +72,15 @@ kotlin {
             implementation(kotlin("test"))
         }
 
+        // The ASS renderer draws with android.graphics, so the only place its
+        // output can be checked is on a device. These need one attached and are
+        // not part of CI: `./gradlew :composeApp:connectedDebugAndroidTest`.
+        val androidInstrumentedTest by getting
+        androidInstrumentedTest.dependencies {
+            implementation(libs.androidx.test.runner)
+            implementation(libs.androidx.test.junit)
+        }
+
         // Needed by the shared source directory, which is compiled into both
         // JVM targets rather than into commonMain.
         listOf(androidMain.get(), desktopMain).forEach { sourceSet ->
@@ -96,6 +105,7 @@ android {
         targetSdk = libs.versions.androidTargetSdk.get().toInt()
         versionCode = 1
         versionName = "1.0.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"

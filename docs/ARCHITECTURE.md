@@ -259,9 +259,72 @@ POST /api/items/{id}/identify           → 钉住 provider + id 并重建元数
 | 能力 | Android | Desktop | Web |
 | --- | --- | --- | --- |
 | 设置存储 | SharedPreferences | `java.util.prefs` | `localStorage` |
-| 内置播放器 | Media3 / ExoPlayer | 无（交给外置） | 无（交给外置 / 标签页） |
+| 内置播放器 | Media3 / ExoPlayer（ASS 字幕自绘） | libmpv | 无（交给外置 / 标签页） |
 | 外置播放器 | `ACTION_VIEW` 选择器 / MX / VLC | 探测 exe 路径后起进程 | `potplayer://` / `vlc://` |
 | 进程退出可观测 | 否 | 是（用于立即结束会话） | 否 |
+
+### Android 的 ASS 字幕
+
+**结论先写**：Media3 渲染不了这个库里的字幕，所以 Android 端的 `.ass` 不再交给它，
+由 `composeApp/src/*/com/daview/app/subtitle/` 自己画。纯逻辑（解析、标签、排版算术）
+放在两个 JVM target 都会编译的 `src/app` 下，因此 `:composeApp:desktopTest` 能覆盖它，
+CI 已经在跑；只有 `android.graphics` 的绘制部分在 `androidMain`。
+
+为什么必须自己画：Media3 1.11.0 的 `SsaParser` 只保留 `\an`、`\pos`、`\move` 和样式里的
+字号、粗斜体、主色、描边色，其余 `{...}` 里的内容一律丢弃。问题在于 `\p` 矢量绘图的
+命令串写在花括号**外面**，丢不掉——于是它作为普通文字上屏。抽样 40 个不同片源的字幕，
+14 个用到矢量绘图；参考剧集（`Beyond the Boundary S01E07`）4844 条事件里 3440 条是绘图，
+最密的一帧有 82 条同时在屏，观感就是满屏的 `m 12 0 b 6 4 5 5`。全库 774 个可播放条目挂着
+1375 个外挂 ASS，占可播放条目的四分之一。
+
+#### 对着 libass 量出来的三条规则
+
+libmpv 已经在仓库里（桌面端播放器用的就是它，内含 libass），所以下面这些不是照文档写的，
+是把用例喂给 libass 渲染成 PNG、再数像素得出的。测量方式：`vo=image` 加 `vf=sub`，
+1920×1080，`PlayResX/Y` 同尺寸。
+
+| 问题 | libass 的实际行为 | 依据 |
+| --- | --- | --- |
+| 无 `\pos` 的行放在哪 | 行盒**底边**落在 `PlayResY - MarginV`，基线在其上方一个 descent | 60px 字号、MarginV 60，基线量得 y 约 1007，即 1020 减该字体 descent |
+| `\pos` 下的矢量图形怎么定位 | 按**包围盒**对齐，`\an7` 把盒左上角放在坐标上 | 三个 100×100 方块分别 `\an7\pos(300,300)`、`\an5\pos(900,300)`、`\an2\pos(1500,300)`，ink 恰好落在 x 300..1549、y 200..399 |
+| 两行重叠时谁让位 | **只在同一 layer 内**避让，后一条朝对齐边的反方向移开；跨 layer 完全不避让 | 同 layer 的两条从 973..1007 变成 913..947（整移一个行高 60）；把第二条改到 layer 1，两条完全重合，只剩一条 ink 带 |
+
+第三条是关键。这个库的双语字幕正是靠分层：中文 layer 0（MarginV 60）、日文 layer 1
+（MarginV 14），两者的行盒是重叠的。若按“重叠就避让”实现，日文会被顶到中文上方，整个
+双语版式就废了。实测 libass 对这一对确实原地不动（962..1016 与 1018..1061，
+单独渲染与同时渲染位置一模一样）。
+
+另一条同样量出来的：`\blur` 只作用在**描边**位图上（有描边时），字身保持锐利，
+得到的是“清晰的字加一圈辉光”。一开始把模糊套在每一遍上，参考帧整个糊成一团，
+和 libass 的输出一比就看出来了。只有完全没有描边的行才模糊字身。
+
+#### 验证
+
+`composeApp/src/androidInstrumentedTest` 里的 `AssRenderOnDeviceTest` 在真机或模拟器上渲染
+成位图再数 ink 位置。三个方块那条不涉及字体，与 libass **逐像素一致**（200/399/300/1549）。
+参考剧集最密那一帧：libass 的 ink 带是 32..96 与 955..1072，自绘是 27..103 与 955..1072——
+纵向完全对上，横向宽出来的部分是模拟器没有片源字体、回退字形更宽所致。
+这些测试需要连着设备，CI 不跑：`./gradlew :composeApp:connectedDebugAndroidTest`。
+
+性能：那一帧（82 条事件、43 个矢量图形，带模糊与三轴旋转）在软件渲染的模拟器上
+连续 60 帧平均 **4.7 ms/帧**，真机硬件画布只会更快。
+
+#### 字体
+
+脚本点名的字体（方正兰亭圆_GBK_中粗、A-OTF Shin Maru Go Pro DB、FOT-Seurat Pro DB 等）
+Android 一个都没有，片源一般把它们打包在旁边的 `Fonts.rar` 里给桌面播放器装。
+所以 `AssFonts` 会先扫应用自己的字体目录（`Android/data/com.daview.app/files/fonts`），
+按字体文件 `name` 表里的真实族名匹配——把那个字体包解压进去就能得到排版者的原意。
+找不到才回退，且按名字判断字面（含“明朝/明體/宋/楷/Mincho”走衬线，其余走无衬线），
+而不是一律交给 `Typeface.create` 的默认无衬线。
+
+#### 与 libass 仍有的差距
+
+- `\kf` 的扫光只做了颜色切换，没有逐字扫过的渐变；`\k` 是对的。
+- `\frx` 与 `\fry` 用 `android.graphics.Camera` 近似，投影方式与 libass 不同，大角度会有偏差。
+- 换行样式 0 与 3 用最小平方松弛做均分，不复现 libass 在两者之间的具体取舍。
+- 不做禁则处理（行首标点），libass 也不做。
+- 容器内封的 ASS 仍然走 Media3，只有外挂 `.ass` 走自绘——本库扫描结果里没有内封字幕。
 
 ### 网页端的字体问题
 

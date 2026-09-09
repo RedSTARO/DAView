@@ -63,6 +63,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
+import com.daview.app.subtitle.AssScript
+import com.daview.app.subtitle.AssSource
+import com.daview.app.subtitle.AssSubtitleView
 import com.daview.shared.model.MediaStreamDto
 import com.daview.shared.model.PlaybackInfoDto
 import com.daview.shared.model.StreamType
@@ -70,8 +73,9 @@ import kotlinx.coroutines.delay
 
 /**
  * ExoPlayer-backed player. Media3 handles Matroska with h264/hevc, AAC/AC3 and
- * embedded SSA/SRT natively, so the DAView stream URL can be played directly;
- * external subtitle files are attached as side-loaded subtitle configurations.
+ * SRT natively, so the DAView stream URL can be played directly and external
+ * subtitle files are attached as side-loaded subtitle configurations — except
+ * ASS, which DAView renders itself over the picture. See [AssSubtitleView].
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
@@ -139,8 +143,13 @@ actual fun InternalPlayer(
                 /* handleAudioFocus = */ true
             )
             .build().apply {
+            // ASS files are not handed to media3 at all — they are drawn by
+            // AssSubtitleView instead. Its SSA parser keeps the alignment and a
+            // few style fields and strips every other override, which for a
+            // typeset script means the drawing commands it cannot represent
+            // arrive on screen as the literal text `m 12 0 b 6 4 5 5`.
             val subtitles = info.item.mediaStreams
-                .filter { it.type == StreamType.SUBTITLE && it.isExternal }
+                .filter { it.type == StreamType.SUBTITLE && it.isExternal && !it.isAss }
                 .mapNotNull { stream ->
                     val url = info.subtitleUrls[stream.index] ?: return@mapNotNull null
                     MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(url))
@@ -187,14 +196,23 @@ actual fun InternalPlayer(
         onDispose { session?.release() }
     }
 
-    // The video shape the corner window should take.
+    // The video shape the corner window should take. The size is also what the
+    // subtitle overlay needs: script coordinates are relative to the picture,
+    // not to the view that letterboxes it.
+    var videoSize by remember { mutableStateOf(0 to 0) }
+    var playing by remember { mutableStateOf(false) }
     DisposableEffect(player) {
         PipRequest.wanted = true
         val listener = object : Player.Listener {
-            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
-                if (videoSize.width > 0 && videoSize.height > 0) {
-                    PipRequest.aspect = Rational(videoSize.width, videoSize.height)
+            override fun onVideoSizeChanged(size: androidx.media3.common.VideoSize) {
+                if (size.width > 0 && size.height > 0) {
+                    PipRequest.aspect = Rational(size.width, size.height)
+                    videoSize = size.width to size.height
                 }
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                playing = isPlaying
             }
         }
         player.addListener(listener)
@@ -203,6 +221,33 @@ actual fun InternalPlayer(
             PipRequest.wanted = false
             PipRequest.aspect = null
         }
+    }
+
+    // The ASS script currently on screen, if the chosen subtitle is one DAView
+    // draws itself, and the view that draws it.
+    var assScript by remember { mutableStateOf<AssScript?>(null) }
+    var assView by remember { mutableStateOf<AssSubtitleView?>(null) }
+    // Whether the viewer asked for no subtitles, as opposed to not having asked
+    // for any yet. Only the first of those should stop media3 selecting a track
+    // of its own — a container can carry subtitles the scan never recorded.
+    var subtitlesOff by remember { mutableStateOf(false) }
+    LaunchedEffect(selectedSubtitle) {
+        val stream = info.item.mediaStreams.firstOrNull {
+            it.type == StreamType.SUBTITLE && it.index == selectedSubtitle
+        }
+        val url = stream?.takeIf { it.isExternal && it.isAss }?.let { info.subtitleUrls[it.index] }
+        assScript = if (url == null) {
+            null
+        } else {
+            AssSource.load(url)
+                .onFailure { android.util.Log.w("DAView", "subtitle $url", it) }
+                .getOrNull()
+        }
+        // Two renderers drawing at once would double every line.
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, assScript != null || subtitlesOff)
+            .build()
     }
 
     // Leaving the app pauses the film — unless it went to the corner, which is
@@ -242,6 +287,15 @@ actual fun InternalPlayer(
                 PlayerView(ctx).apply {
                     this.player = player
                     useController = true
+                    // PlayerView keeps a frame between the picture and the
+                    // controls for exactly this. Putting the overlay there
+                    // rather than beside the PlayerView also keeps it out of
+                    // the way of taps meant for the transport controls.
+                    overlayFrameLayout?.addView(
+                        AssSubtitleView(ctx)
+                            .apply { position = { player.currentPosition } }
+                            .also { assView = it }
+                    )
                     // The app draws its own subtitle menu, and it is the only
                     // one that knows about side-loaded subtitle files; media3's
                     // button would list a different set under the same idea.
@@ -254,7 +308,18 @@ actual fun InternalPlayer(
                 }
             },
             modifier = Modifier.fillMaxSize(),
-            update = { view -> view.useController = !inPictureInPicture }
+            update = { view ->
+                view.useController = !inPictureInPicture
+                assView?.apply {
+                    script = assScript
+                    videoWidth = videoSize.first
+                    videoHeight = videoSize.second
+                    driving = playing
+                    // While paused nothing asks for frames, so a change of
+                    // subtitle or of size needs one repaint of its own.
+                    if (!playing) invalidate()
+                }
+            }
         )
 
         // Rides with media3's own controls so the picture is clean when they go.
@@ -344,6 +409,7 @@ actual fun InternalPlayer(
                         onClick = {
                             subtitleMenu = false
                             selectedSubtitle = null
+                            subtitlesOff = true
                             player.trackSelectionParameters = player.trackSelectionParameters
                                 .buildUpon()
                                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -356,11 +422,17 @@ actual fun InternalPlayer(
                             onClick = {
                                 subtitleMenu = false
                                 selectedSubtitle = stream.index
-                                player.trackSelectionParameters = player.trackSelectionParameters
-                                    .buildUpon()
-                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                                    .build()
-                                selectTrack(player, C.TRACK_TYPE_TEXT, stream)
+                                subtitlesOff = false
+                                // An ASS file has no media3 track to select —
+                                // the overlay picks it up from selectedSubtitle.
+                                if (!(stream.isExternal && stream.isAss)) {
+                                    player.trackSelectionParameters =
+                                        player.trackSelectionParameters
+                                            .buildUpon()
+                                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                            .build()
+                                    selectTrack(player, C.TRACK_TYPE_TEXT, stream)
+                                }
                                 latestOnProgress(player.currentPosition, !player.isPlaying, selectedAudio, selectedSubtitle)
                             }
                         )
@@ -407,6 +479,10 @@ private fun mimeFor(stream: MediaStreamDto): String = when (stream.codec?.lowerc
     "vtt" -> MimeTypes.TEXT_VTT
     else -> MimeTypes.APPLICATION_SUBRIP
 }
+
+/** Whether this is a subtitle DAView draws itself rather than handing to media3. */
+private val MediaStreamDto.isAss: Boolean
+    get() = codec?.lowercase() in setOf("ass", "ssa")
 
 /**
  * Maps a DAView stream index onto an ExoPlayer track. Embedded indices are the
