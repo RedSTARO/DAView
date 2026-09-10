@@ -63,6 +63,15 @@ object MpvNative {
             synchronized(this) { resolved = null; attempted = false }
         }
 
+    /**
+     * Every string mpv takes or returns is UTF-8, and JNA would otherwise use
+     * the platform default — GBK on a Chinese Windows, and something else
+     * again elsewhere. It is not a detail that shows up in testing on an
+     * English machine: ASCII survives either way, so a URL and a track id look
+     * fine while every title, track name and OSD line arrives as mojibake.
+     */
+    private val UTF8 = mapOf(Library.OPTION_STRING_ENCODING to "UTF-8")
+
     private var resolved: MpvLibrary? = null
     private var attempted = false
 
@@ -82,7 +91,7 @@ object MpvNative {
         attempted = true
         val candidates = searchPath()
         for (candidate in candidates) {
-            val loaded = runCatching { Native.load(candidate, MpvLibrary::class.java) }
+            val loaded = runCatching { Native.load(candidate, MpvLibrary::class.java, UTF8) }
                 .onFailure { loadError = "${it.javaClass.simpleName}: ${it.message}" }
                 .getOrNull() ?: continue
             // Reaching a symbol is the only proof the file is the right library;

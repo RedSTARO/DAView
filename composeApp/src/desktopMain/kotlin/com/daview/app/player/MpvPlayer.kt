@@ -99,11 +99,17 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         } else {
             option("hwdec", "auto-safe")
         }
-        // The libmpv profile turns all three off — it assumes the embedder
+        // The libmpv profile turns all of these off — it assumes the embedder
         // draws its own UI. Here mpv draws it, so they go back on.
         option("osc", "yes")
         option("input-default-bindings", "yes")
         option("input-vo-keyboard", "yes")
+        // Including the OSD messages themselves, which are this app's only way
+        // of putting anything over the picture: at level 0 mpv accepts every
+        // `show-text` and draws none of them, which is exactly as silent as it
+        // sounds. Subtitles are unaffected by it, so the picture looks correct
+        // while the track list never appears.
+        option("osd-level", "1")
         option("keep-open", "no")
         // The app resolves and attaches subtitles itself; letting mpv guess
         // siblings of an http URL would only produce failed requests.

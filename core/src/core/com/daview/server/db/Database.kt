@@ -30,15 +30,62 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
             connection.statement("INSERT INTO schema_version(version) VALUES (0)").use { it.executeUpdate() }
         }
 
+        // Every table and column in the list, applied before the numbered
+        // steps and regardless of what the version says.
+        //
+        // The version records how many steps have run, not which ones, so it
+        // only means anything while the list is append-only — and this one has
+        // twice had a step inserted into the middle instead. Each time, every
+        // database made before that release started replaying the wrong steps:
+        // some it already had (which threw, on a duplicate column, and stopped
+        // the app from opening its library at all) and some it had skipped
+        // forever, because their new index was below a version it had already
+        // passed. A version number cannot be repaired after the fact; the
+        // schema can, because every statement that defines it is safe to run
+        // against a database that already has the thing it defines.
+        MIGRATIONS.flatten().filter { it.definesSchema() }.forEach { apply(connection, it) }
+
+        // The rest are changes to data, which are not safe to repeat — the one
+        // below rewrites a library's language, and repeating it would keep
+        // undoing anyone who set that language back by hand. Those stay gated
+        // on the version, which is what it can still be trusted to do.
         var version = maxOf(current, 0)
         while (version < MIGRATIONS.size) {
-            MIGRATIONS[version].forEach { sqlText ->
-                connection.statement(sqlText).use { it.executeUpdate() }
-            }
+            MIGRATIONS[version].filterNot { it.definesSchema() }.forEach { apply(connection, it) }
             version++
             connection.statement("UPDATE schema_version SET version = $version").use { it.executeUpdate() }
         }
     }
+
+    /** `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, `ALTER TABLE`. */
+    private fun String.definesSchema(): Boolean =
+        trimStart().startsWith("CREATE", ignoreCase = true) ||
+            trimStart().startsWith("ALTER", ignoreCase = true)
+
+    private fun apply(connection: SqlConnection, sqlText: String) {
+        try {
+            connection.statement(sqlText).use { it.executeUpdate() }
+        } catch (e: Exception) {
+            // Every CREATE here is `IF NOT EXISTS`, so the only statement that
+            // cannot survive being run twice is ADD COLUMN — and running it
+            // twice means the column is there, which is what the step wanted.
+            // Anything else still throws: a migration that fails for a real
+            // reason must not be passed over.
+            if (!isAlreadyApplied(e)) throw e
+        }
+    }
+
+    /**
+     * Whether the failure is SQLite saying the change is already in place.
+     *
+     * Matched on the message because that is all there is: JDBC and Android
+     * SQLite raise different exception types and different vendor codes for it,
+     * and neither is reachable from this shared file.
+     */
+    private fun isAlreadyApplied(e: Exception): Boolean =
+        generateSequence(e as Throwable) { it.cause }.any {
+            it.message?.contains("duplicate column name", ignoreCase = true) == true
+        }
 
     /**
      * Hands the query planner the table statistics it otherwise has to guess.
