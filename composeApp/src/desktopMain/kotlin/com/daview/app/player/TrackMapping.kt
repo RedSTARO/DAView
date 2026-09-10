@@ -48,4 +48,27 @@ object TrackMapping {
         val externalPosition = externalSubtitles(streams).indexOfFirst { it.index == index }
         return if (externalPosition < 0) null else embedded.size + externalPosition + 1
     }
+
+    /**
+     * The way back: a DAView index for the track mpv says it is playing.
+     *
+     * mpv has bindings and defaults of its own, so it is not always this app
+     * that chose. Without reading the choice back, a track switched inside mpv
+     * was never recorded, and the next device resumed on the one nobody picked.
+     *
+     * Null means the id maps to nothing this app knows about — an unprobed
+     * container has no streams to match — and is a reason to leave the stored
+     * choice alone rather than to overwrite it with nothing.
+     */
+    fun audioIndex(streams: List<MediaStreamDto>, mpvId: Int?): Int? {
+        if (mpvId == null || mpvId < 1) return null
+        return embeddedAudio(streams).getOrNull(mpvId - 1)?.index
+    }
+
+    fun subtitleIndex(streams: List<MediaStreamDto>, mpvId: Int?): Int? {
+        if (mpvId == null || mpvId < 1) return null
+        val embedded = embeddedSubtitles(streams)
+        embedded.getOrNull(mpvId - 1)?.let { return it.index }
+        return externalSubtitles(streams).getOrNull(mpvId - 1 - embedded.size)?.index
+    }
 }

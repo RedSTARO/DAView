@@ -67,4 +67,33 @@ class TrackMappingTest {
         assertNull(TrackMapping.audioId(streams, 1))
         assertNull(TrackMapping.subtitleId(streams, 1))
     }
+
+    /**
+     * The way back, for the track mpv reports rather than the one this app
+     * asked for. It has to be the exact inverse, or reading mpv's choice back
+     * would rewrite the session with a track nobody selected.
+     */
+    @Test
+    fun `every id maps back to the index it came from`() {
+        listOf(2, 5).forEach {
+            assertEquals(it, TrackMapping.audioIndex(streams, TrackMapping.audioId(streams, it)))
+        }
+        listOf(3, 1000, 1001).forEach {
+            assertEquals(it, TrackMapping.subtitleIndex(streams, TrackMapping.subtitleId(streams, it)))
+        }
+    }
+
+    /**
+     * mpv numbers tracks from one, and answers `no` for a track that is off —
+     * which reaches here as null. Neither is an index, and neither may be
+     * turned into one.
+     */
+    @Test
+    fun `an id outside the tracks maps back to nothing`() {
+        assertNull(TrackMapping.audioIndex(streams, 0))
+        assertNull(TrackMapping.audioIndex(streams, 3))
+        assertNull(TrackMapping.audioIndex(streams, null))
+        assertNull(TrackMapping.subtitleIndex(streams, 4))
+        assertNull(TrackMapping.subtitleIndex(streams, null))
+    }
 }

@@ -36,6 +36,14 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
          */
         fun onEndFile(error: String?, reachedEnd: Boolean) {}
         fun onShutdown() {}
+        /**
+         * A key pressed over mpv's own window, routed back here.
+         *
+         * mpv owns the picture and therefore owns the keyboard whenever the
+         * pointer put focus there, so a key bound with [bindKey] is the only
+         * kind that always arrives. [name] is what that binding was given.
+         */
+        fun onClientMessage(name: String) {}
     }
 
     private val mpv: MpvLibrary = MpvNative.library() ?: error("libmpv 未加载")
@@ -175,6 +183,36 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
     fun disableSubtitle() = setProperty("sid", "no")
 
     /**
+     * Draws one message on mpv's OSD.
+     *
+     * That OSD is the only layer this app can put anything on above the video:
+     * mpv's child window covers whatever Compose paints in the same place, so
+     * a list drawn by Compose had to take room of its own and push the picture
+     * down. `show-text` needs no room, expires by itself, and sits where the
+     * viewer is already looking.
+     */
+    fun showText(text: String, durationMs: Int) =
+        command("show-text", text, durationMs.toString())
+
+    /**
+     * Points one of mpv's own keys back at this app.
+     *
+     * `script-message` is broadcast to every client, so what comes back is a
+     * client-message event carrying [name] — which is how a key pressed while
+     * mpv holds the keyboard reaches code that knows about DAView's track list
+     * and about the window it is embedded in.
+     *
+     * False when mpv would not take the binding, which is the only way anyone
+     * finds out: a key mpv never bound is indistinguishable from a key nobody
+     * pressed. The caller is expected to say so somewhere the viewer can read.
+     */
+    fun bindKey(key: String, name: String): Boolean =
+        commandResult("keybind", key, "script-message $name") >= 0
+
+    /** What mpv's own controller shows as the title of what is playing. */
+    fun setTitle(title: String) = setProperty("force-media-title", title)
+
+    /**
      * Transport the app can drive itself.
      *
      * mpv has its own key bindings, but they only fire while its window has
@@ -209,6 +247,19 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         private set
 
     val paused: Boolean get() = property("pause") == "yes"
+
+    /**
+     * The tracks mpv is playing, as mpv ids.
+     *
+     * Asked rather than assumed: mpv chooses one itself when nothing was
+     * requested, and its own bindings can change it afterwards.
+     */
+    val audioId: Int? get() = property("aid")?.toIntOrNull()
+
+    val subtitleId: Int? get() = property("sid")?.toIntOrNull()
+
+    /** Subtitles switched off, which reads the same as unmapped in [subtitleId]. */
+    val subtitleOff: Boolean get() = property("sid") == "no"
 
     private fun readPosition(): Long? =
         property("time-pos")?.toDoubleOrNull()?.let { (it * 1000).toLong() }
@@ -254,14 +305,20 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
     }
 
     private fun command(vararg args: String) {
-        val handle = ctx ?: return
-        if (closed.get()) return
+        commandResult(*args)
+    }
+
+    /** The same, for the callers that have something to do about a failure. */
+    private fun commandResult(vararg args: String): Int {
+        val handle = ctx ?: return ERROR_UNINITIALIZED
+        if (closed.get()) return ERROR_UNINITIALIZED
         // The array is NULL-terminated, which is what the trailing null is.
         val rc = mpv.mpv_command(handle, arrayOf(*args, null))
         // Commands fail for reasons that look like nothing at all from the
         // outside — `sub-add` before a file is loaded returns -12 and attaches
         // nothing — so a failure has to leave a trace somewhere.
         if (rc < 0) warn("命令 ${args.joinToString(" ")} 失败: ${mpv.mpv_error_string(rc)}")
+        return rc
     }
 
     private fun startPump(handle: Pointer) {
@@ -311,6 +368,15 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
                 }
 
                 EVENT_FILE_LOADED -> runCatching { listener.onFileLoaded() }
+
+                EVENT_CLIENT_MESSAGE -> {
+                    // struct mpv_event_client_message { int num_args; char **args; }
+                    val data = event.getPointer(EVENT_DATA_OFFSET) ?: continue
+                    if (data.getInt(0) < 1) continue
+                    val args = data.getPointer(ARGV_OFFSET) ?: continue
+                    val name = args.getPointer(0)?.getString(0) ?: continue
+                    runCatching { listener.onClientMessage(name) }
+                }
 
                 EVENT_END_FILE -> {
                     // struct mpv_event_end_file { int reason; int error; ... }
@@ -379,6 +445,13 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         const val END_FILE_EOF = 0
         const val END_FILE_ERROR = 4
         const val EVENT_FILE_LOADED = 8
+        const val EVENT_CLIENT_MESSAGE = 16
+
+        // int, then a pointer the ABI aligns to 8.
+        const val ARGV_OFFSET = 8L
+
+        /** MPV_ERROR_UNINITIALIZED, for the commands there is no context for. */
+        const val ERROR_UNINITIALIZED = -10
 
         const val JOIN_TIMEOUT_MS = 2000L
         const val WAIT_TIMEOUT_SECONDS = 0.2

@@ -8,27 +8,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.focusable
 import androidx.compose.material.icons.Icons
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
-import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -57,10 +49,9 @@ import com.daview.app.player.MpvNative
 import com.daview.app.player.MpvPlayer
 import com.daview.app.player.PlayerPreferences
 import com.daview.app.player.TrackMapping
+import com.daview.app.player.TrackMenu
 import com.daview.app.player.VideoAdapter
-import com.daview.shared.model.MediaStreamDto
 import com.daview.shared.model.PlaybackInfoDto
-import com.daview.shared.model.StreamType
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 import kotlinx.coroutines.delay
@@ -124,6 +115,7 @@ actual fun InternalPlayer(
     var videoHdr by remember(info.sessionId) { mutableStateOf(EnhancementState.OFF) }
     var maxLumaGuess by remember(info.sessionId) { mutableStateOf(false) }
     var adapterInUse by remember(info.sessionId) { mutableStateOf<String?>(null) }
+    var unboundKeys by remember(info.sessionId) { mutableStateOf(emptyList<String>()) }
 
     // The engine outlives the file. The effect that starts the next one has to
     // be able to see the previous one in order to close it, which a keyed
@@ -140,10 +132,44 @@ actual fun InternalPlayer(
     }
 
     // mpv cannot go full screen for itself while embedded in someone else's
-    // window (--wid), so its own `f` and the OSC button do nothing here. The
-    // window is what goes full screen, and this is how it is asked.
+    // window (--wid), so the window is what goes full screen. Its `f` and `ESC`
+    // are bound below to ask for exactly that, which is the only way they mean
+    // anything at all here.
     PlaybackPresentation(ScreenOrientation.SENSOR)
     val fullscreen = LocalWindowFullscreen.current
+    val isFullscreen = fullscreen?.value ?: false
+
+    // Every route to a track change ends here: mpv's own key, handed back as a
+    // client message, and the button in the bar. One list, one recorded choice,
+    // whichever of them was used — which is what stops mpv and the app from
+    // disagreeing about what is playing.
+    //
+    // The list is drawn by mpv rather than by Compose. See [TrackMenu] for why
+    // there is no menu to open and close: an OSD message needs no room, so the
+    // picture no longer moves down to make space for one.
+    fun stepAudio() {
+        val entries = TrackMenu.audio(info.item.mediaStreams)
+        val next = TrackMenu.next(entries, selectedAudio) ?: return
+        selectedAudio = next.index
+        TrackMapping.audioId(info.item.mediaStreams, next.index)
+            ?.let { player?.selectAudio(it) }
+        player?.showText(TrackMenu.osd("音轨", entries, next.index), OSD_MS)
+        player?.positionMs?.let { latestOnProgress(it, false, next.index, selectedSubtitle) }
+    }
+
+    fun stepSubtitle() {
+        val entries = TrackMenu.subtitles(info.item.mediaStreams)
+        val next = TrackMenu.next(entries, selectedSubtitle) ?: return
+        selectedSubtitle = next.index
+        if (next.index == null) {
+            player?.disableSubtitle()
+        } else {
+            TrackMapping.subtitleId(info.item.mediaStreams, next.index)
+                ?.let { player?.selectSubtitle(it) }
+        }
+        player?.showText(TrackMenu.osd("字幕", entries, next.index), OSD_MS)
+        player?.positionMs?.let { latestOnProgress(it, false, selectedAudio, next.index) }
+    }
 
     LaunchedEffect(info.sessionId) {
         // Creation is keyed on the session while disposal is keyed on the screen,
@@ -217,6 +243,27 @@ actual fun InternalPlayer(
                 override fun onShutdown() {
                     if (ending == null) ending = Ending.ABANDONED
                 }
+
+                // A key pressed over the picture. mpv holds the keyboard
+                // whenever the pointer gave its window focus, which is most of
+                // the time, so this is the route that always works — the
+                // Compose bindings below only fire while Compose has focus.
+                override fun onClientMessage(name: String) {
+                    when (name) {
+                        MSG_AUDIO -> stepAudio()
+                        MSG_SUBTITLE -> stepSubtitle()
+                        MSG_FULLSCREEN -> fullscreen?.let { it.value = !it.value }
+                        // Leave full screen first, as every other player does;
+                        // a second press ends playback. Routed through `ending`
+                        // rather than closing from here, so that the one effect
+                        // that decides what position to write still decides it.
+                        MSG_ESCAPE -> when {
+                            fullscreen?.value == true -> fullscreen.value = false
+                            ending == null -> ending = Ending.ABANDONED
+                            else -> Unit
+                        }
+                    }
+                }
             }).apply {
                 open(
                     handle,
@@ -229,6 +276,36 @@ actual fun InternalPlayer(
         // it is this state: leaving the screen mid-setup would otherwise strand
         // an mpv instance holding a window and a decoder.
         player = created
+
+        // mpv's own keys, pointed at DAView's list instead of mpv's. `#` and
+        // `j` already mean "next audio track" and "next subtitle" to anyone who
+        // has used mpv; what changes is who decides — so an external subtitle
+        // file is part of the same cycle, every track is named the way DAView
+        // names it, and the choice reaches the session.
+        //
+        // `f` and `ESC` are here for a different reason: embedded in someone
+        // else's window mpv cannot go full screen for itself, so the two keys
+        // that mean full screen in every player there is did nothing at all.
+        // Now they ask the window.
+        //
+        // Each is tried under more than one name, because the key table is
+        // mpv's rather than this app's — `#` is written `SHARP` in a config
+        // file because `#` starts a comment there, and whether that alias
+        // survives into the `keybind` command is mpv's business. A binding mpv
+        // refused is silent by nature: the key never fires, and a key that
+        // never fires looks exactly like a key nobody pressed. So the refusals
+        // are collected and said out loud once, where whoever pressed the key
+        // is already looking.
+        unboundKeys = listOf(
+            listOf("SHARP", "#") to MSG_AUDIO,
+            listOf("j") to MSG_SUBTITLE,
+            listOf("f") to MSG_FULLSCREEN,
+            listOf("ESC", "ESCAPE") to MSG_ESCAPE
+        ).filterNot { (names, message) -> names.any { created.bindKey(it, message) } }
+            .map { (names, _) -> names.first() }
+        // What mpv's controller shows above its seek bar. Left alone it is the
+        // address of a loopback port, which is what the viewer would have read.
+        created.setTitle(displayTitle(info))
 
         attachTracks = {
             // Every external subtitle is attached in a fixed order, because that
@@ -257,11 +334,52 @@ actual fun InternalPlayer(
     // one reports it; nothing here is derived from byte offsets.
     LaunchedEffect(player) {
         val active = player ?: return@LaunchedEffect
+        // The RTX log lines arrive with the video output, a moment after the
+        // file opens. The chips that carry them live in the bar, and the bar is
+        // not on screen in full screen — which is how this player always starts
+        // — so the outcome is said once on the only layer above the picture.
+        delay(ENHANCEMENT_REPORT_MS)
+        startupReport(superResolution, videoHdr, unboundKeys)?.let { active.showText(it, OSD_MS) }
         while (true) {
-            delay(5000)
+            delay(PROGRESS_INTERVAL_MS)
+            // mpv picks a track when nothing was asked for, and keys of its own
+            // can change it afterwards. Read back rather than assumed: a switch
+            // made in mpv used to go unrecorded, and the next device then
+            // resumed on the track nobody had chosen.
+            TrackMapping.audioIndex(info.item.mediaStreams, active.audioId)
+                ?.let { if (it != selectedAudio) selectedAudio = it }
+            // `sid=no` means either that somebody turned subtitles off or
+            // that the chosen one was never attached — a container this app
+            // could not probe has nothing to map, and `sub-add` can fail on its
+            // own. Only the first of those is a decision, so it is adopted only
+            // when the stored choice was one this app could have applied;
+            // otherwise reading mpv back would quietly erase a choice mpv never
+            // honoured in the first place.
+            val applied = TrackMapping.subtitleId(info.item.mediaStreams, selectedSubtitle)
+            if (active.subtitleOff) {
+                if (selectedSubtitle != null && applied != null) selectedSubtitle = null
+            } else {
+                TrackMapping.subtitleIndex(info.item.mediaStreams, active.subtitleId)
+                    ?.let { if (it != selectedSubtitle) selectedSubtitle = it }
+            }
             val position = active.positionMs ?: continue
             latestOnProgress(position, active.paused, selectedAudio, selectedSubtitle)
         }
+    }
+
+    // mpv is still up and painting black when a file fails, and its window
+    // covers whatever Compose draws in the same place — so the card below is
+    // only ever seen when there is no mpv window at all, which is the case
+    // where the engine itself would not start. Everything else has to be said
+    // where it can be read.
+    LaunchedEffect(failure) {
+        failure?.let { player?.showText(it, FAILURE_MS) }
+    }
+
+    // Same reason: this used to be a strip under the picture, and in full
+    // screen there is no strip under the picture.
+    LaunchedEffect(maxLumaGuess) {
+        if (maxLumaGuess) player?.showText(MAX_LUMA_NOTICE, FAILURE_MS)
     }
 
     LaunchedEffect(ending) {
@@ -305,9 +423,11 @@ actual fun InternalPlayer(
             .focusRequester(focusRequester)
             .focusable()
             // mpv has its own bindings, but they only fire while its canvas
-            // holds keyboard focus — and clicking anything in the bar above the
-            // picture takes that away, after which space re-triggered whichever
-            // button was pressed last.
+            // holds keyboard focus — and clicking anything in the bar takes
+            // that away, after which space re-triggered whichever button was
+            // pressed last. In full screen the bar is not rendered at all, so
+            // there mpv holds the keyboard and the bindings it was given above
+            // are the ones that answer.
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                 when (event.key) {
@@ -317,82 +437,36 @@ actual fun InternalPlayer(
                     Key.F11 -> { fullscreen?.let { it.value = !it.value }; true }
                     Key.Escape -> {
                         // Leave full screen first, as every other player does;
-                        // a second press ends playback.
+                        // a second press ends playback — through `ending`, so
+                        // that the one effect which knows what position to
+                        // write keeps deciding it, whichever route asked.
                         if (fullscreen?.value == true) fullscreen.value = false
-                        else finish(player?.positionMs ?: player?.lastPosition ?: info.startPositionMs)
+                        else if (ending == null) ending = Ending.ABANDONED
                         true
                     }
                     else -> false
                 }
             }
     ) {
-        var audioMenu by remember(info.sessionId) { mutableStateOf(false) }
-        var subtitleMenu by remember(info.sessionId) { mutableStateOf(false) }
-
-        val audioStreams = info.item.mediaStreams.filter { it.type == StreamType.AUDIO }
-        val subtitleStreams = info.item.mediaStreams.filter { it.type == StreamType.SUBTITLE }
-
-        fun chooseAudio(stream: MediaStreamDto) {
-            selectedAudio = stream.index
-            TrackMapping.audioId(info.item.mediaStreams, stream.index)
-                ?.let { player?.selectAudio(it) }
-            player?.positionMs?.let { latestOnProgress(it, false, selectedAudio, selectedSubtitle) }
+        // The bar takes room away from the picture, because nothing Compose
+        // draws can be *over* mpv's native window — whatever is on screen is
+        // beside the video, never on it. In full screen there is nothing for it
+        // to be beside, so it is simply not there: the picture is the window,
+        // and everything the bar carries has an OSD route as well. It does not
+        // fade on a timer either; appearing and disappearing would resize the
+        // video every few seconds, which no player does to its viewer.
+        if (!isFullscreen) {
+            PlayerBar(
+                info = info,
+                superResolution = superResolution,
+                videoHdr = videoHdr,
+                adapterInUse = adapterInUse,
+                onAudio = { stepAudio() },
+                onSubtitle = { stepSubtitle() },
+                onToggleFullscreen = { fullscreen?.let { it.value = !it.value } },
+                onClose = { if (ending == null) ending = Ending.ABANDONED }
+            )
         }
-
-        fun chooseSubtitle(stream: MediaStreamDto?) {
-            selectedSubtitle = stream?.index
-            if (stream == null) {
-                player?.disableSubtitle()
-            } else {
-                TrackMapping.subtitleId(info.item.mediaStreams, stream.index)
-                    ?.let { player?.selectSubtitle(it) }
-            }
-            player?.positionMs?.let { latestOnProgress(it, false, selectedAudio, selectedSubtitle) }
-        }
-
-        PlayerBar(
-            info = info,
-            selectedAudio = selectedAudio,
-            selectedSubtitle = selectedSubtitle,
-            audioMenu = audioMenu,
-            subtitleMenu = subtitleMenu,
-            onAudioMenu = { audioMenu = it; if (it) subtitleMenu = false },
-            onSubtitleMenu = { subtitleMenu = it; if (it) audioMenu = false },
-            superResolution = superResolution,
-            videoHdr = videoHdr,
-            adapterInUse = adapterInUse,
-            onAudio = { chooseAudio(it) },
-            onSubtitle = { chooseSubtitle(it) },
-            fullscreen = fullscreen?.value ?: false,
-            onToggleFullscreen = { fullscreen?.let { it.value = !it.value } },
-            onClose = { finish(player?.positionMs ?: player?.lastPosition ?: info.startPositionMs) }
-        )
-
-        // mpv draws into a native child window parented to a heavyweight AWT
-        // canvas, and a native window is always on top of whatever Compose
-        // paints in the same window — so a DropdownMenu opening over the video
-        // was invisible and unclickable. The list is drawn above the picture
-        // instead, pushing it down, where it is simply a part of the layout.
-        TrackPanel(
-            visible = audioMenu,
-            title = "音轨",
-            entries = audioStreams.map { it.index to it.displayTitle },
-            selected = selectedAudio,
-            onPick = { index ->
-                audioMenu = false
-                audioStreams.firstOrNull { it.index == index }?.let { chooseAudio(it) }
-            }
-        )
-        TrackPanel(
-            visible = subtitleMenu,
-            title = "字幕",
-            entries = listOf(null to "关闭字幕") + subtitleStreams.map { it.index to it.displayTitle },
-            selected = selectedSubtitle,
-            onPick = { index ->
-                subtitleMenu = false
-                chooseSubtitle(subtitleStreams.firstOrNull { it.index == index })
-            }
-        )
 
         Box(Modifier.fillMaxSize().weight(1f)) {
             SwingPanel(
@@ -422,39 +496,20 @@ actual fun InternalPlayer(
                 }
             }
         }
-
-        if (maxLumaGuess) {
-            Text(
-                "RTX Video HDR 的峰值亮度按 1000 nits 估算，与 NVIDIA App 里的设置不一定一致。",
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
     }
 }
 
 @Composable
 private fun PlayerBar(
     info: PlaybackInfoDto,
-    selectedAudio: Int?,
-    selectedSubtitle: Int?,
-    audioMenu: Boolean,
-    subtitleMenu: Boolean,
-    onAudioMenu: (Boolean) -> Unit,
-    onSubtitleMenu: (Boolean) -> Unit,
     superResolution: EnhancementState,
     videoHdr: EnhancementState,
     adapterInUse: String?,
-    onAudio: (MediaStreamDto) -> Unit,
-    onSubtitle: (MediaStreamDto?) -> Unit,
-    fullscreen: Boolean,
+    onAudio: () -> Unit,
+    onSubtitle: () -> Unit,
     onToggleFullscreen: () -> Unit,
     onClose: () -> Unit
 ) {
-    val audioStreams = info.item.mediaStreams.filter { it.type == StreamType.AUDIO }
-    val subtitleStreams = info.item.mediaStreams.filter { it.type == StreamType.SUBTITLE }
-
     // Playback chrome stays dark whichever theme the rest of the app is in. In
     // the light theme this was a near-white band across the top of a black
     // picture, which is not something any player does.
@@ -465,7 +520,7 @@ private fun PlayerBar(
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text(
-                info.item.seriesName?.let { "$it · ${info.item.name}" } ?: info.item.name,
+                displayTitle(info),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
@@ -490,28 +545,18 @@ private fun PlayerBar(
             EnhancementChip("RTX 超分", superResolution)
             EnhancementChip("RTX HDR", videoHdr)
 
-            // Icons rather than the track's own name: the name is unbounded
-            // and it is what pushed everything else out of the bar. These only
-            // toggle the panel below — see the note on the panel itself.
-            IconButton(onClick = { onAudioMenu(!audioMenu) }) {
-                Icon(
-                    Icons.Filled.Audiotrack,
-                    contentDescription = "音轨",
-                    tint = if (audioMenu) MaterialTheme.colorScheme.primary else Color.White
-                )
+            // These step to the next track and let mpv draw the list, which is
+            // the same thing the keys do. Naming the key in the description is
+            // the only place the pairing is discoverable, since the picture
+            // belongs to mpv and this bar is gone in full screen.
+            IconButton(onClick = onAudio) {
+                Icon(Icons.Filled.Audiotrack, contentDescription = "下一条音轨（#）")
             }
-            IconButton(onClick = { onSubtitleMenu(!subtitleMenu) }) {
-                Icon(
-                    Icons.Filled.ClosedCaption,
-                    contentDescription = "字幕",
-                    tint = if (subtitleMenu) MaterialTheme.colorScheme.primary else Color.White
-                )
+            IconButton(onClick = onSubtitle) {
+                Icon(Icons.Filled.ClosedCaption, contentDescription = "下一条字幕（j）")
             }
             IconButton(onClick = onToggleFullscreen) {
-                Icon(
-                    if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
-                    contentDescription = if (fullscreen) "退出全屏（F11）" else "全屏（F11）"
-                )
+                Icon(Icons.Filled.Fullscreen, contentDescription = "全屏（F11 / f）")
             }
             IconButton(onClick = onClose) {
                 Icon(Icons.Filled.Close, contentDescription = "结束播放")
@@ -520,60 +565,9 @@ private fun PlayerBar(
     }
 }
 
-/**
- * A list of tracks, drawn in the layout rather than in a popup.
- *
- * Anything Compose puts over the video is behind mpv's own native child window,
- * so this cannot float; it takes its own room and the picture moves down.
- */
-@Composable
-private fun ColumnScope.TrackPanel(
-    visible: Boolean,
-    title: String,
-    entries: List<Pair<Int?, String>>,
-    selected: Int?,
-    onPick: (Int?) -> Unit
-) {
-    if (!visible || entries.isEmpty()) return
-    Surface(color = Color(0xFF1A1822), contentColor = Color.White) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.labelMedium,
-                color = Color.White.copy(alpha = 0.7f)
-            )
-            entries.forEach { (index, label) ->
-                val chosen = index == selected
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { onPick(index) }
-                        .padding(vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Filled.Check,
-                        contentDescription = null,
-                        tint = if (chosen) MaterialTheme.colorScheme.primary else Color.Transparent
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-        }
-    }
-}
-
 @Composable
 private fun EnhancementChip(label: String, state: EnhancementState) {
-    if (state == EnhancementState.OFF) return
-    val suffix = when (state) {
-        EnhancementState.ACTIVE -> "已启用"
-        EnhancementState.REQUESTED -> "等待中"
-        EnhancementState.UNSUPPORTED -> "不适用"
-        EnhancementState.FAILED -> "失败"
-        EnhancementState.OFF -> return
-    }
+    val suffix = enhancementSuffix(state) ?: return
     AssistChip(
         onClick = {},
         enabled = false,
@@ -610,3 +604,51 @@ private suspend fun awaitNativeHandle(canvas: Canvas): Long? {
 
 private const val HANDLE_ATTEMPTS = 100
 private const val HANDLE_POLL_MS = 50L
+
+/** The show, then the episode, which is how the rest of the app names one too. */
+private fun displayTitle(info: PlaybackInfoDto): String =
+    info.item.seriesName?.let { "$it · ${info.item.name}" } ?: info.item.name
+
+/**
+ * Everything worth saying once a file is running: what became of the two NVIDIA
+ * features, and which keys mpv would not take. Null when there is nothing to
+ * report, which is the ordinary case.
+ */
+private fun startupReport(
+    superResolution: EnhancementState,
+    videoHdr: EnhancementState,
+    unboundKeys: List<String>
+): String? = listOfNotNull(
+    listOfNotNull(
+        enhancementSuffix(superResolution)?.let { "RTX 超分 · $it" },
+        enhancementSuffix(videoHdr)?.let { "RTX HDR · $it" }
+    ).takeIf { it.isNotEmpty() }?.joinToString("   "),
+    unboundKeys.takeIf { it.isNotEmpty() }
+        ?.let { "mpv 未接受快捷键 ${it.joinToString(" ")}，请用工具条上的按钮" }
+).takeIf { it.isNotEmpty() }?.joinToString("\n")
+
+/** Null for a feature nobody turned on: there is nothing to say about it. */
+private fun enhancementSuffix(state: EnhancementState): String? = when (state) {
+    EnhancementState.ACTIVE -> "已启用"
+    EnhancementState.REQUESTED -> "等待中"
+    EnhancementState.UNSUPPORTED -> "不适用"
+    EnhancementState.FAILED -> "失败"
+    EnhancementState.OFF -> null
+}
+
+/**
+ * Names for the keys mpv hands back. They only have to be unique among the
+ * messages this client listens for.
+ */
+private const val MSG_AUDIO = "daview-audio"
+private const val MSG_SUBTITLE = "daview-subtitle"
+private const val MSG_FULLSCREEN = "daview-fullscreen"
+private const val MSG_ESCAPE = "daview-escape"
+
+private const val OSD_MS = 3000
+private const val FAILURE_MS = 8000
+private const val PROGRESS_INTERVAL_MS = 5000L
+private const val ENHANCEMENT_REPORT_MS = 2500L
+
+private const val MAX_LUMA_NOTICE =
+    "RTX Video HDR 的峰值亮度按 1000 nits 估算，与 NVIDIA App 里的设置不一定一致。"
