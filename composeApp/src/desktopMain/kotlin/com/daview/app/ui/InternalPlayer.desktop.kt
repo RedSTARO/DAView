@@ -13,12 +13,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,8 +61,16 @@ import com.daview.shared.model.PlaybackInfoDto
 import com.sun.jna.Native
 import com.sun.jna.Pointer
 import kotlinx.coroutines.delay
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import java.awt.Canvas
 import java.awt.Color as AwtColor
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import java.awt.event.MouseMotionAdapter
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** How a session ended; the two write different things back. */
@@ -117,10 +131,28 @@ actual fun InternalPlayer(
     var adapterInUse by remember(info.sessionId) { mutableStateOf<String?>(null) }
     var unboundKeys by remember(info.sessionId) { mutableStateOf(emptyList<String>()) }
 
+    // What the transport bar draws. Polled rather than pushed: mpv reports
+    // property changes through its event stream, but every one of those would
+    // have to be mapped by hand from a C struct, and a bar being watched needs
+    // a reading four times a second whether or not anything changed.
+    var positionMs by remember(info.sessionId) { mutableStateOf(info.startPositionMs) }
+    var durationMs by remember(info.sessionId) { mutableStateOf(info.runtimeMs ?: 0L) }
+    var paused by remember(info.sessionId) { mutableStateOf(false) }
+    var volume by remember(info.sessionId) { mutableStateOf(100) }
+    // While the handle is held, the bar shows where the hand is rather than
+    // where mpv is: a seek takes a moment to land, and reading mpv back in the
+    // meantime drags the handle out from under the pointer.
+    var scrubbingMs by remember(info.sessionId) { mutableStateOf<Long?>(null) }
+
     // The engine outlives the file. The effect that starts the next one has to
     // be able to see the previous one in order to close it, which a keyed
     // remember would have thrown away before it got the chance.
     var player by remember { mutableStateOf<MpvPlayer?>(null) }
+
+    // When the pointer last moved or a control was used. In full screen the
+    // chrome is drawn only for a few seconds after that.
+    var lastActivity by remember { mutableStateOf(0L) }
+    fun stirred() { lastActivity = System.currentTimeMillis() }
 
     // onClose both stops the session and pops the screen, and there are two
     // routes to it — the file ending and the screen going away. That is a
@@ -367,6 +399,20 @@ actual fun InternalPlayer(
         }
     }
 
+    // The bar's own clock. Separate from the loop that reports progress to the
+    // session, which runs every five seconds: a seek bar that moved once every
+    // five seconds would look broken.
+    LaunchedEffect(player) {
+        val active = player ?: return@LaunchedEffect
+        while (true) {
+            delay(TICK_MS)
+            active.positionMs?.let { if (scrubbingMs == null) positionMs = it }
+            active.durationMs?.let { if (it > 0) durationMs = it }
+            paused = active.paused
+            volume = active.volume
+        }
+    }
+
     // mpv is still up and painting black when a file fails, and its window
     // covers whatever Compose draws in the same place — so the card below is
     // only ever seen when there is no mpv window at all, which is the case
@@ -414,6 +460,69 @@ actual fun InternalPlayer(
         }
     }
 
+    // Windowed, the bar stays: there is a title bar above it anyway, and a
+    // strip that came and went would resize the picture every few seconds. In
+    // full screen it is drawn for a few seconds after the pointer last moved,
+    // which is the only way a full-screen picture can be a whole picture and
+    // still have controls.
+    var chromeVisible by remember { mutableStateOf(true) }
+    LaunchedEffect(isFullscreen, lastActivity, scrubbingMs, paused) {
+        // A paused film is one somebody has stepped away from or is looking at.
+        // Taking the controls away from it leaves a still frame with no way to
+        // start it again short of guessing where the bar used to be.
+        if (!isFullscreen || scrubbingMs != null || paused) {
+            chromeVisible = true
+            return@LaunchedEffect
+        }
+        chromeVisible = true
+        delay(CHROME_LINGER_MS)
+        chromeVisible = false
+    }
+
+    // The pointer over the picture, which is the one place Compose cannot see
+    // it: the canvas is a heavyweight peer and mpv parents its own window to
+    // it. mpv cannot see it either — `mouse-pos` stays at the origin with
+    // `hover` false for a whole film — so AWT's own listener on the canvas is
+    // the only thing left that knows the mouse moved, and without it chrome
+    // that hides itself could never be asked back.
+    DisposableEffect(canvas) {
+        // Screen coordinates, and only when they change.
+        //
+        // Component coordinates move when the component does, and the chrome
+        // hiding is exactly what moves it: the picture grows into the space the
+        // bar gave up, AWT reports that as the mouse having moved, and the bar
+        // comes straight back. Three seconds later it happens again. On screen
+        // that reads as a bar that will not go away; in the log it is a mouse
+        // event every three seconds from a pointer nobody touched.
+        var lastX = Int.MIN_VALUE
+        var lastY = Int.MIN_VALUE
+        fun moved(e: MouseEvent) {
+            if (e.xOnScreen == lastX && e.yOnScreen == lastY) return
+            lastX = e.xOnScreen
+            lastY = e.yOnScreen
+            stirred()
+        }
+        val motion = object : MouseMotionAdapter() {
+            override fun mouseMoved(e: MouseEvent) = moved(e)
+            override fun mouseDragged(e: MouseEvent) = moved(e)
+        }
+        // Clicking the picture to pause it is what every player does, and here
+        // it is also the only pointer route to pause at all while the chrome is
+        // hidden.
+        val clicks = object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                stirred()
+                if (e.button == MouseEvent.BUTTON1 && e.clickCount == 1) player?.togglePause()
+            }
+        }
+        canvas.addMouseMotionListener(motion)
+        canvas.addMouseListener(clicks)
+        onDispose {
+            canvas.removeMouseMotionListener(motion)
+            canvas.removeMouseListener(clicks)
+        }
+    }
+
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
 
@@ -448,21 +557,34 @@ actual fun InternalPlayer(
                 }
             }
     ) {
-        // The bar takes room away from the picture, because nothing Compose
-        // draws can be *over* mpv's native window — whatever is on screen is
-        // beside the video, never on it. In full screen there is nothing for it
-        // to be beside, so it is simply not there: the picture is the window,
-        // and everything the bar carries has an OSD route as well. It does not
-        // fade on a timer either; appearing and disappearing would resize the
-        // video every few seconds, which no player does to its viewer.
-        if (!isFullscreen) {
+        // Nothing Compose draws can be *over* mpv's native window — whatever is
+        // on screen is beside the video, never on it — so the bar takes room
+        // from the picture and the picture resizes when it comes and goes.
+        // That is the cost of having controls at all here, and it is paid only
+        // in full screen, where the alternative is a picture with a permanent
+        // strip across it. Windowed, the bar simply stays.
+        if (chromeVisible) {
             PlayerBar(
                 info = info,
                 superResolution = superResolution,
                 videoHdr = videoHdr,
                 adapterInUse = adapterInUse,
-                onAudio = { stepAudio() },
-                onSubtitle = { stepSubtitle() },
+                positionMs = scrubbingMs ?: positionMs,
+                durationMs = durationMs,
+                paused = paused,
+                volume = volume,
+                onStir = { stirred() },
+                onTogglePause = { player?.togglePause(); stirred() },
+                onScrub = { scrubbingMs = it; stirred() },
+                onSeek = { target ->
+                    player?.seekTo(target)
+                    positionMs = target
+                    scrubbingMs = null
+                    stirred()
+                },
+                onVolume = { player?.volume = it; volume = it; stirred() },
+                onAudio = { stepAudio(); stirred() },
+                onSubtitle = { stepSubtitle(); stirred() },
                 onToggleFullscreen = { fullscreen?.let { it.value = !it.value } },
                 onClose = { if (ending == null) ending = Ending.ABANDONED }
             )
@@ -499,12 +621,22 @@ actual fun InternalPlayer(
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun PlayerBar(
     info: PlaybackInfoDto,
     superResolution: EnhancementState,
     videoHdr: EnhancementState,
     adapterInUse: String?,
+    positionMs: Long,
+    durationMs: Long,
+    paused: Boolean,
+    volume: Int,
+    onStir: () -> Unit,
+    onTogglePause: () -> Unit,
+    onScrub: (Long) -> Unit,
+    onSeek: (Long) -> Unit,
+    onVolume: (Int) -> Unit,
     onAudio: () -> Unit,
     onSubtitle: () -> Unit,
     onToggleFullscreen: () -> Unit,
@@ -513,53 +645,130 @@ private fun PlayerBar(
     // Playback chrome stays dark whichever theme the rest of the app is in. In
     // the light theme this was a near-white band across the top of a black
     // picture, which is not something any player does.
-    Surface(color = Color(0xFF15131C), contentColor = Color.White) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Text(
-                displayTitle(info),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                // Takes what is left after the controls instead of competing
-                // with them. The bar was one unwrapped Row, so the GPU name and
-                // a long track title pushed the close button off the edge and
-                // then wrapped the whole thing onto three lines.
-                modifier = Modifier.weight(1f, fill = false)
-            )
-            Spacer(Modifier.weight(1f))
-
-            adapterInUse?.let {
+    Surface(
+        color = Color(0xFF15131C),
+        contentColor = Color.White,
+        // The pointer resting on the bar counts as being used, or the bar would
+        // hide itself out from under the hand reaching for it.
+        modifier = Modifier.onPointerEvent(PointerEventType.Move) { onStir() }
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 Text(
-                    it,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White.copy(alpha = 0.7f),
+                    displayTitle(info),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    // Takes what is left after the controls instead of competing
+                    // with them. The bar was one unwrapped Row, so the GPU name
+                    // and a long track title pushed the close button off the
+                    // edge and then wrapped the whole thing onto three lines.
+                    modifier = Modifier.weight(1f, fill = false)
                 )
-            }
-            EnhancementChip("RTX 超分", superResolution)
-            EnhancementChip("RTX HDR", videoHdr)
+                Spacer(Modifier.weight(1f))
 
-            // These step to the next track and let mpv draw the list, which is
-            // the same thing the keys do. Naming the key in the description is
-            // the only place the pairing is discoverable, since the picture
-            // belongs to mpv and this bar is gone in full screen.
-            IconButton(onClick = onAudio) {
-                Icon(Icons.Filled.Audiotrack, contentDescription = "下一条音轨（#）")
+                adapterInUse?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                EnhancementChip("RTX 超分", superResolution)
+                EnhancementChip("RTX HDR", videoHdr)
+
+                // These step to the next track and let mpv draw the list, which
+                // is the same thing the keys do. Naming the key in the
+                // description is the only place the pairing is discoverable,
+                // since the picture belongs to mpv.
+                IconButton(onClick = onAudio) {
+                    Icon(Icons.Filled.Audiotrack, contentDescription = "下一条音轨（#）")
+                }
+                IconButton(onClick = onSubtitle) {
+                    Icon(Icons.Filled.ClosedCaption, contentDescription = "下一条字幕（j）")
+                }
+                IconButton(onClick = onToggleFullscreen) {
+                    Icon(Icons.Filled.Fullscreen, contentDescription = "全屏（F11 / f）")
+                }
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Filled.Close, contentDescription = "结束播放")
+                }
             }
-            IconButton(onClick = onSubtitle) {
-                Icon(Icons.Filled.ClosedCaption, contentDescription = "下一条字幕（j）")
-            }
-            IconButton(onClick = onToggleFullscreen) {
-                Icon(Icons.Filled.Fullscreen, contentDescription = "全屏（F11 / f）")
-            }
-            IconButton(onClick = onClose) {
-                Icon(Icons.Filled.Close, contentDescription = "结束播放")
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                IconButton(onClick = onTogglePause) {
+                    Icon(
+                        if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                        contentDescription = if (paused) "播放（空格）" else "暂停（空格）"
+                    )
+                }
+                Text(
+                    formatDuration(positionMs),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White.copy(alpha = 0.85f)
+                )
+                // A file mpv has not measured yet has no bar to drag: `duration`
+                // arrives with the first frames, and until then a slider with a
+                // zero range would jump to the end on the first touch.
+                val seekable = durationMs > 0
+                // Where the handle was left, held here rather than read back
+                // from [positionMs] on the way out. A click on the track calls
+                // both callbacks inside one frame, so the parameter still holds
+                // the position from before the click — and seeking to where it
+                // already was is indistinguishable from the bar not working.
+                var dragged by remember { mutableStateOf<Float?>(null) }
+                Slider(
+                    value = dragged
+                        ?: if (seekable) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f,
+                    onValueChange = {
+                        dragged = it
+                        if (seekable) onScrub((it * durationMs).toLong())
+                    },
+                    onValueChangeFinished = {
+                        val at = dragged
+                        dragged = null
+                        if (seekable && at != null) onSeek((at * durationMs).toLong())
+                    },
+                    enabled = seekable,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color.White,
+                        activeTrackColor = Color.White,
+                        inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    formatDuration(durationMs),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White.copy(alpha = 0.85f)
+                )
+
+                Icon(
+                    if (volume == 0) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = "音量",
+                    tint = Color.White.copy(alpha = 0.85f)
+                )
+                Slider(
+                    value = volume / 100f,
+                    onValueChange = { onVolume((it * 100).toInt()) },
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color.White,
+                        activeTrackColor = Color.White.copy(alpha = 0.8f),
+                        inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                    ),
+                    modifier = Modifier.width(90.dp)
+                )
             }
         }
     }
@@ -644,6 +853,12 @@ private const val MSG_AUDIO = "daview-audio"
 private const val MSG_SUBTITLE = "daview-subtitle"
 private const val MSG_FULLSCREEN = "daview-fullscreen"
 private const val MSG_ESCAPE = "daview-escape"
+
+/** How often the transport bar reads mpv. Four times a second reads as live. */
+private const val TICK_MS = 250L
+
+/** How long the chrome stays after the pointer stops, in full screen. */
+private const val CHROME_LINGER_MS = 3000L
 
 private const val OSD_MS = 3000
 private const val FAILURE_MS = 8000

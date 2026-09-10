@@ -99,9 +99,16 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         } else {
             option("hwdec", "auto-safe")
         }
-        // The libmpv profile turns all of these off — it assumes the embedder
-        // draws its own UI. Here mpv draws it, so they go back on.
-        option("osc", "yes")
+        // mpv's own on-screen controller stays off, which is what the libmpv
+        // profile already wanted. It cannot work here: an mpv parented to
+        // someone else's window receives no mouse events at all — `mouse-pos`
+        // reads `{"x":0,"y":0,"hover":false}` for a whole film, with
+        // `input-cursor=yes` — so the controller never auto-shows, and forcing
+        // it visible only produces buttons that ignore every click. The app
+        // draws the transport itself instead.
+        //
+        // The keyboard is a different matter: that does arrive, so mpv's own
+        // bindings work and are switched back on.
         option("input-default-bindings", "yes")
         option("input-vo-keyboard", "yes")
         // Including the OSD messages themselves, which are this app's only way
@@ -219,15 +226,27 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
     fun setTitle(title: String) = setProperty("force-media-title", title)
 
     /**
-     * Transport the app can drive itself.
-     *
-     * mpv has its own key bindings, but they only fire while its window has
-     * keyboard focus — and clicking anything in the toolbar above the picture
-     * takes that away, after which space belonged to the last button pressed.
+     * Transport the app drives itself, because nothing else can: mpv's
+     * controller gets no mouse, and mpv's key bindings only fire while its
+     * window holds keyboard focus, which it loses to anything clicked in the
+     * bar.
      */
     fun togglePause() = command("cycle", "pause")
 
+    fun setPaused(paused: Boolean) = setProperty("pause", if (paused) "yes" else "no")
+
     fun seekBy(seconds: Int) = command("seek", seconds.toString(), "relative")
+
+    /**
+     * `absolute` rather than `relative`, and `keyframes` rather than `exact`:
+     * this is a bar being dragged, so it is asked for a position many times a
+     * second and a keyframe is what makes each one land quickly.
+     */
+    fun seekTo(positionMs: Long) = command(
+        "seek",
+        String.format(Locale.ROOT, "%.3f", positionMs / 1000.0),
+        "absolute+keyframes"
+    )
 
     fun applyEnhancement(enhancement: VideoEnhancement) {
         // Windows-only: the filter does not exist on the other platforms, and
@@ -266,6 +285,20 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
 
     /** Subtitles switched off, which reads the same as unmapped in [subtitleId]. */
     val subtitleOff: Boolean get() = property("sid") == "no"
+
+    /**
+     * How long the file is, according to mpv rather than to the scan.
+     *
+     * The scanned runtime comes from the container header and is what the rest
+     * of the app shows; this is what the seek bar has to be drawn against, so
+     * that the handle ends up where the picture actually ends.
+     */
+    val durationMs: Long?
+        get() = property("duration")?.toDoubleOrNull()?.let { (it * 1000).toLong() }
+
+    var volume: Int
+        get() = property("volume")?.toDoubleOrNull()?.toInt() ?: 100
+        set(value) = setProperty("volume", value.coerceIn(0, MAX_VOLUME).toString())
 
     private fun readPosition(): Long? =
         property("time-pos")?.toDoubleOrNull()?.let { (it * 1000).toLong() }
@@ -458,6 +491,9 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
 
         /** MPV_ERROR_UNINITIALIZED, for the commands there is no context for. */
         const val ERROR_UNINITIALIZED = -10
+
+        /** mpv allows more, but above its own 100 the audio is being amplified. */
+        const val MAX_VOLUME = 100
 
         const val JOIN_TIMEOUT_MS = 2000L
         const val WAIT_TIMEOUT_SECONDS = 0.2
