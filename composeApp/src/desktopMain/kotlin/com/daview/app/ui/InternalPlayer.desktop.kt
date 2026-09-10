@@ -101,23 +101,39 @@ actual fun InternalPlayer(
         }
     }
 
-    var selectedAudio by remember { mutableStateOf(info.audioStreamIndex) }
-    var selectedSubtitle by remember { mutableStateOf(info.subtitleStreamIndex) }
-    var player by remember { mutableStateOf<MpvPlayer?>(null) }
-    var failure by remember { mutableStateOf<String?>(null) }
-    var ending by remember { mutableStateOf<Ending?>(null) }
+    // All of this describes *one file*, and one screen plays several of them:
+    // finishing an episode swaps `info` for the next without the composable
+    // ever leaving the tree. Remembered without a key it all survived into the
+    // next episode, and three separate faults came out of that. `configured`
+    // stayed latched, so no external subtitle was attached and no track chosen
+    // ever again. `ending` still read FINISHED, so setting it to FINISHED a
+    // second time was not a state change, the effect watching it never ran, and
+    // the chain stopped dead on the episode after the first. And with `ending`
+    // never null again, the shutdown guard below could not fire either, which
+    // is the case that leaves a live session on a dead surface.
+    var selectedAudio by remember(info.sessionId) { mutableStateOf(info.audioStreamIndex) }
+    var selectedSubtitle by remember(info.sessionId) { mutableStateOf(info.subtitleStreamIndex) }
+    var failure by remember(info.sessionId) { mutableStateOf<String?>(null) }
+    var ending by remember(info.sessionId) { mutableStateOf<Ending?>(null) }
     // Attaching subtitles and choosing tracks has to wait until mpv has a file
     // open, and mpv says so on its own thread - so the work is prepared here and
     // run from the event callback, exactly once per file.
-    val configured = remember { AtomicBoolean(false) }
-    var attachTracks by remember { mutableStateOf({}) }
-    var superResolution by remember { mutableStateOf(EnhancementState.OFF) }
-    var videoHdr by remember { mutableStateOf(EnhancementState.OFF) }
-    var maxLumaGuess by remember { mutableStateOf(false) }
-    var adapterInUse by remember { mutableStateOf<String?>(null) }
+    val configured = remember(info.sessionId) { AtomicBoolean(false) }
+    var attachTracks by remember(info.sessionId) { mutableStateOf({}) }
+    var superResolution by remember(info.sessionId) { mutableStateOf(EnhancementState.OFF) }
+    var videoHdr by remember(info.sessionId) { mutableStateOf(EnhancementState.OFF) }
+    var maxLumaGuess by remember(info.sessionId) { mutableStateOf(false) }
+    var adapterInUse by remember(info.sessionId) { mutableStateOf<String?>(null) }
+
+    // The engine outlives the file. The effect that starts the next one has to
+    // be able to see the previous one in order to close it, which a keyed
+    // remember would have thrown away before it got the chance.
+    var player by remember { mutableStateOf<MpvPlayer?>(null) }
 
     // onClose both stops the session and pops the screen, and there are two
-    // routes to it — the file ending and the screen going away.
+    // routes to it — the file ending and the screen going away. That is a
+    // property of the screen rather than of the file, so it is deliberately not
+    // keyed: per session it would let one screen close itself once per episode.
     val closedOnce = remember { AtomicBoolean(false) }
     fun finish(positionMs: Long) {
         if (closedOnce.compareAndSet(false, true)) latestOnClose(positionMs)
