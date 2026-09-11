@@ -420,6 +420,17 @@ PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--
 ./gradlew :composeApp:packageMsi                 # 桌面安装包（Windows）
 ```
 
+安装包里带的版本号不是文件名上那个人看的标签，而是 **`MAJOR.MINOR.PATCH`**，
+默认 `1.0.<提交数>`，CI 传 `-Pdaview.packageVersion=` 覆盖（主次号取最新 tag，
+修订号取总提交数）。**它必须逐次变大**：jpackage 每次都生成新的 ProductCode，
+而 ProductVersion 与已装的一样时，Windows Installer 既不当升级也不当降级，直接报
+1638「已经安装了该产品的另一个版本」，只能先手动卸载。之前它永远是 `1.0.0`，
+所以每一次更新都是这个下场。
+
+`upgradeUuid` 也写死在 `build.gradle.kts` 里。jpackage 本来就会按包名推出一个稳定的
+（name-based UUID），写死的就是它对 `DAView` 推出的那个值——不是为了改变行为，
+是为了以后改包名时不会惄无声息地把所有已装副本变成孤儿。
+
 没有要先启动的服务端，也没有令牌要填：应用一开就是首页。WebDAV 地址与刮削 API Key
 在「设置」里填，或者用环境变量（适合无界面的容器部署）：
 

@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.meta.outputs.version }}
+      package_version: ${{ steps.meta.outputs.package_version }}
       short_sha: ${{ steps.meta.outputs.short_sha }}
       commit_msg: ${{ steps.meta.outputs.commit_msg }}
       commit_count: ${{ steps.meta.outputs.commit_count }}
@@ -52,6 +53,25 @@ jobs:
           else
             version="$(git describe --tags --always 2>/dev/null || git rev-parse --short HEAD)"
           fi
+          # What the installers carry, which is not the label above. Windows
+          # compares MAJOR.MINOR.PATCH and refuses a package whose version
+          # equals the installed one, so this has to rise on every build — the
+          # label does not (`git describe` output is not even numeric). Major
+          # and minor come from the newest tag; the patch is the total commit
+          # count, which is the one number that only ever goes up, including
+          # across a tag. So an installer always replaces the one before it.
+          # 1.0 rather than 0.1 when there is no tag: every copy installed so
+          # far reports 1.0.0, and Windows refuses to go backwards, so anything
+          # below that would be rejected as a downgrade instead.
+          package_major=1
+          package_minor=0
+          newest_tag="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+          if [[ "$newest_tag" =~ ^v?([0-9]+)\.([0-9]+) ]]; then
+            package_major="${BASH_REMATCH[1]}"
+            package_minor="${BASH_REMATCH[2]}"
+          fi
+          package_patch="$(git rev-list --count HEAD)"
+
           latest_tag="$(git tag --sort=-creatordate | head -n1)"
           if [ -z "$latest_tag" ]; then
             count="$(git rev-list --count HEAD)"
@@ -60,6 +80,7 @@ jobs:
           fi
           {
             echo "version=$version"
+            echo "package_version=$package_major.$package_minor.$package_patch"
             echo "short_sha=$(git rev-parse --short HEAD)"
             echo "commit_msg=$(git log -1 --pretty=%s)"
             echo "commit_count=$count"
@@ -203,7 +224,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/fetch-libmpv.ps1
 
-      - run: ./gradlew :composeApp:packageMsi
+      - run: ./gradlew :composeApp:packageMsi -Pdaview.packageVersion=${{ needs.test.outputs.package_version }}
 
       - name: 重命名 MSI
         run: |
@@ -234,7 +255,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew :composeApp:packageDeb
+      - run: ./gradlew :composeApp:packageDeb -Pdaview.packageVersion=${{ needs.test.outputs.package_version }}
 
       - name: 重命名 deb
         run: |
@@ -265,7 +286,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew :composeApp:packageDmg
+      - run: ./gradlew :composeApp:packageDmg -Pdaview.packageVersion=${{ needs.test.outputs.package_version }}
 
       - name: 重命名 dmg
         run: |

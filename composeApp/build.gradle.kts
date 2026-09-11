@@ -139,13 +139,78 @@ tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageT
         .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
+/**
+ * The version the installers carry, which is not the human label CI puts in the
+ * file name.
+ *
+ * It has to move with the build or Windows refuses to install one package over
+ * another: jpackage mints a fresh ProductCode every time, and a package whose
+ * ProductVersion equals the installed one is neither an upgrade nor a
+ * downgrade. Windows Installer answers that with 1638 — "已经安装了该产品的另一
+ * 个版本" — and the only way on is to uninstall by hand. It sat at 1.0.0 for
+ * every build ever made, so every update did exactly that.
+ *
+ * MSI compares only the first three fields, and each has a ceiling, so this is
+ * checked rather than passed through: jpackage's own complaint arrives late and
+ * says nothing about which field was wrong.
+ */
+val daviewPackageVersion: String = (findProperty("daview.packageVersion") as String?)
+    ?.takeIf { it.isNotBlank() }
+    ?.also { version ->
+        val parts = version.split('.')
+        require(parts.size == 3) { "daview.packageVersion must be MAJOR.MINOR.PATCH, was '$version'" }
+        val limits = listOf(255, 255, 65535)
+        parts.forEachIndexed { index, part ->
+            val value = part.toIntOrNull()
+            require(value != null && value in 0..limits[index]) {
+                "daview.packageVersion field ${index + 1} must be 0..${limits[index]}, was '$part'"
+            }
+        }
+    }
+    ?: defaultPackageVersion()
+
+/**
+ * What a build that was not told a version carries.
+ *
+ * Not a constant, because a constant is what caused this: every package ever
+ * built said 1.0.0, so none of them could be installed over another. The patch
+ * is the commit count, the same number CI uses, so a package built by hand
+ * still replaces the one before it. Zero only when git cannot be reached, and
+ * a package built outside a checkout is not one anybody upgrades to.
+ */
+fun defaultPackageVersion(): String {
+    val commits = runCatching {
+        ProcessBuilder("git", "rev-list", "--count", "HEAD")
+            .directory(rootDir)
+            .redirectErrorStream(true)
+            .start()
+            .inputStream.bufferedReader().readText().trim().toIntOrNull()
+    }.getOrNull()
+    return "1.0.${commits ?: 0}"
+}
+
 compose.desktop {
     application {
         mainClass = "com.daview.app.MainKt"
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Deb, TargetFormat.Dmg)
             packageName = "DAView"
-            packageVersion = "1.0.0"
+            // Named apart from the property it feeds, deliberately: inside this
+            // block `packageVersion` is the block's own, so a val sharing the
+            // name assigns the default to itself and the build says nothing at
+            // all — it just keeps shipping 1.0.0.
+            packageVersion = daviewPackageVersion
+
+            windows {
+                // Pinned rather than left to jpackage. What it derives is
+                // stable — a name-based (version 3) UUID, and this is the value
+                // it produces for "DAView", so copies already installed are
+                // recognised — but it is derived from the package name, and
+                // renaming the app would silently orphan every one of them:
+                // the new package would not see the old install to replace, and
+                // both would sit in Add/Remove Programs forever.
+                upgradeUuid = "07822F86-3B17-30C5-8A30-3D898F138AE3"
+            }
             // Everything under here is copied into the installed app next to
             // the runtime, and found at run time through the
             // `compose.application.resources.dir` system property. The Windows
