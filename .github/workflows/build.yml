@@ -224,7 +224,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/fetch-libmpv.ps1
 
-      - run: ./gradlew :composeApp:packageMsi -Pdaview.packageVersion=${{ needs.test.outputs.package_version }}
+      # Quoted, and it has to be: this job runs in PowerShell, which splits an
+      # unquoted `-PdaviewPackageVersion=1.0.85` at the first dot and hands
+      # Gradle `-PdaviewPackageVersion=1` plus `.0.85` as a second argument it
+      # reads as a task name. Git Bash passes the same string through untouched,
+      # so this is invisible everywhere except the one job that needs it.
+      - run: ./gradlew :composeApp:packageMsi "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
       - name: 重命名 MSI
         run: |
@@ -255,7 +260,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew :composeApp:packageDeb -Pdaview.packageVersion=${{ needs.test.outputs.package_version }}
+      - run: ./gradlew :composeApp:packageDeb "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
       - name: 重命名 deb
         run: |
@@ -286,7 +291,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew :composeApp:packageDmg -Pdaview.packageVersion=${{ needs.test.outputs.package_version }}
+      - run: ./gradlew :composeApp:packageDmg "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
       - name: 重命名 dmg
         run: |

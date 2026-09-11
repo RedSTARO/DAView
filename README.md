@@ -421,7 +421,8 @@ PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--
 ```
 
 安装包里带的版本号不是文件名上那个人看的标签，而是 **`MAJOR.MINOR.PATCH`**，
-默认 `1.0.<提交数>`，CI 传 `-Pdaview.packageVersion=` 覆盖（主次号取最新 tag，
+默认 `1.0.<提交数>`，CI 传 `"-PdaviewPackageVersion=..."` 覆盖（PowerShell 下必须带引号，否则它会在第一个点上
+把参数切开）（主次号取最新 tag，
 修订号取总提交数）。**它必须逐次变大**：jpackage 每次都生成新的 ProductCode，
 而 ProductVersion 与已装的一样时，Windows Installer 既不当升级也不当降级，直接报
 1638「已经安装了该产品的另一个版本」，只能先手动卸载。之前它永远是 `1.0.0`，

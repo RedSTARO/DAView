@@ -153,17 +153,25 @@ tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageT
  * MSI compares only the first three fields, and each has a ceiling, so this is
  * checked rather than passed through: jpackage's own complaint arrives late and
  * says nothing about which field was wrong.
+ *
+ * In PowerShell the whole argument has to be quoted — `"-PdaviewPackageVersion=
+ * 1.0.85"` — because PowerShell splits an unquoted one at the first dot, in the
+ * name or in the value alike, and passes the remainder on as a separate argument
+ * that Gradle then reads as a task name. Git Bash passes the same string through
+ * untouched, so it works unquoted there and nowhere says why it did not on
+ * Windows. The check below is what turns that into a sentence rather than a
+ * package quietly built as version "1".
  */
-val daviewPackageVersion: String = (findProperty("daview.packageVersion") as String?)
+val daviewPackageVersion: String = (findProperty("daviewPackageVersion") as String?)
     ?.takeIf { it.isNotBlank() }
     ?.also { version ->
         val parts = version.split('.')
-        require(parts.size == 3) { "daview.packageVersion must be MAJOR.MINOR.PATCH, was '$version'" }
+        require(parts.size == 3) { "daviewPackageVersion must be MAJOR.MINOR.PATCH, was '$version'" }
         val limits = listOf(255, 255, 65535)
         parts.forEachIndexed { index, part ->
             val value = part.toIntOrNull()
             require(value != null && value in 0..limits[index]) {
-                "daview.packageVersion field ${index + 1} must be 0..${limits[index]}, was '$part'"
+                "daviewPackageVersion field ${index + 1} must be 0..${limits[index]}, was '$part'"
             }
         }
     }
