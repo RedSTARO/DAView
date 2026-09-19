@@ -1,18 +1,22 @@
 package com.daview.app.ui
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -32,15 +36,24 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
 import com.daview.app.data.AppState
+import com.daview.app.data.ModalMarker
+import com.daview.app.data.tracksTextInput
 import com.daview.shared.model.IdentifyContextDto
 import com.daview.shared.model.IdentifyRequest
 import com.daview.shared.model.MediaItemDto
@@ -56,10 +69,15 @@ import kotlinx.coroutines.launch
  * user names the entry themselves — paste the id from the provider's own URL,
  * or search it — and the item is rebuilt from that entry and pinned, so later
  * scans reuse the id instead of searching again.
+ *
+ * A search result is picked first and applied with the button, not applied on
+ * the click that picks it: applying replaces every field the scrape wrote, and
+ * a stray click on the row below the right one did exactly that.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
+    ModalMarker()
     val scope = rememberCoroutineScope()
     var context by remember { mutableStateOf<IdentifyContextDto?>(null) }
     var provider by remember { mutableStateOf<MetadataProvider?>(null) }
@@ -67,9 +85,29 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
     var query by remember { mutableStateOf("") }
     var year by remember { mutableStateOf("") }
     var candidates by remember { mutableStateOf<List<ScrapeCandidateDto>>(emptyList()) }
+    var picked by remember { mutableStateOf<ScrapeCandidateDto?>(null) }
     var searched by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val queryFocus = remember { FocusRequester() }
+
+    fun search() {
+        val source = provider ?: return
+        if (query.isBlank()) return
+        scope.launch {
+            busy = true
+            error = null
+            picked = null
+            try {
+                candidates = state.library.identifySearch(item.id, source, query, year.toIntOrNull())
+                searched = true
+            } catch (e: Throwable) {
+                error = state.describe(e)
+            } finally {
+                busy = false
+            }
+        }
+    }
 
     LaunchedEffect(item.id) {
         busy = true
@@ -83,26 +121,14 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                 ?.let { loaded.providerIds[it.name.lowercase()] }
                 .orEmpty()
         } catch (e: Throwable) {
-            error = e.message
+            error = state.describe(e)
         } finally {
             busy = false
         }
-    }
-
-    fun search() {
-        val source = provider ?: return
-        scope.launch {
-            busy = true
-            error = null
-            try {
-                candidates = state.library.identifySearch(item.id, source, query, year.toIntOrNull())
-                searched = true
-            } catch (e: Throwable) {
-                error = e.message
-            } finally {
-                busy = false
-            }
-        }
+        runCatching { queryFocus.requestFocus() }
+        // The folder name is already in the box; searching it straight away
+        // saves the click that nearly everyone makes first anyway.
+        search()
     }
 
     fun apply(id: String) {
@@ -117,11 +143,11 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                     state.links
                 )
                 state.notify("已指定为 ${updated.name}")
-                state.loadDetail(item.id)
+                state.loadDetail(item.id, quiet = true)
                 state.refreshLibraries()
                 onDismiss()
             } catch (e: Throwable) {
-                error = e.message
+                error = state.describe(e)
             } finally {
                 busy = false
             }
@@ -136,7 +162,8 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                 val loaded = context
                 Text(
                     "文件夹识别为「${loaded?.defaultQuery ?: item.name}」" +
-                        (loaded?.defaultYear?.let { " ($it)" } ?: ""),
+                        (loaded?.defaultYear?.let { " ($it)" } ?: "") +
+                        "。指定后会用该条目的信息替换现在的标题、简介、海报等，手动编辑过的字段也会被替换。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -156,15 +183,17 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                         color = MaterialTheme.colorScheme.error
                     )
                 } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         loaded?.providers.orEmpty().forEach { option ->
                             ToggleButton(
                                 checked = provider == option,
                                 onCheckedChange = {
                                     provider = option
                                     candidates = emptyList()
+                                    picked = null
                                     searched = false
                                     providerId = loaded?.providerIds?.get(option.name.lowercase()).orEmpty()
+                                    search()
                                 }
                             ) {
                                 Text(option.displayName)
@@ -174,24 +203,6 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                 }
 
                 Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = providerId,
-                    onValueChange = { providerId = it },
-                    label = { Text("条目 id") },
-                    supportingText = { Text(provider?.idHint.orEmpty()) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(Modifier.height(8.dp))
-                HorizontalDivider()
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "不知道 id 就先搜索，点击结果即可指定",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(8.dp))
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -201,14 +212,19 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                         onValueChange = { query = it },
                         label = { Text("片名") },
                         singleLine = true,
-                        modifier = Modifier.weight(1f)
+                        // Enter searches, as it does in every search box.
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { search() }),
+                        modifier = Modifier.weight(1f).focusRequester(queryFocus).tracksTextInput()
                     )
                     OutlinedTextField(
                         value = year,
                         onValueChange = { year = it.filter { c -> c.isDigit() }.take(4) },
                         label = { Text("年份") },
                         singleLine = true,
-                        modifier = Modifier.width(96.dp)
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { search() }),
+                        modifier = Modifier.width(96.dp).tracksTextInput()
                     )
                     FilledTonalIconButton(
                         onClick = { search() },
@@ -229,7 +245,7 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                 if (searched && candidates.isEmpty() && !busy) {
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "没有结果。换个写法，或直接填 id。",
+                        "没有结果。换个写法（中文、日文或原名），或在下面直接填 id。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -237,56 +253,98 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
 
                 Column {
                     candidates.forEach { candidate ->
-                        CandidateRow(candidate) { apply(candidate.providerId) }
+                        CandidateRow(state, candidate, selected = picked == candidate) {
+                            picked = candidate
+                            providerId = candidate.providerId
+                        }
                     }
                 }
+
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = providerId,
+                    onValueChange = { providerId = it; picked = null },
+                    label = { Text("或直接填条目 id") },
+                    supportingText = { Text(provider?.idHint.orEmpty()) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { if (provider != null && providerId.isNotBlank()) apply(providerId) }),
+                    modifier = Modifier.fillMaxWidth().tracksTextInput()
+                )
             }
         },
         confirmButton = {
             Button(
                 enabled = provider != null && providerId.isNotBlank() && !busy,
                 onClick = { apply(providerId) }
-            ) { Text("应用") }
+            ) { Text(picked?.let { "指定为「${it.title}」" } ?: "应用") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
 }
 
 @Composable
-private fun CandidateRow(candidate: ScrapeCandidateDto, onClick: () -> Unit) {
+private fun CandidateRow(state: AppState, candidate: ScrapeCandidateDto, selected: Boolean, onClick: () -> Unit) {
+    // The provider's own poster, through the app's image cache. Two works with
+    // the same title are told apart at a glance by their posters and by little
+    // else in a list of titles and years.
+    val poster by produceState<String?>(null, candidate.posterUrl) {
+        value = candidate.posterUrl?.let { url -> runCatching { state.library.remoteImage(url)?.toString() }.getOrNull() }
+    }
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        onClick = onClick,
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
         shape = MaterialTheme.shapes.small,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp).clickable(onClick = onClick)
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
     ) {
-        Column(Modifier.padding(12.dp)) {
-            Text(
-                candidate.title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                listOfNotNull(
-                    candidate.year?.toString(),
-                    candidate.originalTitle?.takeIf { it != candidate.title },
-                    "id ${candidate.providerId}"
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            candidate.overview?.takeIf { it.isNotBlank() }?.let {
-                Spacer(Modifier.height(4.dp))
+        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.Top) {
+            Surface(
+                modifier = Modifier.width(56.dp).aspectRatio(2f / 3f),
+                shape = MaterialTheme.shapes.extraSmall,
+                color = MaterialTheme.colorScheme.surfaceContainerHighest
+            ) {
+                poster?.let {
+                    AsyncImage(
+                        model = java.io.File(it),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } ?: ArtworkPlaceholder(null, Modifier.fillMaxSize())
+            }
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
                 Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
+                    candidate.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                Text(
+                    listOfNotNull(
+                        candidate.year?.toString(),
+                        candidate.originalTitle?.takeIf { it != candidate.title },
+                        "id ${candidate.providerId}"
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                candidate.overview?.takeIf { it.isNotBlank() }?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }

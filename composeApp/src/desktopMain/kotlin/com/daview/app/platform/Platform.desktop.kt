@@ -106,9 +106,10 @@ private fun buildCommand(request: ExternalPlayRequest, executable: String): List
             if (seconds > 0) add("--start-time=$seconds")
             request.subtitleUrl?.let { add("--sub-file=$it") }
             // VLC counts tracks from the file, so the container's own index is
-            // what it wants here.
+            // what it wants here. An external file's index is DAView's own and
+            // means nothing to VLC; that one arrives through --sub-file.
             request.audioTrack?.let { add("--audio-track=$it") }
-            request.subtitleTrack?.let { add("--sub-track=$it") }
+            request.subtitleTrack?.takeIf { it in 0 until EXTERNAL_BASE }?.let { add("--sub-track=$it") }
             add("--meta-title=${request.title}")
         }
         "mpv", "iina" -> buildList {
@@ -117,7 +118,12 @@ private fun buildCommand(request: ExternalPlayRequest, executable: String): List
             if (seconds > 0) add("--start=$seconds")
             request.subtitleUrl?.let { add("--sub-file=$it") }
             request.audioTrack?.let { add("--aid=$it") }
-            request.subtitleTrack?.let { add("--sid=$it") }
+            when (val sid = request.subtitleTrack) {
+                // Switched off on purpose, and remembered as such.
+                com.daview.shared.model.SUBTITLE_OFF -> add("--sid=no")
+                null -> Unit
+                else -> if (sid < EXTERNAL_BASE) add("--sid=$sid")
+            }
             add("--force-media-title=${request.title}")
         }
         else -> listOf(executable, request.streamUrl)
@@ -146,6 +152,9 @@ actual fun launchExternalPlayer(request: ExternalPlayRequest): ExternalPlaybackH
     }
 }
 
+/** DAView numbers external subtitle files from here up; players never see those numbers. */
+private const val EXTERNAL_BASE = 1000
+
 actual fun openUrl(url: String) {
     runCatching {
         if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
@@ -159,25 +168,63 @@ actual fun openUrl(url: String) {
  * on Windows and macOS, and it needs no look-and-feel setup.
  */
 actual suspend fun pickTextFile(): String? = withContext(Dispatchers.Main) {
-    val dialog = FileDialog(null as Frame?, "选择备份文件", FileDialog.LOAD).apply {
-        setFilenameFilter { _, name -> name.endsWith(".json", ignoreCase = true) }
-        isVisible = true
-    }
-    val directory = dialog.directory
-    val file = dialog.file ?: return@withContext null
+    val chosen = chooseFile("选择备份文件", listOf("json")) ?: return@withContext null
     withContext(Dispatchers.IO) {
-        runCatching { File(directory, file).readText() }.getOrNull()
+        runCatching { chosen.readText() }.getOrNull()
     }
 }
+
+actual suspend fun pickImageFile(): PickedFile? = withContext(Dispatchers.Main) {
+    val chosen = chooseFile("选择图片", listOf("jpg", "jpeg", "png", "webp")) ?: return@withContext null
+    withContext(Dispatchers.IO) {
+        runCatching { PickedFile(chosen.name, chosen.readBytes()) }.getOrNull()
+    }
+}
+
+/** Nothing to ask for: a desktop can always show its own window. */
+actual fun requestNotificationPermission() = Unit
+
+/**
+ * The platform's open dialog, limited to [extensions] and starting where the
+ * last one was left.
+ *
+ * A FilenameFilter is documented as doing nothing on Windows, which is why the
+ * dialogs listed every file on the disk. A wildcard in the file-name box is
+ * what the Windows dialog does honour, so both are set.
+ */
+fun chooseFile(title: String, extensions: List<String>): File? {
+    val dialog = FileDialog(null as Frame?, title, FileDialog.LOAD).apply {
+        directory = lastDirectory ?: System.getProperty("user.home")
+        setFilenameFilter { _, name -> extensions.any { name.endsWith(".$it", ignoreCase = true) } }
+        if (System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)) {
+            file = extensions.joinToString(";") { "*.$it" }
+        }
+        isVisible = true
+    }
+    val directory = dialog.directory ?: return null
+    val file = dialog.file ?: return null
+    lastDirectory = directory
+    return File(directory, file)
+}
+
+/** Where the last file dialog was left, for the next one to open in. */
+private var lastDirectory: String?
+    get() = Preferences.userRoot().node("com/daview/app").get("dialog.lastDirectory", null)
+    set(value) {
+        val node = Preferences.userRoot().node("com/daview/app")
+        if (value == null) node.remove("dialog.lastDirectory") else node.put("dialog.lastDirectory", value)
+    }
 
 actual suspend fun saveTextFile(suggestedName: String, write: (Appendable) -> Unit): String? =
     withContext(Dispatchers.Main) {
         val dialog = FileDialog(null as Frame?, "保存到", FileDialog.SAVE).apply {
+            directory = lastDirectory ?: System.getProperty("user.home")
             file = suggestedName
             isVisible = true
         }
         val directory = dialog.directory
         val chosen = dialog.file ?: return@withContext null
+        lastDirectory = directory
         withContext(Dispatchers.IO) {
             val target = File(directory, chosen)
             runCatching {

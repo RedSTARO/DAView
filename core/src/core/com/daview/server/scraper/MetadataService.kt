@@ -6,6 +6,7 @@ import com.daview.server.db.Repository
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.LibraryKind
+import com.daview.shared.model.ManualField
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.MetadataProvider
 import com.daview.shared.model.ScrapeStatus
@@ -91,9 +92,11 @@ class MetadataService(
         // brings corrections over from other devices, and one can easily land
         // before this device has ever scanned the item it belongs to.
         val storedPin = if (item.lockedProvider == null) repository.pin(item.id) else null
+        // A NONE row is a tombstone: the pin was taken off on purpose, and the
+        // row stays so the sync file carries that decision to other devices.
         val pinnedProvider = storedPin?.let { row ->
             MetadataProvider.entries.firstOrNull { it.name == row.provider }
-        }
+        }?.takeIf { it != MetadataProvider.NONE }
         if (pinnedProvider != null) {
             providerIds[pinnedProvider.name.lowercase()] = storedPin.providerId
         }
@@ -161,23 +164,30 @@ class MetadataService(
         val now = System.currentTimeMillis()
         val existing = repository.itemRecord(item.id) ?: return false
 
+        // What somebody typed in by hand stays until they hand it back. A full
+        // re-scrape used to write straight over it, while the edit dialog
+        // promised it would not.
+        val manual = item.manualFields.toSet()
+        fun <T> keep(field: String, typed: T, scraped: T): T = if (field in manual) typed else scraped
+        val name = keep(ManualField.NAME, item.name, metadata.name.ifBlank { item.name })
+
         repository.upsertItem(
             existing.copy(
                 dto = item.copy(
-                    name = metadata.name.ifBlank { item.name },
-                    originalName = metadata.originalName ?: item.originalName,
-                    sortName = NameParser.sortName(metadata.name.ifBlank { item.name }),
-                    overview = metadata.overview ?: item.overview,
-                    year = metadata.year ?: item.year,
+                    name = name,
+                    originalName = keep(ManualField.ORIGINAL_NAME, item.originalName, metadata.originalName ?: item.originalName),
+                    sortName = NameParser.sortName(name),
+                    overview = keep(ManualField.OVERVIEW, item.overview, metadata.overview ?: item.overview),
+                    year = keep(ManualField.YEAR, item.year, metadata.year ?: item.year),
                     premiereDate = metadata.premiereDate ?: item.premiereDate,
                     runtimeMs = item.runtimeMs ?: metadata.runtimeMs,
                     communityRating = metadata.communityRating ?: item.communityRating,
                     officialRating = metadata.officialRating ?: item.officialRating,
-                    genres = metadata.genres.ifEmpty { item.genres },
+                    genres = keep(ManualField.GENRES, item.genres, metadata.genres.ifEmpty { item.genres }),
                     studios = metadata.studios.ifEmpty { item.studios },
                     people = metadata.people.ifEmpty { item.people },
-                    posterUrl = metadata.posterUrl ?: item.posterUrl,
-                    backdropUrl = metadata.backdropUrl ?: item.backdropUrl,
+                    posterUrl = keep(ManualField.POSTER, item.posterUrl, metadata.posterUrl ?: item.posterUrl),
+                    backdropUrl = keep(ManualField.BACKDROP, item.backdropUrl, metadata.backdropUrl ?: item.backdropUrl),
                     logoUrl = metadata.logoUrl ?: item.logoUrl,
                     providerIds = providerIds,
                     // A pin that arrived from another device has to land on the
@@ -188,6 +198,9 @@ class MetadataService(
                 scrapedAt = now
             )
         )
+        if (metadata.communityRating != null) {
+            repository.setRatingSource(item.id, metadata.ratingProvider ?: metadata.provider)
+        }
 
         if (item.kind == ItemKind.SERIES) applyEpisodeMetadata(item, providerIds, order, config)
         return true
@@ -253,11 +266,15 @@ class MetadataService(
         val kind = if (item.kind == ItemKind.MOVIE) ItemKind.MOVIE else ItemKind.SERIES
         scraper.details(id, kind, config) ?: return null
 
+        // Pointing an entry at a different work is a fresh start: fields typed
+        // in by hand described the old one, so they go too.
         val base = stripScrapedFields(item).copy(
             providerIds = mapOf(provider.name.lowercase() to id),
             lockedProvider = provider,
-            scrapeStatus = ScrapeStatus.MANUAL
+            scrapeStatus = ScrapeStatus.MANUAL,
+            manualFields = emptyList()
         )
+        repository.clearManualFields(item.id)
         if (item.kind == ItemKind.SERIES) resetEpisodes(item.id)
         val applied = enrichItem(base, listOf(provider) + order.filter { it != provider }, config)
         if (!applied) return null
@@ -265,6 +282,18 @@ class MetadataService(
         // and the other devices stop re-matching this folder on their own.
         repository.savePin(item.id, provider.name, id)
         return repository.item(item.id)
+    }
+
+    /**
+     * Takes a manual identify back off, so the next scrape matches on its own.
+     *
+     * The pin is not deleted but overwritten with a NONE row stamped now. Pins
+     * travel in the sync file, newest wins, and a plain delete would lose to the
+     * copy still sitting in that file — the pin would be back on the next pull.
+     */
+    fun unpin(item: MediaItemDto) {
+        repository.clearItemLock(item.id)
+        repository.savePin(item.id, MetadataProvider.NONE.name, "")
     }
 
     /**
@@ -377,6 +406,11 @@ class MetadataService(
         premiereDate = base.premiereDate ?: extra.premiereDate,
         runtimeMs = base.runtimeMs ?: extra.runtimeMs,
         communityRating = base.communityRating ?: extra.communityRating,
+        ratingProvider = when {
+            base.communityRating != null -> base.ratingProvider ?: base.provider
+            extra.communityRating != null -> extra.ratingProvider ?: extra.provider
+            else -> null
+        },
         genres = base.genres.ifEmpty { extra.genres },
         studios = base.studios.ifEmpty { extra.studios },
         people = base.people.ifEmpty { extra.people },

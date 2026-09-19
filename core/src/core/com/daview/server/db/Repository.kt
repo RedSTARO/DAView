@@ -5,6 +5,7 @@ import com.daview.shared.model.DownloadState
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.LibraryKind
+import com.daview.shared.model.ManualField
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.MediaStreamDto
 import com.daview.shared.model.MetadataProvider
@@ -297,6 +298,19 @@ class Repository(private val db: Database) {
         genres?.let { sets += "genres = ?"; binds += json.encodeToString(stringListSerializer, it) }
         if (sets.isEmpty()) return@transaction
 
+        val touched = listOfNotNull(
+            name?.let { ManualField.NAME },
+            originalName?.let { ManualField.ORIGINAL_NAME },
+            overview?.let { ManualField.OVERVIEW },
+            year?.let { ManualField.YEAR },
+            genres?.let { ManualField.GENRES }
+        )
+        val existing = connection.statement("SELECT manual_fields FROM items WHERE id = ?")
+            .apply { setString(1, itemId) }
+            .useQuery { if (it.next()) decodeList(it.getString("manual_fields")) else emptyList() }
+        sets += "manual_fields = ?"
+        binds += json.encodeToString(stringListSerializer, (existing + touched).distinct())
+
         sets += "scrape_status = ?"
         binds += ScrapeStatus.MANUAL.name
         sets += "scraped_at = ?"
@@ -314,6 +328,113 @@ class Repository(private val db: Database) {
             st.setString(binds.size + 1, itemId)
             st.executeUpdate()
         }
+    }
+
+    /** Hands every hand-typed field back to the scraper. */
+    fun clearManualFields(itemId: String) = db.transaction { connection ->
+        connection.statement("UPDATE items SET manual_fields = NULL WHERE id = ?")
+            .use { it.setString(1, itemId); it.executeUpdate() }
+    }
+
+    /** Records whose score [MediaItemDto.communityRating] is. */
+    fun setRatingSource(itemId: String, provider: MetadataProvider?) = db.transaction { connection ->
+        connection.statement("UPDATE items SET rating_source = ? WHERE id = ?").use {
+            it.setString(1, provider?.name)
+            it.setString(2, itemId)
+            it.executeUpdate()
+        }
+    }
+
+    /**
+     * Points a poster or a backdrop at an image the user supplied, and marks the
+     * field manual so the next scrape does not put the provider's back.
+     */
+    fun setArtwork(itemId: String, type: String, url: String) = db.transaction { connection ->
+        val column = if (type == "backdrop") "backdrop_url" else "poster_url"
+        val field = if (type == "backdrop") ManualField.BACKDROP else ManualField.POSTER
+        val existing = connection.statement("SELECT manual_fields FROM items WHERE id = ?")
+            .apply { setString(1, itemId) }
+            .useQuery { if (it.next()) decodeList(it.getString("manual_fields")) else emptyList() }
+        connection.statement("UPDATE items SET $column = ?, manual_fields = ? WHERE id = ?").use {
+            it.setString(1, url)
+            it.setString(2, json.encodeToString(stringListSerializer, (existing + field).distinct()))
+            it.setString(3, itemId)
+            it.executeUpdate()
+        }
+    }
+
+    /**
+     * Undoes a manual identify on the item itself, so the next scrape searches
+     * again. The pin table is the caller's business: it has to hold a tombstone
+     * there rather than a gap, or the pin comes straight back from the sync file.
+     */
+    fun clearItemLock(itemId: String) = db.transaction { connection ->
+        connection.statement(
+            "UPDATE items SET locked_provider = NULL, scrape_status = NULL, scraped_at = NULL WHERE id = ?"
+        ).use { it.setString(1, itemId); it.executeUpdate() }
+    }
+
+    /**
+     * Stores an audio or subtitle choice made before playback, without touching
+     * the position or the watched flag. Null leaves that half as it was.
+     */
+    fun setTrackSelection(itemId: String, audio: Int?, subtitle: Int?) = db.transaction { connection ->
+        connection.statement(
+            """
+            INSERT INTO user_data(item_id, audio_stream_index, subtitle_stream_index, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(item_id) DO UPDATE SET
+                audio_stream_index = COALESCE(excluded.audio_stream_index, user_data.audio_stream_index),
+                subtitle_stream_index = COALESCE(excluded.subtitle_stream_index, user_data.subtitle_stream_index),
+                updated_at = excluded.updated_at
+            """.trimIndent()
+        ).use {
+            it.setString(1, itemId)
+            audio?.let { value -> it.setInt(2, value) } ?: it.setNull(2)
+            subtitle?.let { value -> it.setInt(3, value) } ?: it.setNull(3)
+            it.setLong(4, System.currentTimeMillis())
+            it.executeUpdate()
+        }
+    }
+
+    /**
+     * The episode of this series whose tracks were chosen most recently, other
+     * than [excludeId]. Its choice is what the next episode should start on:
+     * switching to the Japanese track once should not have to be repeated on
+     * every episode after it.
+     */
+    fun lastTrackChoiceInSeries(seriesId: String, excludeId: String): MediaItemDto? = db.read { connection ->
+        connection.statement(
+            """
+            $SELECT_ITEM
+            WHERE i.kind = 'EPISODE' AND i.series_id = ? AND i.id <> ?
+              AND (u.audio_stream_index IS NOT NULL OR u.subtitle_stream_index IS NOT NULL)
+            ORDER BY u.updated_at DESC
+            LIMIT 1
+            """.trimIndent()
+        ).apply { setString(1, seriesId); setString(2, excludeId) }
+            .useQuery { if (it.next()) readItem(it) else null }
+    }
+
+    /** Every genre used by the top-level entries of a library, most common first. */
+    fun libraryGenres(libraryId: String): List<String> {
+        val rows = db.read { connection ->
+            connection.statement(
+                "SELECT genres FROM items WHERE library_id = ? AND parent_id IS NULL AND merged_into IS NULL"
+            ).apply { setString(1, libraryId) }.useQuery { rs -> rs.map { decodeList(it.getString("genres")) } }
+        }
+        return rows.flatten().filter { it.isNotBlank() }
+            .groupingBy { it }.eachCount()
+            .entries.sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+            .map { it.key }
+    }
+
+    /** The years the top-level entries of a library were released in, newest first. */
+    fun libraryYears(libraryId: String): List<Int> = db.read { connection ->
+        connection.statement(
+            "SELECT DISTINCT year FROM items WHERE library_id = ? AND parent_id IS NULL " +
+                "AND merged_into IS NULL AND year IS NOT NULL ORDER BY year DESC"
+        ).apply { setString(1, libraryId) }.useQuery { rs -> rs.map { it.getInt("year") } }
     }
 
     // ------------------------------------------------------------ downloads
@@ -429,6 +550,18 @@ class Repository(private val db: Database) {
         val favorite: Boolean? = null,
         /** True for watched only, false for unwatched only, null for both. */
         val played: Boolean? = null,
+        /** Started but not finished: a film part-way through, a series under way. */
+        val inProgress: Boolean = false,
+        /** One genre, matched exactly against the stored list. */
+        val genre: String? = null,
+        /** Inclusive release-year bounds. */
+        val yearFrom: Int? = null,
+        val yearTo: Int? = null,
+        /**
+         * Also match the cast and the genres, not only the titles — a search
+         * for an actor used to find nothing at all.
+         */
+        val searchPeople: Boolean = false,
         val sort: String = "sortName",
         /** Reverses whichever order [sort] names. */
         val descending: Boolean = false,
@@ -437,6 +570,69 @@ class Repository(private val db: Database) {
     )
 
     fun query(query: Query): Pair<List<MediaItemDto>, Int> = db.read { connection ->
+        val (where, binds) = whereClause(query)
+
+        // The field and the direction are separate now. They used to be baked
+        // into one string, so every sort had exactly one direction and there was
+        // no way to ask for oldest-first or lowest-rated — which is the search
+        // for "what did the scraper get wrong".
+        val descending = query.descending
+        fun dir(defaultDescending: Boolean): String =
+            if (defaultDescending != descending) " DESC" else " ASC"
+
+        val orderBinds = ArrayList<Any?>()
+        val order = when (query.sort) {
+            "name" -> "i.name COLLATE NOCASE${dir(false)}"
+            "year" -> "i.year${dir(true)} NULLS LAST, i.sort_name"
+            "added" -> "i.date_created${dir(true)}"
+            "played" -> "u.last_played_at${dir(true)} NULLS LAST"
+            "rating" -> "i.community_rating${dir(true)} NULLS LAST, i.sort_name"
+            "index" ->
+                "COALESCE(i.parent_index_number, 0)${dir(false)}, " +
+                    "COALESCE(i.index_number, 99999)${dir(false)}"
+            // How well the title answers the search: the exact title first,
+            // then titles that start with it, then the ones that only contain
+            // it, and within each the whole works ahead of their episodes.
+            // Alphabetical alone buried "Up" under every title containing "up".
+            "relevance" -> {
+                val term = query.search?.trim().orEmpty()
+                orderBinds += term; orderBinds += term; orderBinds += "$term%"; orderBinds += "$term%"
+                "CASE WHEN lower(i.name) = lower(?) OR lower(COALESCE(i.original_name, '')) = lower(?) THEN 0 " +
+                    "WHEN i.name LIKE ? OR i.original_name LIKE ? THEN 1 ELSE 2 END, " +
+                    "CASE WHEN i.kind IN ('MOVIE','SERIES') THEN 0 ELSE 1 END, i.sort_name"
+            }
+            else -> "i.sort_name${dir(false)}"
+        }
+
+        val total = connection.statement(
+            "SELECT COUNT(*) FROM items i LEFT JOIN user_data u ON u.item_id = i.id $where"
+        ).apply { bind(binds) }.useQuery { if (it.next()) it.getIntAt(1) else 0 }
+
+        val items = connection.statement(
+            "$SELECT_ITEM $where ORDER BY $order LIMIT ? OFFSET ?"
+        ).apply {
+            bind(binds + orderBinds)
+            setInt(binds.size + orderBinds.size + 1, query.limit)
+            setInt(binds.size + orderBinds.size + 2, query.offset)
+        }.useQuery { it.map(::readItem) }
+
+        items to total
+    }
+
+    /**
+     * How many entries of [query] come before the first one whose sort name is
+     * at or past [boundary] — the position a jump to a letter has to land on.
+     * Descending, the count is of the ones at or past it.
+     */
+    fun positionOf(query: Query, boundary: String): Int = db.read { connection ->
+        val (where, binds) = whereClause(query)
+        val comparison = if (query.descending) "i.sort_name >= ?" else "i.sort_name < ?"
+        connection.statement(
+            "SELECT COUNT(*) FROM items i LEFT JOIN user_data u ON u.item_id = i.id $where AND $comparison"
+        ).apply { bind(binds + boundary) }.useQuery { if (it.next()) it.getIntAt(1) else 0 }
+    }
+
+    private fun whereClause(query: Query): Pair<String, List<Any?>> {
         // A merged-away duplicate is not a separate entry any more.
         val where = StringBuilder("WHERE i.merged_into IS NULL")
         val binds = ArrayList<Any?>()
@@ -459,45 +655,36 @@ class Repository(private val db: Database) {
                 }
             )
         }
+        if (query.inProgress) {
+            where.append(
+                " AND ((i.kind IN ('MOVIE','EPISODE') AND COALESCE(u.position_ms, 0) > 0 " +
+                    "AND COALESCE(u.played, 0) = 0) OR (i.kind IN ('SERIES','SEASON') AND EXISTS (" +
+                    "SELECT 1 FROM items e JOIN user_data ue ON ue.item_id = e.id " +
+                    "WHERE e.kind = 'EPISODE' AND (e.series_id = i.id OR e.parent_id = i.id) " +
+                    "AND (ue.played = 1 OR ue.position_ms > 0)) AND NOT (" +
+                    "${playedEpisodes("i")} = ${totalEpisodes("i")} AND ${totalEpisodes("i")} > 0)))"
+            )
+        }
+        query.genre?.takeIf { it.isNotBlank() }?.let {
+            where.append(" AND i.genres LIKE ?")
+            binds += "%" + json.encodeToString(String.serializer(), it) + "%"
+        }
+        query.yearFrom?.let { where.append(" AND i.year >= ?"); binds += it }
+        query.yearTo?.let { where.append(" AND i.year <= ?"); binds += it }
         query.search?.takeIf { it.isNotBlank() }?.let {
-            where.append(" AND (i.name LIKE ? OR i.original_name LIKE ? OR i.sort_name LIKE ?)")
             val pattern = "%${it.trim()}%"
-            binds += pattern; binds += pattern; binds += pattern
+            if (query.searchPeople) {
+                where.append(
+                    " AND (i.name LIKE ? OR i.original_name LIKE ? OR i.sort_name LIKE ? " +
+                        "OR i.people LIKE ? OR i.genres LIKE ?)"
+                )
+                repeat(5) { binds += pattern }
+            } else {
+                where.append(" AND (i.name LIKE ? OR i.original_name LIKE ? OR i.sort_name LIKE ?)")
+                repeat(3) { binds += pattern }
+            }
         }
-
-        // The field and the direction are separate now. They used to be baked
-        // into one string, so every sort had exactly one direction and there was
-        // no way to ask for oldest-first or lowest-rated — which is the search
-        // for "what did the scraper get wrong".
-        val descending = query.descending
-        fun dir(defaultDescending: Boolean): String =
-            if (defaultDescending != descending) " DESC" else " ASC"
-
-        val order = when (query.sort) {
-            "name" -> "i.name COLLATE NOCASE${dir(false)}"
-            "year" -> "i.year${dir(true)} NULLS LAST, i.sort_name"
-            "added" -> "i.date_created${dir(true)}"
-            "played" -> "u.last_played_at${dir(true)} NULLS LAST"
-            "rating" -> "i.community_rating${dir(true)} NULLS LAST, i.sort_name"
-            "index" ->
-                "COALESCE(i.parent_index_number, 0)${dir(false)}, " +
-                    "COALESCE(i.index_number, 99999)${dir(false)}"
-            else -> "i.sort_name${dir(false)}"
-        }
-
-        val total = connection.statement(
-            "SELECT COUNT(*) FROM items i LEFT JOIN user_data u ON u.item_id = i.id $where"
-        ).apply { bind(binds) }.useQuery { if (it.next()) it.getIntAt(1) else 0 }
-
-        val items = connection.statement(
-            "$SELECT_ITEM $where ORDER BY $order LIMIT ? OFFSET ?"
-        ).apply {
-            bind(binds)
-            setInt(binds.size + 1, query.limit)
-            setInt(binds.size + 2, query.offset)
-        }.useQuery { it.map(::readItem) }
-
-        items to total
+        return where.toString() to binds
     }
 
     /**
@@ -638,7 +825,11 @@ class Repository(private val db: Database) {
         }.useQuery { it.map(::readItem) }
     }
 
-    fun unwatched(libraryId: String?, limit: Int): List<MediaItemDto> = db.read { connection ->
+    fun unwatched(
+        libraryId: String?,
+        limit: Int,
+        day: Long = System.currentTimeMillis() / 86_400_000L
+    ): List<MediaItemDto> = db.read { connection ->
         val filter = if (libraryId == null) "" else "AND i.library_id = ?"
         connection.statement(
             """
@@ -651,12 +842,22 @@ class Repository(private val db: Database) {
                     WHERE e.kind = 'EPISODE' AND (e.series_id = i.id OR e.parent_id = i.id)
                       AND (ue.played = 1 OR ue.position_ms > 0)
               )
-            ORDER BY i.sort_name LIMIT ?
+            ORDER BY substr(i.id, ?, 8), i.sort_name LIMIT ?
             """.trimIndent()
         ).apply {
-            if (libraryId == null) setInt(1, limit) else { setString(1, libraryId); setInt(2, limit) }
+            // A different eight characters of the id's hash every day: an order
+            // that looks random, holds still for a day, and turns over the
+            // next. Sorted by name, the shelf showed the same two dozen
+            // alphabetically first titles until one of them was watched.
+            var index = 1
+            if (libraryId != null) setString(index++, libraryId)
+            setInt(index++, rotation(day))
+            setInt(index, limit)
         }.useQuery { it.map(::readItem) }
     }
+
+    /** Which slice of a 40-character hex id orders the shelf on a given day. */
+    private fun rotation(day: Long): Int = (Math.floorMod(day, 33L) + 1).toInt()
 
     fun itemsNeedingScrape(libraryId: String, force: Boolean): List<MediaItemDto> = db.read { connection ->
         val condition = if (force) "" else "AND i.scraped_at IS NULL"
@@ -989,6 +1190,48 @@ class Repository(private val db: Database) {
         }.useQuery { if (it.next()) readItem(it) else null }
     }
 
+    /** The episode before this one in its own run; the mirror of [episodeAfter]. */
+    fun episodeBefore(itemId: String): MediaItemDto? = db.read { connection ->
+        val current = item(itemId) ?: return@read null
+        val seriesId = current.seriesId ?: return@read null
+        val special = if (current.parentIndexNumber == 0) 1 else 0
+        val season = current.parentIndexNumber ?: 0
+        val episode = current.indexNumber ?: 99999
+
+        connection.statement(
+            """
+            $SELECT_ITEM
+            WHERE i.kind = 'EPISODE' AND i.merged_into IS NULL
+              AND i.series_id = ? AND i.id <> ?
+              AND (
+                ${specialsLast("i")} < ?
+                OR (
+                    ${specialsLast("i")} = ?
+                    AND (
+                        COALESCE(i.parent_index_number, 0) < ?
+                        OR (
+                            COALESCE(i.parent_index_number, 0) = ?
+                            AND COALESCE(i.index_number, 99999) < ?
+                        )
+                    )
+                )
+              )
+            ORDER BY ${specialsLast("i")} DESC,
+                     COALESCE(i.parent_index_number, 0) DESC,
+                     COALESCE(i.index_number, 99999) DESC
+            LIMIT 1
+            """.trimIndent()
+        ).apply {
+            setString(1, seriesId)
+            setString(2, itemId)
+            setInt(3, special)
+            setInt(4, special)
+            setInt(5, season)
+            setInt(6, season)
+            setInt(7, episode)
+        }.useQuery { if (it.next()) readItem(it) else null }
+    }
+
     fun episodeIdsUnder(itemId: String): List<String> = db.read { connection ->
         connection.statement(
             "SELECT id FROM items WHERE kind = 'EPISODE' AND (series_id = ? OR parent_id = ?)"
@@ -1113,6 +1356,8 @@ class Repository(private val db: Database) {
         premiereDate = rs.getString("premiere_date"),
         runtimeMs = rs.getLongOrNull("runtime_ms"),
         communityRating = rs.getDoubleOrNull("community_rating"),
+        communityRatingSource = runCatching { rs.getString("rating_source") }.getOrNull()
+            ?.let { name -> MetadataProvider.entries.firstOrNull { it.name == name } },
         officialRating = rs.getString("official_rating"),
         genres = decodeList(rs.requireString("genres")),
         studios = decodeList(rs.requireString("studios")),
@@ -1143,7 +1388,8 @@ class Repository(private val db: Database) {
         sizeBytes = rs.getLongOrNull("size_bytes"),
         mediaStreams = runCatching { json.decodeFromString(streamListSerializer, rs.requireString("media_streams")) }
             .getOrDefault(emptyList()),
-        userData = readUserData(rs, rs.getLongOrNull("runtime_ms"))
+        userData = readUserData(rs, rs.getLongOrNull("runtime_ms")),
+        manualFields = runCatching { decodeList(rs.getString("manual_fields")) }.getOrDefault(emptyList())
     )
 
     private fun readItemRecord(rs: SqlCursor) = ItemRecord(

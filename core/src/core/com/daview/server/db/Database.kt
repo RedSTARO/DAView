@@ -271,6 +271,16 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                     updated_at INTEGER NOT NULL DEFAULT 0
                 )
                 """.trimIndent()
+            ),
+            listOf(
+                // Which fields a person corrected by hand, as a JSON list. The
+                // scraper leaves those alone until they are handed back, so a
+                // correction survives a full re-scrape and not only a rescan.
+                "ALTER TABLE items ADD COLUMN manual_fields TEXT"
+            ),
+            listOf(
+                // Whose score community_rating is, so the page can say so.
+                "ALTER TABLE items ADD COLUMN rating_source TEXT"
             )
         )
     }

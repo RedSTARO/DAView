@@ -1,11 +1,13 @@
 package com.daview.app.ui
 
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.OpenInNew
@@ -30,8 +32,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.DpOffset
 import com.daview.app.data.AppState
+import com.daview.app.data.Confirmation
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
+import com.daview.app.theme.favoriteColor
 import com.daview.shared.model.DownloadState
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MediaItemDto
@@ -95,10 +99,9 @@ fun cardMenu(
     { item, dismiss -> ItemMenuItems(state, playback, item, dismiss) }
 
 /**
- * What a right-click on a card offers. Everything here acts on the item alone
- * and needs no dialog of its own, so the menu can hang off any card on any
- * screen — the entries that do need one (manual identify, merge duplicates) stay
- * on the detail page where their dialogs have somewhere to live.
+ * What a right-click on a card offers. Everything here acts on the item alone;
+ * anything that has to be confirmed asks through a dialog the app hosts, since
+ * the menu is gone the moment an entry is picked.
  *
  * [playback] is null on screens that cannot start playback; the playback entries
  * are then left out rather than shown dead.
@@ -121,7 +124,7 @@ fun ColumnScope.ItemMenuItems(
             },
             onClick = {
                 dismiss()
-                playback.playInternalOrExternal(item)
+                playback.play(item)
             }
         )
         if (item.userData.positionMs > 0) {
@@ -132,7 +135,7 @@ fun ColumnScope.ItemMenuItems(
                 text = { Text("从头播放") },
                 onClick = {
                     dismiss()
-                    playback.playInternalOrExternal(item, startPositionMs = 0L)
+                    playback.play(item, startPositionMs = 0L)
                 }
             )
         }
@@ -149,17 +152,27 @@ fun ColumnScope.ItemMenuItems(
             )
         }
         HorizontalDivider()
+    } else if (playback != null && (item.episodeCount ?: 0) > 0) {
+        // A series or a season plays the episode it is up to.
+        DropdownMenuItem(
+            leadingIcon = { Icon(Icons.Filled.PlayArrow, contentDescription = null) },
+            text = { Text("播放下一集") },
+            onClick = {
+                dismiss()
+                playback.play(item)
+            }
+        )
+        HorizontalDivider()
     }
 
     val played = item.playedState == PlayedState.PLAYED
     // A series or season has no watched flag of its own — marking it flips every
-    // episode under it — so the label says how wide the change reaches.
+    // episode under it — so the label says how wide the change reaches, and the
+    // change asks first.
     if (item.isPlayable || (item.episodeCount ?: 0) > 0) {
         DropdownMenuItem(
             // A menu item's icon says what the command is, not what state the
-            // item is in. Drawing a filled tick for "not watched yet" made the
-            // same mark mean opposite things on a card and in the menu covering
-            // it — and on an episode row both are on screen at once.
+            // item is in.
             leadingIcon = {
                 Icon(
                     Icons.Filled.Done,
@@ -170,7 +183,18 @@ fun ColumnScope.ItemMenuItems(
             text = { Text(playedActionLabel(item, played)) },
             onClick = {
                 dismiss()
-                state.togglePlayed(item)
+                if (item.isPlayable) {
+                    state.togglePlayed(item)
+                } else {
+                    state.confirm(
+                        Confirmation(
+                            title = if (played) "把 ${item.episodeCount} 集都标记为未观看？" else "把 ${item.episodeCount} 集都标记为已观看？",
+                            text = "「${item.name}」下的每一集都会改，已有的播放进度会被清除。改完后提示条上可以撤销。",
+                            confirmLabel = if (played) "全部标记未看" else "全部标记已看",
+                            action = { state.togglePlayed(item) }
+                        )
+                    )
+                }
             }
         )
     }
@@ -180,7 +204,7 @@ fun ColumnScope.ItemMenuItems(
             Icon(
                 if (item.userData.favorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                 contentDescription = null,
-                tint = if (item.userData.favorite) MaterialTheme.colorScheme.error
+                tint = if (item.userData.favorite) favoriteColor
                 else MaterialTheme.colorScheme.onSurfaceVariant
             )
         },
@@ -209,38 +233,70 @@ fun ColumnScope.ItemMenuItems(
         )
     }
 
-    // Only a playable item has bytes worth keeping.
+    // Only a playable item has bytes worth keeping; a series or a season keeps
+    // every episode under it.
     if (item.isPlayable) {
-        val existing = state.downloads.firstOrNull { it.itemId == item.id }
+        val existing = state.downloadOf(item.id)
         DropdownMenuItem(
             leadingIcon = {
                 Icon(
-                    if (existing?.state == DownloadState.DONE) Icons.Filled.DownloadDone
-                    else Icons.Filled.Download,
+                    when (existing?.state) {
+                        DownloadState.DONE -> Icons.Filled.DownloadDone
+                        DownloadState.FAILED -> Icons.Filled.ErrorOutline
+                        else -> Icons.Filled.Download
+                    },
                     contentDescription = null,
-                    tint = if (existing?.state == DownloadState.DONE) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = when (existing?.state) {
+                        DownloadState.DONE -> MaterialTheme.colorScheme.primary
+                        DownloadState.FAILED -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
                     }
                 )
             },
             text = {
-                Text(
-                    when (existing?.state) {
-                        DownloadState.DONE -> "删除本地文件"
-                        DownloadState.RUNNING, DownloadState.QUEUED -> "取消下载"
-                        else -> "下载到本机"
+                when (existing?.state) {
+                    DownloadState.DONE -> Text("删除本地文件…")
+                    DownloadState.RUNNING, DownloadState.QUEUED -> Text("取消下载（${(existing.fraction * 100).toInt()}%）")
+                    // A failed download used to read as never having been tried.
+                    DownloadState.FAILED -> Column {
+                        Text("重新下载")
+                        Text(
+                            "上次失败：${existing.error ?: "未知原因"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
-                )
+                    null -> Text("下载到本机")
+                }
             },
             onClick = {
                 dismiss()
                 when (existing?.state) {
-                    DownloadState.DONE -> state.removeDownload(item.id)
+                    // Deleting a finished copy asks first, as deleting a
+                    // library does: the bytes took minutes to arrive.
+                    DownloadState.DONE -> state.confirm(
+                        Confirmation(
+                            title = "删除「${item.name}」的本地文件？",
+                            text = "删除后这一集要再联网播放或重新下载。${formatSize(existing.totalBytes)}".trim(),
+                            confirmLabel = "删除",
+                            destructive = true,
+                            action = { state.removeDownload(item.id) }
+                        )
+                    )
                     DownloadState.RUNNING, DownloadState.QUEUED -> state.cancelDownload(item)
                     else -> state.download(item)
                 }
+            }
+        )
+    } else if ((item.episodeCount ?: 0) > 0) {
+        DropdownMenuItem(
+            leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+            text = { Text(if (item.kind == ItemKind.SEASON) "下载本季（${item.episodeCount} 集）" else "下载全部（${item.episodeCount} 集）") },
+            onClick = {
+                dismiss()
+                state.download(item)
             }
         )
     }
@@ -277,6 +333,6 @@ fun ColumnScope.ItemMenuItems(
 
 private fun playedActionLabel(item: MediaItemDto, played: Boolean): String = when {
     item.isPlayable -> if (played) "标记为未观看" else "标记为已观看"
-    item.kind == ItemKind.SEASON -> if (played) "整季标记为未观看" else "整季标记为已观看"
-    else -> if (played) "全部标记为未观看" else "全部标记为已观看"
+    item.kind == ItemKind.SEASON -> if (played) "整季标记为未观看…" else "整季标记为已观看…"
+    else -> if (played) "全部标记为未观看…" else "全部标记为已观看…"
 }

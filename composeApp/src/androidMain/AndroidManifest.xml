@@ -10,6 +10,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- The external players offered in the menu are only the installed ones;
+         since Android 11 an app can only see packages it names here. -->
+    <queries>
+        <package android:name="com.mxtech.videoplayer.ad" />
+        <package android:name="com.mxtech.videoplayer.pro" />
+        <package android:name="org.videolan.vlc" />
+    </queries>
+
     <application
         android:name=".DaViewApplication"
         android:allowBackup="true"

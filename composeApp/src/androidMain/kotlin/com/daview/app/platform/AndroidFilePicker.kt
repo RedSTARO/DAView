@@ -25,6 +25,8 @@ object AndroidFilePicker {
     private var pending: CancellableContinuation<String?>? = null
     private var pendingSave: CancellableContinuation<String?>? = null
     private var pendingWrite: ((Appendable) -> Unit)? = null
+    private var bytesLauncher: ActivityResultLauncher<Array<String>>? = null
+    private var pendingBytes: CancellableContinuation<PickedFile?>? = null
 
     /** Called from the activity's onCreate; registering later throws. */
     fun register(owner: ComponentActivity) {
@@ -44,6 +46,24 @@ object AndroidFilePicker {
                 uri.toString()
             }.getOrNull()
             waiting.resume(path)
+        }
+        bytesLauncher = owner.registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            val waiting = pendingBytes
+            pendingBytes = null
+            if (waiting == null || !waiting.isActive) return@registerForActivityResult
+            if (uri == null) {
+                waiting.resume(null)
+                return@registerForActivityResult
+            }
+            val picked = runCatching {
+                val name = owner.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val column = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
+                } ?: uri.lastPathSegment.orEmpty()
+                val bytes = owner.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
+                PickedFile(name, bytes)
+            }.getOrNull()
+            waiting.resume(picked)
         }
         launcher = owner.registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             val waiting = pending
@@ -65,6 +85,7 @@ object AndroidFilePicker {
             activity = null
             launcher = null
             saveLauncher = null
+            bytesLauncher = null
         }
     }
 
@@ -101,6 +122,21 @@ object AndroidFilePicker {
                     target.launch(arrayOf("application/json", "text/plain", "*/*"))
                 }.onFailure {
                     pending = null
+                    continuation.resume(null)
+                }
+            }
+        }
+    }
+
+    /** A binary file of one of [mimeTypes], read whole. Images and subtitle files. */
+    suspend fun pickBytes(mimeTypes: Array<String>): PickedFile? {
+        val target = bytesLauncher ?: return null
+        return withContext(Dispatchers.Main) {
+            suspendCancellableCoroutine { continuation ->
+                pendingBytes = continuation
+                continuation.invokeOnCancellation { pendingBytes = null }
+                runCatching { target.launch(mimeTypes) }.onFailure {
+                    pendingBytes = null
                     continuation.resume(null)
                 }
             }

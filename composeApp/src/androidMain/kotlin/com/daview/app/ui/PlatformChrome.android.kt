@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -20,16 +22,16 @@ import androidx.core.view.WindowInsetsControllerCompat
  * awake, and the display turned when the player asks for it.
  *
  * All three are window state rather than composition state, so they are undone
- * in [onDispose] — leaving the player by any route (back gesture, the file
- * ending, the process being backgrounded and the screen leaving the tree) puts
- * the bars, the timeout and the rotation back the way they were.
+ * in [onDispose] — leaving the player screen by any route puts the bars, the
+ * timeout and the rotation back the way they were. A phone's player is always
+ * full screen, so [fullscreen] has nothing to decide here.
  */
 @Composable
-actual fun PlaybackPresentation(orientation: ScreenOrientation) {
+actual fun PlaybackPresentation(orientation: ScreenOrientation, fullscreen: Boolean) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
 
-    DisposableEffect(activity, orientation) {
+    DisposableEffect(activity) {
         val window = activity?.window
         if (window == null) return@DisposableEffect onDispose { }
 
@@ -42,16 +44,21 @@ actual fun PlaybackPresentation(orientation: ScreenOrientation) {
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         controller.hide(WindowInsetsCompat.Type.systemBars())
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        activity.requestedOrientation = when (orientation) {
-            ScreenOrientation.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            ScreenOrientation.SENSOR -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        }
 
         onDispose {
             controller.show(WindowInsetsCompat.Type.systemBars())
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             activity.requestedOrientation = previousOrientation
         }
+    }
+
+    // Turned separately, so changing the lock does not flash the system bars.
+    DisposableEffect(activity, orientation) {
+        activity?.requestedOrientation = when (orientation) {
+            ScreenOrientation.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            ScreenOrientation.SENSOR -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        onDispose { }
     }
 }
 
@@ -94,3 +101,19 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 /** Touch already drags a row; there is no wheel to translate. */
 @Composable
 actual fun Modifier.wheelScrollsHorizontally(state: LazyListState): Modifier = this
+
+/** Touch has no hover to show a tooltip on, and every button carries its own label for TalkBack. */
+@Composable
+actual fun Tooltip(text: String, content: @Composable () -> Unit) = content()
+
+/** Android draws its own fast-scroll affordance in the lists that need one; none here. */
+@Composable
+actual fun VerticalScrollbarFor(state: LazyGridState, modifier: Modifier) = Unit
+
+@Composable
+actual fun VerticalScrollbarFor(state: LazyListState, modifier: Modifier) = Unit
+
+@Composable
+actual fun VerticalScrollbarFor(state: ScrollState, modifier: Modifier) = Unit
+
+actual val hasHoverPointer: Boolean = false

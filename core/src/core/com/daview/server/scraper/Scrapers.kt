@@ -56,7 +56,9 @@ data class ScrapedMetadata(
     val posterUrl: String? = null,
     val backdropUrl: String? = null,
     val logoUrl: String? = null,
-    val extraProviderIds: Map<String, String> = emptyMap()
+    val extraProviderIds: Map<String, String> = emptyMap(),
+    /** Whose [communityRating] it is, once several providers have been merged. */
+    val ratingProvider: MetadataProvider? = null
 )
 
 data class ScrapedEpisode(

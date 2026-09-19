@@ -65,6 +65,13 @@ class ImageCache(
     }
 
     fun get(remoteUrl: String): Entry? {
+        // Artwork the user picked themselves is already a file on this device.
+        if (remoteUrl.startsWith(FILE_SCHEME)) {
+            val local = Path.of(remoteUrl.removePrefix(FILE_SCHEME))
+            if (!local.exists()) return null
+            val ext = local.fileName.toString().substringAfterLast('.', "jpg").lowercase()
+            return Entry(local, contentType(ext))
+        }
         val key = sha1(remoteUrl)
         val extension = remoteUrl.substringAfterLast('.', "jpg")
             .substringBefore('?')
@@ -129,6 +136,9 @@ class ImageCache(
 
         /** Marks an image that lives on the share rather than at an http URL. */
         const val STORAGE_SCHEME = "dav:"
+
+        /** Marks an image the user supplied, kept under the data directory. */
+        const val FILE_SCHEME = "file:"
     }
 
     private fun sha1(value: String): String =

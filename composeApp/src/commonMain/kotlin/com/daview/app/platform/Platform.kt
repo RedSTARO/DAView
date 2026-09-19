@@ -97,3 +97,19 @@ expect fun onScanStarted()
  */
 expect fun onDownloadStarted()
 
+/** A file the user picked, read into memory. */
+class PickedFile(val name: String, val bytes: ByteArray) {
+    val extension: String get() = name.substringAfterLast('.', "").lowercase()
+}
+
+/** Opens the platform's chooser for an image, or returns null when backed out of. */
+expect suspend fun pickImageFile(): PickedFile?
+
+/**
+ * Asks for permission to post notifications, where the platform wants one and
+ * it has not been given. Called at the moment a scan or a download starts —
+ * the moment the notification is for — instead of on the very first launch,
+ * where it arrived over a blank screen with nothing to explain it.
+ */
+expect fun requestNotificationPermission()
+

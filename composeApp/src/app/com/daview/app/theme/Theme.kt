@@ -174,6 +174,14 @@ private val DaViewShapes = Shapes(
 
 val LocalDarkTheme = staticCompositionLocalOf { true }
 
+/**
+ * The colour of a filled heart. It borrowed the error role before, which is red
+ * for the wrong reason — the same red as "播放失败" — and shifts with whatever
+ * the error colour is tuned to.
+ */
+val favoriteColor: Color
+    @Composable get() = if (LocalDarkTheme.current) Color(0xFFFF8FA3) else Color(0xFFC62848)
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun DaViewTheme(

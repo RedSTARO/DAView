@@ -1,15 +1,36 @@
 package com.daview.app.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.daview.shared.model.PlaybackInfoDto
 
 /**
- * In-app playback surface. Only Android ships one today; desktop hands off to
- * an external player and shows [ExternalPlaybackPanel] instead.
+ * What the player screen keeps across the episodes it plays. The player itself
+ * is rebuilt for every session — reusing one across episodes is what left the
+ * Android player showing the end of the last one — so anything the viewer set
+ * on it has to live one level up.
+ */
+class PlayerScreenState {
+    var orientation by mutableStateOf(ScreenOrientation.SENSOR)
+
+    /** Subtitle delay the viewer dialled in, in milliseconds. */
+    var subtitleDelayMs by mutableStateOf(0L)
+
+    /** Playback speed. */
+    var speed by mutableStateOf(1f)
+}
+
+/**
+ * In-app playback surface: libmpv on the desktop, media3 on Android. One call
+ * plays one session; the screen composes a fresh one for the next.
  */
 @Composable
 expect fun InternalPlayer(
     info: PlaybackInfoDto,
+    screen: PlayerScreenState,
+    subtitleScale: Float,
     onProgress: (positionMs: Long, paused: Boolean, audioIndex: Int?, subtitleIndex: Int?) -> Unit,
     onClose: (positionMs: Long) -> Unit,
     /**
@@ -17,5 +38,7 @@ expect fun InternalPlayer(
      * position is passed so the session can still be closed at the right place
      * when there is nothing to play next.
      */
-    onEnded: (positionMs: Long) -> Unit
+    onEnded: (positionMs: Long) -> Unit,
+    /** Previous or next episode, asked for from the player's own controls. */
+    onSkip: (itemId: String, positionMs: Long) -> Unit
 )

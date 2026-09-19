@@ -78,7 +78,10 @@ class OfflineLibrary(
         repository.saveDownload(
             DownloadDto(
                 itemId = itemId,
-                name = item.name,
+                // An episode's own title is often just "第 3 集"; on a list of
+                // downloads that says nothing about which show it belongs to.
+                name = listOfNotNull(item.seriesName, item.episodeLabel, item.name)
+                    .distinct().joinToString(" · "),
                 state = DownloadState.QUEUED,
                 totalBytes = item.sizeBytes ?: 0L,
                 downloadedBytes = if (target.exists()) target.fileSize() else 0L

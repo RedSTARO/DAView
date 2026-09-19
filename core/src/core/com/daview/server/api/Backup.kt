@@ -217,9 +217,23 @@ fun applyBackup(
     // two are both decisions the user made at a point in time.
     var mergedPins = 0
     backup.pins.forEach { row ->
-        if (row.providerId.isBlank() || row.provider == MetadataProvider.NONE) return@forEach
         val local = context.repository.pin(row.itemId)
         if (local != null && local.updatedAt >= row.updatedAt) return@forEach
+        // A NONE row is a pin somebody took off. It wins the same way a pin
+        // does — by being newer — and then the item has to forget its lock too,
+        // or the next scrape would keep reusing the old id.
+        if (row.provider == MetadataProvider.NONE) {
+            context.repository.savePin(
+                itemId = row.itemId,
+                provider = MetadataProvider.NONE.name,
+                providerId = "",
+                updatedAt = row.updatedAt.takeIf { it > 0 } ?: System.currentTimeMillis()
+            )
+            context.repository.clearItemLock(row.itemId)
+            mergedPins++
+            return@forEach
+        }
+        if (row.providerId.isBlank()) return@forEach
         context.repository.savePin(
             itemId = row.itemId,
             provider = row.provider.name,

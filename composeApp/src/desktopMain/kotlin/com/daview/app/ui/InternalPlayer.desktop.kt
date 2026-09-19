@@ -90,9 +90,12 @@ private enum class Ending { FINISHED, ABANDONED }
 @Composable
 actual fun InternalPlayer(
     info: PlaybackInfoDto,
+    screen: PlayerScreenState,
+    subtitleScale: Float,
     onProgress: (positionMs: Long, paused: Boolean, audioIndex: Int?, subtitleIndex: Int?) -> Unit,
     onClose: (positionMs: Long) -> Unit,
-    onEnded: (positionMs: Long) -> Unit
+    onEnded: (positionMs: Long) -> Unit,
+    onSkip: (itemId: String, positionMs: Long) -> Unit
 ) {
     val latestOnProgress by rememberUpdatedState(onProgress)
     val latestOnClose by rememberUpdatedState(onClose)
@@ -167,7 +170,6 @@ actual fun InternalPlayer(
     // window (--wid), so the window is what goes full screen. Its `f` and `ESC`
     // are bound below to ask for exactly that, which is the only way they mean
     // anything at all here.
-    PlaybackPresentation(ScreenOrientation.SENSOR)
     val fullscreen = LocalWindowFullscreen.current
     val isFullscreen = fullscreen?.value ?: false
 

@@ -14,6 +14,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.input.ImeAction
+import com.daview.app.data.ModalMarker
+import com.daview.app.data.tracksTextInput
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -54,7 +64,9 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
+    ModalMarker()
     val scope = rememberCoroutineScope()
+    val queryFocus = remember { FocusRequester() }
     var query by remember { mutableStateOf(item.name) }
     var results by remember { mutableStateOf<List<MediaItemDto>>(emptyList()) }
     var merged by remember { mutableStateOf<List<MediaItemDto>>(emptyList()) }
@@ -72,6 +84,7 @@ fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
         busy = true
         runCatching { reload() }.onFailure { error = it.message }
         busy = false
+        runCatching { queryFocus.requestFocus() }
     }
 
     fun run(block: suspend () -> Unit) {
@@ -130,16 +143,23 @@ fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                 }
 
                 Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    label = { Text("搜索要并入的条目") },
-                    singleLine = true,
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(6.dp))
-                TextButton(enabled = !busy, onClick = { run {} }) { Text("搜索") }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        label = { Text("搜索要并入的条目") },
+                        singleLine = true,
+                        enabled = !busy,
+                        // Enter searches; the only way used to be the button below.
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { run {} }),
+                        modifier = Modifier.weight(1f).focusRequester(queryFocus).tracksTextInput()
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    FilledTonalIconButton(enabled = !busy, onClick = { run {} }) {
+                        Icon(Icons.Filled.Search, contentDescription = "搜索")
+                    }
+                }
 
                 if (busy) {
                     Spacer(Modifier.height(8.dp))

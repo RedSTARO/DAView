@@ -1,6 +1,8 @@
 package com.daview.app.ui
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 
@@ -18,12 +20,14 @@ enum class ScreenOrientation {
  * is in the tree, and puts it back on the way out.
  *
  * What that means is per platform — Android hides the system bars, keeps the
- * screen awake and can turn the display; a desktop window has none of those
- * problems and only needs to go full screen — so the shared player says what it
- * wants rather than how to get it.
+ * screen awake and can turn the display; a desktop window only goes full
+ * screen, and only when [fullscreen] asks it to — so the shared player screen
+ * says what it wants rather than how to get it. It sits on the player screen
+ * rather than in the player, so the hand-over from one episode to the next
+ * does not drop out of full screen and back in.
  */
 @Composable
-expect fun PlaybackPresentation(orientation: ScreenOrientation)
+expect fun PlaybackPresentation(orientation: ScreenOrientation, fullscreen: Boolean)
 
 /**
  * Keeps the system bars' icons legible against the app's own background.
@@ -45,13 +49,33 @@ expect fun SystemBarAppearance(darkTheme: Boolean)
 expect fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit)
 
 /**
- * Lets a mouse wheel move a horizontal list.
+ * Lets a horizontal wheel — or a vertical one with Shift held — move a
+ * horizontal list, and leaves a plain vertical turn to the page.
  *
- * A vertical wheel over a horizontal list scrolls nothing: the delta is
- * projected onto the list's own axis, comes out zero, and bubbles up to scroll
- * the page instead — which on the desktop left the poster rows immovable, since
- * they have neither a scrollbar nor arrows. Touch already drags them, so this
- * is a no-op everywhere a wheel is not the input.
+ * The earlier version turned every vertical notch over a row into sideways
+ * movement without consuming it, so the row and the page it sat in both moved.
+ * Rows carry their own arrow buttons for anyone without a sideways wheel.
  */
 @Composable
 expect fun Modifier.wheelScrollsHorizontally(state: LazyListState): Modifier
+
+/**
+ * A short label shown when the pointer rests on [content]. Icon-only buttons
+ * said what they did only to a screen reader; on the desktop there was no way
+ * to find out short of pressing them.
+ */
+@Composable
+expect fun Tooltip(text: String, content: @Composable () -> Unit)
+
+/** A scrollbar beside a long list, where the platform draws one. */
+@Composable
+expect fun VerticalScrollbarFor(state: LazyGridState, modifier: Modifier)
+
+@Composable
+expect fun VerticalScrollbarFor(state: LazyListState, modifier: Modifier)
+
+@Composable
+expect fun VerticalScrollbarFor(state: ScrollState, modifier: Modifier)
+
+/** True where a pointer can hover, which is where hover-only affordances make sense. */
+expect val hasHoverPointer: Boolean

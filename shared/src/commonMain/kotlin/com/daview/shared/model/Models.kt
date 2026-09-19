@@ -131,6 +131,8 @@ data class MediaItemDto(
     val premiereDate: String? = null,
     val runtimeMs: Long? = null,
     val communityRating: Double? = null,
+    /** Which provider the rating came from, so the page can say whose score it is. */
+    val communityRatingSource: MetadataProvider? = null,
     val officialRating: String? = null,
     val genres: List<String> = emptyList(),
     val studios: List<String> = emptyList(),
@@ -160,7 +162,13 @@ data class MediaItemDto(
     val path: String? = null,
     val sizeBytes: Long? = null,
     val mediaStreams: List<MediaStreamDto> = emptyList(),
-    val userData: UserDataDto = UserDataDto()
+    val userData: UserDataDto = UserDataDto(),
+    /**
+     * Fields a person typed in by hand (see [ManualField]). Scraping leaves
+     * them alone until they are handed back, so a correction survives both a
+     * rescan and a re-scrape.
+     */
+    val manualFields: List<String> = emptyList()
 ) {
     val isPlayable: Boolean get() = kind == ItemKind.MOVIE || kind == ItemKind.EPISODE
 
@@ -191,6 +199,24 @@ data class MediaItemDto(
 }
 
 enum class PlayedState { NONE, PARTIAL, PLAYED }
+
+/** Names stored in [MediaItemDto.manualFields]. */
+object ManualField {
+    const val NAME = "name"
+    const val ORIGINAL_NAME = "originalName"
+    const val OVERVIEW = "overview"
+    const val YEAR = "year"
+    const val GENRES = "genres"
+    const val POSTER = "poster"
+    const val BACKDROP = "backdrop"
+}
+
+/**
+ * A subtitle choice of "none at all". A null index already means "nothing was
+ * chosen", which is what let the choice to switch subtitles off be forgotten:
+ * the next play fell back to the default track. This is the choice itself.
+ */
+const val SUBTITLE_OFF = -1
 
 /** How an item's metadata was arrived at, so the detail page can say so. */
 @Serializable
@@ -306,8 +332,20 @@ data class PlaybackStartRequest(
      * was no way to ask for the beginning short of marking the thing unwatched,
      * and that threw the resume point away.
      */
-    val startPositionMs: Long? = null
+    val startPositionMs: Long? = null,
+    /**
+     * The viewer's standing preferences, used only for an item nobody has
+     * chosen tracks on yet — and only after the choice made on the episode
+     * before it in the same series. Codes are [languageGroup] keys; an empty
+     * string means "no preference", and [SUBTITLE_PREF_OFF] turns subtitles
+     * off by default.
+     */
+    val preferredAudioLanguage: String = "",
+    val preferredSubtitleLanguage: String = ""
 )
+
+/** The subtitle preference that means "start with subtitles off". */
+const val SUBTITLE_PREF_OFF = "off"
 
 @Serializable
 data class PlaybackInfoDto(
@@ -330,7 +368,9 @@ data class PlaybackInfoDto(
      * of dropping the viewer back on a detail page to find it by hand.
      */
     val nextItemId: String? = null,
-    val nextItemName: String? = null
+    val nextItemName: String? = null,
+    /** The episode before this one, for a "previous episode" control. */
+    val previousItemId: String? = null
 )
 
 @Serializable
@@ -381,7 +421,9 @@ data class StorageSettingsDto(
     val username: String = "",
     /** Write-only. Reads always return an empty string. */
     val password: String = "",
-    val passwordSet: Boolean = false
+    val passwordSet: Boolean = false,
+    /** Set to forget the stored password; an empty [password] means "keep it". */
+    val clearPassword: Boolean = false
 )
 
 @Serializable
@@ -393,7 +435,11 @@ data class ScraperSettingsDto(
     val bangumiToken: String = "",
     val bangumiTokenSet: Boolean = false,
     val language: String = "zh-CN",
-    val tmdbImageBase: String = "https://image.tmdb.org/t/p"
+    val tmdbImageBase: String = "https://image.tmdb.org/t/p",
+    /** Keys to forget. An empty key field on its own means "keep the stored one". */
+    val clearTmdbApiKey: Boolean = false,
+    val clearTvdbApiKey: Boolean = false,
+    val clearBangumiToken: Boolean = false
 )
 
 @Serializable
@@ -554,6 +600,35 @@ data class SyncResultDto(
 
 @Serializable
 data class ApiError(val error: String, val detail: String? = null)
+
+/**
+ * The language a stream is in, reduced to one key per language (and per script
+ * for Chinese), so a preference of "日语" matches `ja`, `jpn` and `jp` alike.
+ * Null when the code is missing or means nothing.
+ */
+fun languageGroup(code: String?): String? {
+    val value = code?.trim()?.lowercase()?.replace('_', '-') ?: return null
+    if (value.isEmpty()) return null
+    return when (value) {
+        "zh-hans", "zhs", "chs", "zh-cn", "zh-sg", "zh-hans-cn", "sc", "gb", "简体", "简中" -> "zh-Hans"
+        "zh-hant", "zht", "cht", "zh-tw", "zh-hk", "zh-mo", "zh-hant-tw", "zh-hant-hk", "tc", "big5", "繁体", "繁中" -> "zh-Hant"
+        "zh", "chi", "zho", "cmn", "yue", "chinese" -> "zh"
+        "ja", "jpn", "jp", "japanese" -> "ja"
+        "en", "eng", "english" -> "en"
+        "ko", "kor", "korean" -> "ko"
+        "und", "unknown", "mis", "zxx" -> null
+        else -> value.substringBefore('-').takeIf { it.isNotBlank() }
+    }
+}
+
+/** The choices a preference can be set to, with how the settings page names them. */
+val PREFERRED_LANGUAGES: List<Pair<String, String>> = listOf(
+    "zh-Hans" to "简体中文",
+    "zh-Hant" to "繁体中文",
+    "ja" to "日语",
+    "en" to "英语",
+    "ko" to "韩语"
+)
 
 /** ISO-639 (and a few BCP-47) codes seen in real media libraries. */
 fun languageDisplayName(code: String?): String {

@@ -77,18 +77,39 @@ class MediaFacade(private val context: ServerContext) {
                 storage = current.storage.copy(
                     url = incoming.storage.url.ifBlank { current.storage.url },
                     username = incoming.storage.username.ifBlank { current.storage.username },
-                    // An empty password means "keep the stored one".
-                    password = incoming.storage.password.ifBlank { current.storage.password }
+                    // An empty password means "keep the stored one"; forgetting
+                    // it has to be asked for in so many words.
+                    password = when {
+                        incoming.storage.clearPassword -> ""
+                        else -> incoming.storage.password.ifBlank { current.storage.password }
+                    }
                 ),
                 scraper = current.scraper.copy(
-                    tmdbApiKey = incoming.scraper.tmdbApiKey.ifBlank { current.scraper.tmdbApiKey },
-                    tvdbApiKey = incoming.scraper.tvdbApiKey.ifBlank { current.scraper.tvdbApiKey },
-                    bangumiToken = incoming.scraper.bangumiToken.ifBlank { current.scraper.bangumiToken },
+                    tmdbApiKey = if (incoming.scraper.clearTmdbApiKey) "" else
+                        incoming.scraper.tmdbApiKey.ifBlank { current.scraper.tmdbApiKey },
+                    tvdbApiKey = if (incoming.scraper.clearTvdbApiKey) "" else
+                        incoming.scraper.tvdbApiKey.ifBlank { current.scraper.tvdbApiKey },
+                    bangumiToken = if (incoming.scraper.clearBangumiToken) "" else
+                        incoming.scraper.bangumiToken.ifBlank { current.scraper.bangumiToken },
                     language = incoming.scraper.language.ifBlank { current.scraper.language }
                 )
             )
         }
         updated.toSettingsDto()
+    }
+
+    /**
+     * The stored credentials, for the person sitting at this device to read
+     * back. They were write-only, so a key pasted wrong could only be
+     * discovered by a scrape that failed.
+     */
+    suspend fun storedSecrets(): Map<String, String> = io {
+        mapOf(
+            "password" to context.config.storage.password,
+            "tmdb" to context.config.scraper.tmdbApiKey,
+            "tvdb" to context.config.scraper.tvdbApiKey,
+            "bangumi" to context.config.scraper.bangumiToken
+        )
     }
 
     // ------------------------------------------------------------ storage
@@ -173,6 +194,11 @@ class MediaFacade(private val context: ServerContext) {
         search: String? = null,
         favorite: Boolean? = null,
         played: Boolean? = null,
+        inProgress: Boolean = false,
+        genre: String? = null,
+        yearFrom: Int? = null,
+        yearTo: Int? = null,
+        searchPeople: Boolean = false,
         sort: String = "sortName",
         descending: Boolean = false,
         limit: Int = 100,
@@ -187,6 +213,11 @@ class MediaFacade(private val context: ServerContext) {
                 search = search,
                 favorite = favorite,
                 played = played,
+                inProgress = inProgress,
+                genre = genre,
+                yearFrom = yearFrom,
+                yearTo = yearTo,
+                searchPeople = searchPeople,
                 sort = sort,
                 descending = descending,
                 limit = limit.coerceIn(1, 500),
@@ -195,6 +226,44 @@ class MediaFacade(private val context: ServerContext) {
         )
         ItemPage(items.map { it.withAssetUrls(links) }, total, offset)
     }
+
+    /**
+     * Where the first top-level entry of a library whose sort name reaches
+     * [boundary] sits, under the same filters the page shows — the target of a
+     * jump to a letter. Only meaningful for the sort-name order.
+     */
+    suspend fun libraryPosition(
+        libraryId: String,
+        boundary: String,
+        search: String? = null,
+        favorite: Boolean? = null,
+        played: Boolean? = null,
+        inProgress: Boolean = false,
+        genre: String? = null,
+        yearFrom: Int? = null,
+        yearTo: Int? = null,
+        descending: Boolean = false
+    ): Int = io {
+        context.repository.positionOf(
+            Repository.Query(
+                libraryId = libraryId,
+                topLevelOnly = true,
+                search = search,
+                favorite = favorite,
+                played = played,
+                inProgress = inProgress,
+                genre = genre,
+                yearFrom = yearFrom,
+                yearTo = yearTo,
+                descending = descending
+            ),
+            boundary
+        )
+    }
+
+    suspend fun libraryGenres(libraryId: String): List<String> = io { context.repository.libraryGenres(libraryId) }
+
+    suspend fun libraryYears(libraryId: String): List<Int> = io { context.repository.libraryYears(libraryId) }
 
     /**
      * Probes the container on first open. Track lists are what the detail page
@@ -242,6 +311,72 @@ class MediaFacade(private val context: ServerContext) {
 
     suspend fun setFavorite(id: String, value: Boolean): UserDataDto =
         io { context.repository.setFavorite(id, value) }
+
+    /**
+     * The episode "play" lands on for a series or a season — the same answer
+     * [startPlayback] arrives at, so a page can name it before it is pressed.
+     */
+    suspend fun nextEpisode(id: String, links: AssetLinks): MediaItemDto? =
+        io { context.repository.nextEpisodeUnder(id)?.withAssetUrls(links) }
+
+    /** Remembers an audio or subtitle choice made before pressing play. */
+    suspend fun setTrackSelection(id: String, audio: Int?, subtitle: Int?) =
+        io { context.repository.setTrackSelection(id, audio, subtitle) }
+
+    /** Hands every hand-typed field back to the scraper and scrapes again. */
+    suspend fun revertManualEdits(id: String, links: AssetLinks): MediaItemDto = io {
+        context.repository.item(id) ?: notFound("条目不存在")
+        context.repository.clearManualFields(id)
+        refreshItem(id, links)
+    }
+
+    /** Takes a manual identify off and lets the item match on its own again. */
+    suspend fun unpin(id: String, links: AssetLinks): MediaItemDto = io {
+        val item = identifiable(id)
+        context.metadata.unpin(item)
+        refreshItem(id, links)
+    }
+
+    /**
+     * Uses an image the user picked as the poster or the backdrop. It is copied
+     * under the data directory, because the file it came from may be a phone's
+     * content URI or a download folder that gets tidied.
+     */
+    suspend fun setArtwork(id: String, type: String, bytes: ByteArray, extension: String, links: AssetLinks): MediaItemDto = io {
+        context.repository.item(id) ?: notFound("条目不存在")
+        if (bytes.isEmpty()) invalid("图片是空的")
+        val kind = if (type == "backdrop") "backdrop" else "primary"
+        val ext = extension.lowercase().takeIf { it in setOf("jpg", "jpeg", "png", "webp") } ?: "jpg"
+        val dir = context.configStore.dataDir.resolve("artwork")
+        java.nio.file.Files.createDirectories(dir)
+        // A new name per upload, so the image loader's cache (keyed by address)
+        // shows the new picture instead of the one it already has.
+        val file = dir.resolve("$id-$kind-${System.currentTimeMillis()}.$ext")
+        java.nio.file.Files.write(file, bytes)
+        context.repository.setArtwork(id, if (kind == "backdrop") "backdrop" else "poster", "file:$file")
+        (context.repository.item(id) ?: notFound("条目不存在")).withAssetUrls(links)
+    }
+
+    /**
+     * The watch state of [id] — or of every episode under it — as it stands,
+     * so a change made in one tap can be taken back in one tap.
+     */
+    suspend fun watchStateSnapshot(id: String): Map<String, UserDataDto> = io {
+        val ids = context.repository.episodeIdsUnder(id).ifEmpty { listOf(id) }
+        ids.associateWith { context.repository.userData(it) }
+    }
+
+    /** Puts a snapshot from [watchStateSnapshot] back. */
+    suspend fun restoreWatchState(snapshot: Map<String, UserDataDto>) = io {
+        snapshot.forEach { (itemId, data) -> context.repository.restoreUserData(itemId, data) }
+    }
+
+    /** Every episode under a series or a season, for downloading a run at once. */
+    suspend fun downloadAll(id: String): Int = io {
+        val ids = context.repository.episodeIdsUnder(id).ifEmpty { listOf(id) }
+        ids.forEach { context.offline.start(it) }
+        ids.size
+    }
 
     /**
      * A series or a season has no bytes of its own, so marking one watched
@@ -383,10 +518,13 @@ class MediaFacade(private val context: ServerContext) {
         val item = runCatching { context.streams.probeItem(stored) }.getOrDefault(stored)
         val mediaPath = item.path ?: storedPath
         val userData = item.userData
-        val audio = userData.audioStreamIndex ?: item.mediaStreams
-            .firstOrNull { it.type == StreamType.AUDIO && it.isDefault }?.index
-            ?: item.mediaStreams.firstOrNull { it.type == StreamType.AUDIO }?.index
-        val subtitle = userData.subtitleStreamIndex ?: pickDefaultSubtitle(item)
+        // The episode watched before this one in the same series, whose track
+        // choice this one should start on.
+        val previousChoice = item.seriesId
+            ?.takeIf { item.kind == ItemKind.EPISODE }
+            ?.let { context.repository.lastTrackChoiceInSeries(it, item.id) }
+        val audio = TrackChoice.audio(item, previousChoice, request.preferredAudioLanguage)
+        val subtitle = TrackChoice.subtitle(item, previousChoice, request.preferredSubtitleLanguage)
 
         val session = context.playback.start(
             item = item,
@@ -411,6 +549,9 @@ class MediaFacade(private val context: ServerContext) {
         val next = if (item.kind == ItemKind.EPISODE) {
             context.repository.episodeAfter(item.id)
         } else null
+        val previous = if (item.kind == ItemKind.EPISODE) {
+            context.repository.episodeBefore(item.id)
+        } else null
 
         PlaybackInfoDto(
             sessionId = session.id,
@@ -434,7 +575,8 @@ class MediaFacade(private val context: ServerContext) {
             // Carried with the session so a player that reaches the end can go
             // straight on. Only for episodes: a film has nothing to follow it.
             nextItemId = next?.id,
-            nextItemName = next?.let { it.episodeLabel?.plus(" ")?.plus(it.name) ?: it.name }
+            nextItemName = next?.let { it.episodeLabel?.plus(" ")?.plus(it.name) ?: it.name },
+            previousItemId = previous?.id
         )
     }
 
@@ -541,6 +683,12 @@ class MediaFacade(private val context: ServerContext) {
         } ?: return@io null
         context.images.get(remote)?.file
     }
+
+    /**
+     * A provider's image — a search candidate's poster — fetched into the same
+     * cache as everything else, so the picker can show what it is offering.
+     */
+    suspend fun remoteImage(url: String): java.nio.file.Path? = io { context.images.get(url)?.file }
 
     /** How much disk the artwork cache is holding. */
     suspend fun imageCacheBytes(): Long = io { context.images.sizeBytes() }

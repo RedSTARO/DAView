@@ -81,9 +81,12 @@ import kotlinx.coroutines.delay
 @Composable
 actual fun InternalPlayer(
     info: PlaybackInfoDto,
+    screen: PlayerScreenState,
+    subtitleScale: Float,
     onProgress: (positionMs: Long, paused: Boolean, audioIndex: Int?, subtitleIndex: Int?) -> Unit,
     onClose: (positionMs: Long) -> Unit,
-    onEnded: (positionMs: Long) -> Unit
+    onEnded: (positionMs: Long) -> Unit,
+    onSkip: (itemId: String, positionMs: Long) -> Unit
 ) {
     val context = LocalContext.current
     val latestOnProgress by rememberUpdatedState(onProgress)
@@ -115,7 +118,6 @@ actual fun InternalPlayer(
     // In a corner window there is nothing to hide the system bars from, and no
     // room for a title and four buttons — the tile is a couple of hundred
     // pixels across.
-    if (!inPictureInPicture) PlaybackPresentation(orientation)
 
     val player = remember {
         // The stream URL points at the app's own server over http, and that

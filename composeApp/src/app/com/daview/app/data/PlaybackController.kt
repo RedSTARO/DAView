@@ -16,12 +16,25 @@ import com.daview.shared.model.PlaybackProgressRequest
 import com.daview.shared.model.PlaybackStartRequest
 import com.daview.shared.model.PlaybackStopRequest
 import com.daview.shared.model.PlayerKind
+import com.daview.shared.model.SUBTITLE_OFF
 import com.daview.shared.model.SessionStateDto
 import com.daview.shared.model.StreamType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+/** The episode waiting to roll in once the one on screen has finished. */
+data class UpNext(
+    val itemId: String,
+    val name: String,
+    /** When it starts by itself; null when it waits to be asked. */
+    val startsAt: Long?,
+    /** Several episodes have rolled in untouched: ask before carrying on. */
+    val stillWatching: Boolean
+)
 
 /**
  * Turns "play this" into a session plus whatever the platform can actually run:
@@ -32,16 +45,48 @@ class PlaybackController(
     private val state: AppState,
     private val scope: CoroutineScope
 ) {
-    var pending by mutableStateOf<MediaItemDto?>(null)
     var info by mutableStateOf<PlaybackInfoDto?>(null)
     var externalSession by mutableStateOf<SessionStateDto?>(null)
     var externalPlayerLabel by mutableStateOf<String?>(null)
+
+    /** True from pressing play until the player is on screen or has failed. */
     var starting by mutableStateOf(false)
-    var error by mutableStateOf<String?>(null)
+        private set
+
+    /** What [starting] is for, so the overlay can name it. */
+    var startingName by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * The last failure and the item it belongs to. It used to be one global
+     * string, printed under the buttons of whatever detail page was open next.
+     */
+    var error by mutableStateOf<Pair<String, String>?>(null)
+        private set
+
+    fun errorFor(itemId: String): String? = error?.takeIf { it.first == itemId }?.second
+
+    /** Asked before playing something part-watched, when the viewer wants to be. */
+    var resumePrompt by mutableStateOf<MediaItemDto?>(null)
+        private set
+
+    var upNext by mutableStateOf<UpNext?>(null)
+        private set
+
+    /**
+     * Set while one session hands over to the next. The player that just
+     * finished leaves the screen in that window, and leaving must not read as
+     * the viewer closing it.
+     */
+    private var handingOver = false
+
+    /** Episodes that rolled in by themselves since someone last chose one. */
+    private var unattended = 0
 
     val externalPlayers: List<ExternalPlayerInfo> = availableExternalPlayers()
 
     private var handle: ExternalPlaybackHandle? = null
+    private var startJob: Job? = null
 
     init {
         // The navigation bars can take the user off the player screen, and only
@@ -49,17 +94,105 @@ class PlaybackController(
         state.leavingPlayer = { stopWithoutLeaving() }
     }
 
-    /** Ends the session, leaving where to go next to whoever asked. */
+    /**
+     * Ends an in-app session, leaving where to go next to whoever asked. An
+     * external player is left running: moving to another tab while PotPlayer
+     * plays is browsing, not a request to kill the film.
+     */
     private fun stopWithoutLeaving() {
         val current = info ?: return
+        if (externalPlayerLabel != null) return
         info = null
-        handle?.stop()
+        upNext = null
+        handingOver = false
         scope.launch {
             runCatching { state.library.stopPlayback(PlaybackStopRequest(current.sessionId, -1)) }
             state.refreshHome()
             runCatching { state.library.syncAfterPlayback() }
         }
     }
+
+    // ------------------------------------------------------------ starting
+
+    /**
+     * Plays with whatever this device actually has, and says so when it has
+     * nothing.
+     *
+     * The in-app player is no longer a fact of the platform — on the desktop it
+     * depends on libmpv being found at run time — so "no player at all" is a
+     * state a user can be in, and it used to be expressed as the play button
+     * doing nothing whatsoever.
+     */
+    fun play(item: MediaItemDto, startPositionMs: Long? = null) {
+        if (starting) return
+        // Part-watched, and the viewer wants to be asked: the prompt decides.
+        if (startPositionMs == null && item.isPlayable && item.userData.positionMs > 0 &&
+            state.resumeBehavior == ResumeBehavior.ASK
+        ) {
+            resumePrompt = item
+            return
+        }
+        unattended = 0
+        if (canUseInternalPlayer) {
+            playInternal(item, startPositionMs = startPositionMs)
+            return
+        }
+        val usable = externalPlayers.filter { it.executablePath != null || it.viaUrlScheme }
+        // The remembered choice first, then whatever detection turned up.
+        val player = usable.firstOrNull { it.id == state.preferredPlayerId } ?: usable.firstOrNull()
+        if (player == null) {
+            fail(
+                item.id,
+                "没有可用的播放器：内置播放器不可用，也没有找到 PotPlayer / VLC / mpv。" +
+                    "可以在设置里指定 libmpv 或自定义播放器。"
+            )
+            return
+        }
+        playExternal(item, player, startPositionMs = startPositionMs)
+    }
+
+    fun answerResumePrompt(fromStart: Boolean) {
+        val item = resumePrompt ?: return
+        resumePrompt = null
+        play(item, startPositionMs = if (fromStart) 0L else item.userData.positionMs)
+    }
+
+    fun dismissResumePrompt() {
+        resumePrompt = null
+    }
+
+    /** Stops waiting for a player that is taking too long to start. */
+    fun cancelStart() {
+        startJob?.cancel()
+        startJob = null
+        starting = false
+        startingName = null
+    }
+
+    /**
+     * A failure the viewer has to hear about wherever they are. The detail page
+     * also shows it under its buttons, but only on the item it belongs to.
+     */
+    private fun fail(itemId: String, message: String) {
+        error = itemId to message
+        state.notify(message)
+    }
+
+    private fun startRequest(item: MediaItemDto, player: PlayerKind, startPositionMs: Long?) = PlaybackStartRequest(
+        itemId = item.id,
+        player = player,
+        deviceName = defaultDeviceName(),
+        // Stream through the core rather than hand the player a redirect: the
+        // storage answers a plain GET with a 302 to a signed CDN link, which
+        // ExoPlayer gets a 502 for, while the same link fetched from the core
+        // returns 206. Reading through the pipe also lets the link be resolved
+        // again when it expires mid-film, and is how an external player's
+        // position is followed at all.
+        trackThroughProxy = true,
+        startPositionMs = startPositionMs,
+        preferredAudioLanguage = state.preferredAudioLanguage,
+        preferredSubtitleLanguage = state.preferredSubtitleLanguage
+    )
 
     /**
      * [replaceScreen] is for rolling from one episode into the next: the player
@@ -72,34 +205,35 @@ class PlaybackController(
         /** Null carries on from the resume point; 0 is "start it again". */
         startPositionMs: Long? = null
     ) {
-        scope.launch {
-            starting = true
-            error = null
+        startJob?.cancel()
+        starting = true
+        startingName = item.seriesName?.let { "$it · ${item.episodeLabel ?: item.name}" } ?: item.name
+        error = null
+        startJob = scope.launch {
             try {
                 val playback = state.library.startPlayback(
-                    PlaybackStartRequest(
-                        itemId = item.id,
-                        player = PlayerKind.INTERNAL,
-                        deviceName = defaultDeviceName(),
-                        // Stream through the server rather than handing the player
-                        // a redirect. The storage answers a plain GET with a 302 to
-                        // a signed CDN link, and ExoPlayer following that link gets
-                        // a 502 from the CDN, while the very same link fetched from
-                        // the core returns 206 in a second. The pipe is in this
-                        // process anyway, so reading through it costs one loopback
-                        // hop and buys a link that can be re-resolved when it
-                        // expires mid-playback.
-                        trackThroughProxy = true,
-                        startPositionMs = startPositionMs
-                    ),
+                    startRequest(item, PlayerKind.INTERNAL, startPositionMs),
                     state.links
                 )
                 info = playback
+                upNext = null
+                handingOver = false
                 if (!replaceScreen) state.navigate(Screen.Player(item.id))
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
-                error = e.message ?: "无法开始播放"
+                handingOver = false
+                upNext = null
+                fail(item.id, "无法开始播放：${state.describe(e)}")
+                // A roll-over that failed leaves nothing to show on the player
+                // screen; the page underneath is the one to go back to.
+                if (replaceScreen && state.current is Screen.Player) {
+                    info = null
+                    state.back()
+                }
             } finally {
                 starting = false
+                startingName = null
             }
         }
     }
@@ -109,9 +243,12 @@ class PlaybackController(
         player: ExternalPlayerInfo,
         startPositionMs: Long? = null
     ) {
-        scope.launch {
-            starting = true
-            error = null
+        if (starting) return
+        startJob?.cancel()
+        starting = true
+        startingName = item.name
+        error = null
+        startJob = scope.launch {
             try {
                 val kind = when (player.id) {
                     "potplayer" -> PlayerKind.POTPLAYER
@@ -119,32 +256,21 @@ class PlaybackController(
                     "mpv", "iina" -> PlayerKind.MPV
                     else -> PlayerKind.EXTERNAL
                 }
-                val playback = state.library.startPlayback(
-                    PlaybackStartRequest(
-                        itemId = item.id,
-                        player = kind,
-                        deviceName = defaultDeviceName(),
-                        // Byte-level tracking is what makes progress sync work at
-                        // all for players that never report anything back.
-                        trackThroughProxy = true,
-                        startPositionMs = startPositionMs
-                    ),
-                    state.links
-                )
+                val playback = state.library.startPlayback(startRequest(item, kind, startPositionMs), state.links)
                 info = playback
                 externalPlayerLabel = player.label
                 // The panel that shows what is playing, where it has got to and
-                // how to stop it lives on the player screen — and nothing ever
-                // went there for an external player, so every one of those
-                // controls was unreachable and the app just sat on the page it
-                // was on while something else took over the screen.
+                // how to stop it lives on the player screen.
                 state.navigate(Screen.Player(item.id))
 
-                val subtitleUrl = playback.subtitleStreamIndex
-                    ?.let { playback.subtitleUrls[it] }
-                    ?: playback.item.mediaStreams
+                val chosenSubtitle = playback.subtitleStreamIndex
+                val subtitleUrl = when (chosenSubtitle) {
+                    SUBTITLE_OFF -> null
+                    null -> playback.item.mediaStreams
                         .firstOrNull { it.type == StreamType.SUBTITLE && it.isExternal }
                         ?.let { playback.subtitleUrls[it.index] }
+                    else -> playback.subtitleUrls[chosenSubtitle]
+                }
 
                 handle = launchExternalPlayer(
                     ExternalPlayRequest(
@@ -154,21 +280,24 @@ class PlaybackController(
                         startPositionMs = playback.startPositionMs,
                         subtitleUrl = subtitleUrl,
                         // The track the viewer chose on another device, or the
-                        // one the server picked. It was computed and stored and
+                        // one the core picked. It was computed and stored and
                         // then not passed on, so an external player fell back to
                         // its own default — usually the wrong language.
                         audioTrack = playback.audioStreamIndex,
-                        subtitleTrack = playback.subtitleStreamIndex
+                        subtitleTrack = chosenSubtitle
                     )
                 )
                 if (handle == null && player.id != "copy") {
-                    error = "无法启动 ${player.label}"
+                    fail(item.id, "无法启动 ${player.label}")
                 }
                 followExternalSession(playback.sessionId)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
-                error = e.message ?: "无法开始播放"
+                fail(item.id, "无法开始播放：${state.describe(e)}")
             } finally {
                 starting = false
+                startingName = null
             }
         }
     }
@@ -212,12 +341,24 @@ class PlaybackController(
             externalSession = null
             externalPlayerLabel = null
             handle = null
-            info = null
+            if (info?.sessionId == sessionId) info = null
             // The player has gone; the panel describing it should go too.
             if (state.current is Screen.Player) state.back()
             state.refreshHome()
-            state.detailItem?.let { state.loadDetail(it.id) }
+            state.detailItem?.let { state.loadDetail(it.id, quiet = true) }
+            runCatching { state.library.syncAfterPlayback() }
         }
+    }
+
+    /** Leaves the external panel while the player keeps going. */
+    fun leaveExternalPanel() {
+        if (state.current is Screen.Player) state.back()
+    }
+
+    /** Goes back to the panel of the external player that is still running. */
+    fun showExternalPanel() {
+        val playing = info ?: return
+        if (state.current !is Screen.Player) state.navigate(Screen.Player(playing.item.id))
     }
 
     fun reportProgress(positionMs: Long, paused: Boolean, audio: Int?, subtitle: Int?) {
@@ -231,46 +372,130 @@ class PlaybackController(
         }
     }
 
+    // ------------------------------------------------------------ ending
+
     /**
-     * Rolls into the episode the session named as next.
-     *
-     * Returns false when there is nothing to roll into, which is what tells the
-     * caller to close the player rather than sit on a finished file.
+     * A file ran to its end. With another episode to follow, the screen shows
+     * what is next and counts down — the viewer can start it at once or stop
+     * there — instead of cutting straight into it. After three episodes in a
+     * row that nobody touched, it waits to be asked.
      */
-    fun playNextIfAny(): Boolean {
-        val nextId = info?.nextItemId ?: return false
-        if (!state.autoPlayNext) return false
-        scope.launch {
-            val current = info
-            runCatching {
-                current?.let { state.library.stopPlayback(PlaybackStopRequest(it.sessionId, -1)) }
-            }
-            val item = runCatching { state.library.item(nextId, state.links) }.getOrNull()
-            if (item == null) {
-                info = null
-                state.back()
-                return@launch
-            }
-            playInternal(item, replaceScreen = true)
+    fun onEnded(sessionId: String, positionMs: Long) {
+        val current = info ?: return
+        if (current.sessionId != sessionId) return
+        val nextId = current.nextItemId
+        if (nextId == null || !state.autoPlayNext) {
+            closePlayer(sessionId, positionMs)
+            return
         }
-        return true
+        handingOver = true
+        val stillWatching = unattended >= STILL_WATCHING_AFTER
+        upNext = UpNext(
+            itemId = nextId,
+            name = current.nextItemName ?: "下一集",
+            startsAt = if (stillWatching) null else System.currentTimeMillis() + UP_NEXT_DELAY_MS,
+            stillWatching = stillWatching
+        )
+        scope.launch {
+            runCatching { state.library.stopPlayback(PlaybackStopRequest(sessionId, positionMs)) }
+        }
+    }
+
+    /** Starts the episode the up-next card is showing. */
+    fun playUpNext(auto: Boolean) {
+        val next = upNext ?: return
+        if (auto) unattended++ else unattended = 0
+        skipTo(next.itemId, fromStart = false)
+    }
+
+    /** Declines the next episode and leaves the player. */
+    fun cancelUpNext() {
+        upNext = null
+        handingOver = false
+        info = null
+        if (state.current is Screen.Player) state.back()
+        scope.launch {
+            state.refreshHome()
+            runCatching { state.library.syncAfterPlayback() }
+        }
     }
 
     /**
-     * Ends playback and leaves the player screen, in that order.
+     * Moves the player to another episode — the next one, the one before, or
+     * whatever the up-next card offered. The player on screen hands over rather
+     * than closes: its session is stopped where it stood, and the screen stays.
+     */
+    fun skipTo(itemId: String, fromStart: Boolean = true, positionMs: Long? = null) {
+        val current = info
+        handingOver = true
+        scope.launch {
+            if (current != null && upNext == null) {
+                runCatching {
+                    state.library.stopPlayback(PlaybackStopRequest(current.sessionId, positionMs ?: -1))
+                }
+            }
+            val item = runCatching { state.library.item(itemId, state.links) }.getOrNull()
+            if (item == null) {
+                handingOver = false
+                upNext = null
+                info = null
+                if (state.current is Screen.Player) state.back()
+                return@launch
+            }
+            playInternal(item, replaceScreen = true, startPositionMs = if (fromStart) 0L else null)
+        }
+    }
+
+    /**
+     * What a player reports as it leaves the screen, with the session it was
+     * playing. Leaving because the viewer closed it ends the session and goes
+     * back a page; leaving because a newer session took its place, or during a
+     * hand-over to the next episode, only records where it stopped.
      *
-     * Leaving first let the screen animate out while the engine was still
-     * running, so the sound carried on over the page underneath for the length
-     * of the transition.
+     * The player used to call "stop and go back" on the way out whatever the
+     * reason, so leaving it by the back gesture — which had already gone back
+     * — went back a second time and landed a page too far.
+     */
+    fun closePlayer(sessionId: String, positionMs: Long) {
+        val current = info
+        if (current == null || current.sessionId != sessionId || handingOver) {
+            scope.launch {
+                runCatching {
+                    state.library.stopPlayback(PlaybackStopRequest(sessionId, positionMs.takeIf { it > 0 } ?: -1))
+                }
+            }
+            return
+        }
+        info = null
+        if (state.current is Screen.Player) state.back()
+        scope.launch {
+            runCatching { state.library.stopPlayback(PlaybackStopRequest(sessionId, positionMs)) }
+            state.refreshHome()
+            state.detailItem?.let { state.loadDetail(it.id, quiet = true) }
+            // Straight away, rather than waiting for the periodic upload: this
+            // is the moment the other device wants.
+            runCatching { state.library.syncAfterPlayback() }
+        }
+    }
+
+    /**
+     * Ends playback and leaves the player screen, in that order — the back
+     * gesture, and leaving from the keyboard.
      */
     fun stopAndLeave() {
         val current = info
-        if (current == null) {
-            state.back()
+        if (current == null || upNext != null) {
+            if (upNext != null) cancelUpNext() else state.back()
+            return
+        }
+        if (externalPlayerLabel != null) {
+            leaveExternalPanel()
             return
         }
         // Cleared first so the player composable leaves the tree and releases
-        // the engine before anything else happens.
+        // the engine before anything else happens. The player then reports its
+        // own last position through closePlayer, which finds the session gone
+        // from info and only records it.
         info = null
         state.back()
         scope.launch {
@@ -280,18 +505,7 @@ class PlaybackController(
         }
     }
 
-    fun stop(positionMs: Long) {
-        val sessionId = info?.sessionId ?: return
-        scope.launch {
-            runCatching { state.library.stopPlayback(PlaybackStopRequest(sessionId, positionMs)) }
-            info = null
-            state.refreshHome()
-            // Straight away, rather than waiting for the periodic upload: this
-            // is the moment the other device wants.
-            runCatching { state.library.syncAfterPlayback() }
-        }
-    }
-
+    /** Ends the external player, which is what 「结束播放」 on its panel asks for. */
     fun stopExternal() {
         handle?.stop()
         val sessionId = info?.sessionId ?: return
@@ -300,32 +514,8 @@ class PlaybackController(
 
     val canUseInternalPlayer: Boolean get() = PlatformInfo.hasInternalPlayer
 
-    /**
-     * Plays with whatever this device actually has, and says so when it has
-     * nothing.
-     *
-     * The in-app player is no longer a fact of the platform — on the desktop it
-     * depends on libmpv being found at run time — so "no player at all" is a
-     * state a user can be in, and it used to be expressed as the play button
-     * doing nothing whatsoever.
-     */
-    fun playAnyhow(item: MediaItemDto, startPositionMs: Long? = null) {
-        if (canUseInternalPlayer) {
-            playInternal(item, startPositionMs = startPositionMs)
-            return
-        }
-        val usable = externalPlayers.filter { it.executablePath != null || it.viaUrlScheme }
-        // The remembered choice first, then whatever detection turned up.
-        val player = usable.firstOrNull { it.id == state.preferredPlayerId } ?: usable.firstOrNull()
-        if (player == null) {
-            val message = "没有可用的播放器：内置播放器不可用，也没有找到 PotPlayer / VLC / mpv。" +
-                "可以在设置里指定 libmpv 或自定义播放器。"
-            error = message
-            // The detail page shows `error`; the home page and the context menu
-            // do not, and they are two of the three places this is reached from.
-            state.notify(message)
-            return
-        }
-        playExternal(item, player, startPositionMs = startPositionMs)
+    private companion object {
+        const val UP_NEXT_DELAY_MS = 8_000L
+        const val STILL_WATCHING_AFTER = 3
     }
 }

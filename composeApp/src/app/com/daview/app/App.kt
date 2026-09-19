@@ -2,11 +2,12 @@ package com.daview.app
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -21,26 +22,29 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -51,44 +55,60 @@ import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.ImageLoader
 import coil3.compose.setSingletonImageLoaderFactory
 import coil3.request.crossfade
 import com.daview.app.data.AppState
+import com.daview.app.data.BackStackEntry
 import com.daview.app.data.DesktopShortcuts
 import com.daview.app.data.LocalImageFetcher
+import com.daview.app.data.ModalMarker
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
+import com.daview.app.data.ThemeMode
 import com.daview.app.theme.DaViewTheme
-import com.daview.shared.model.LibraryKind
 import com.daview.app.ui.DetailScreen
 import com.daview.app.ui.HomeScreen
-import com.daview.app.ui.LoadingPane
 import com.daview.app.ui.LibraryScreen
+import com.daview.app.ui.LoadingPane
 import com.daview.app.ui.PlatformBackHandler
 import com.daview.app.ui.PlayerScreen
 import com.daview.app.ui.SearchScreen
 import com.daview.app.ui.SettingsScreen
+import com.daview.app.ui.ShelfScreen
 import com.daview.app.ui.SystemBarAppearance
-import kotlinx.coroutines.CoroutineScope
+import com.daview.app.ui.Tooltip
+import com.daview.app.ui.formatDuration
+import com.daview.shared.model.LibraryKind
 
 @Composable
 fun App() {
     val scope = rememberCoroutineScope()
     val state = remember { AppState(scope) }
+
+    // The screens on the stack, kept where Android keeps an activity's state.
+    // A process reclaimed in the background used to come back on the home
+    // page, whatever the viewer had been looking at.
+    var savedStack by rememberSaveable { mutableStateOf(emptyList<String>()) }
 
     // Opening the library is disk work — the SQLite driver unpacks itself, the
     // migrations run — and it used to happen inside composition, which is to
@@ -96,16 +116,27 @@ fun App() {
     // first and this fills it in.
     LaunchedEffect(Unit) { state.open() }
 
-    // The desktop window handles keys outside the composition and needs a
-    // way to reach the state they act on.
-    LaunchedEffect(state) { DesktopShortcuts.bind(state) }
+    val systemDark = isSystemInDarkTheme()
+    val dark = when (state.themeMode) {
+        ThemeMode.SYSTEM -> systemDark
+        ThemeMode.DARK -> true
+        ThemeMode.LIGHT -> false
+    }
 
-    DaViewTheme(darkTheme = state.darkTheme) {
+    DaViewTheme(darkTheme = dark) {
         // The app's own switch, not the system's night setting, decides what
         // the status bar sits on — so it is what decides the icons' colour too.
-        SystemBarAppearance(state.darkTheme)
+        SystemBarAppearance(dark)
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            if (state.ready) Library(state, scope) else Opening(state.startupError)
+            if (state.ready) {
+                LaunchedEffect(Unit) {
+                    state.restoreStack(savedStack)
+                    snapshotFlow { state.encodeStack() }.collect { savedStack = it }
+                }
+                Library(state)
+            } else {
+                Opening(state.startupError)
+            }
         }
     }
 }
@@ -118,7 +149,7 @@ private fun Opening(error: String?) {
         return
     }
     LoadingPane {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
             Text("无法打开媒体库", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
             Text(
@@ -130,9 +161,15 @@ private fun Opening(error: String?) {
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun Library(state: AppState, scope: CoroutineScope) {
+private fun Library(state: AppState) {
+    val scope = rememberCoroutineScope()
     val playback = remember { PlaybackController(state, scope) }
+
+    // The desktop window handles keys outside the composition and needs a
+    // way to reach the state they act on.
+    LaunchedEffect(state) { DesktopShortcuts.bind(state, playback) }
 
     // Artwork resolves against the on-disk cache rather than a URL: the file is
     // already on this device, and there is no longer anything listening to hand
@@ -158,8 +195,13 @@ private fun Library(state: AppState, scope: CoroutineScope) {
     // The sequence number is what makes the same message twice show twice.
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(state.toastSeq) {
-        val message = state.toast ?: return@LaunchedEffect
-        snackbar.showSnackbar(message, duration = SnackbarDuration.Short)
+        val toast = state.toast ?: return@LaunchedEffect
+        val result = snackbar.showSnackbar(
+            message = toast.message,
+            actionLabel = toast.actionLabel,
+            duration = if (toast.actionLabel != null) SnackbarDuration.Long else SnackbarDuration.Short
+        )
+        if (result == SnackbarResult.ActionPerformed) toast.action?.invoke()
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -171,7 +213,7 @@ private fun Library(state: AppState, scope: CoroutineScope) {
 
         // Android's back gesture is the primary way back; unhandled it finishes
         // the activity from whatever screen the user is on.
-        PlatformBackHandler(enabled = state.backStack.size > 1) {
+        PlatformBackHandler(enabled = state.canGoBack) {
             if (immersive) playback.stopAndLeave() else state.back()
         }
 
@@ -181,56 +223,178 @@ private fun Library(state: AppState, scope: CoroutineScope) {
                 // above, no navigation below, and no insets carved out of it.
                 immersive -> Content(state, playback)
 
+                // Every screen draws its own top bar now, so the art on the home
+                // and detail pages runs to the top of the window and each page
+                // says what it is. The width is capped inside the screens that
+                // hold text, not around the whole app: a cap of 1180dp around
+                // everything left the poster walls and shelves floating in the
+                // middle of a wide window with empty bands on either side.
                 wide -> Row(Modifier.fillMaxSize()) {
                     SideNavigation(state)
-                    Column(Modifier.fillMaxSize()) {
-                        TopRow(state)
-                        // A cap on how wide the content runs. Nothing in the app
-                        // had one, so a maximised window put a synopsis on lines
-                        // of over a hundred Chinese characters and stretched a
-                        // single-line URL field across the whole desktop.
-                        Box(
-                            Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.TopCenter
-                        ) {
-                            Box(Modifier.widthIn(max = 1180.dp)) {
-                                Content(state, playback)
-                            }
-                        }
-                    }
+                    Box(Modifier.fillMaxSize()) { Content(state, playback) }
                 }
 
                 else -> Column(Modifier.fillMaxSize()) {
-                    TopRow(state)
                     Box(Modifier.weight(1f)) { Content(state, playback) }
                     BottomNavigation(state)
                 }
             }
 
             if (!immersive) {
-                SnackbarHost(
-                    hostState = snackbar,
-                    modifier = Modifier
+                Column(
+                    Modifier
                         .align(Alignment.BottomCenter)
                         .windowInsetsPadding(WindowInsets.navigationBars)
                         // Clear of the bottom bar rather than on top of it: it
                         // used to cover all three destinations and swallow taps
                         // meant for them.
-                        .padding(
-                            start = 16.dp,
-                            end = 16.dp,
-                            bottom = if (wide) 24.dp else 96.dp
-                        )
-                )
+                        .padding(start = 16.dp, end = 16.dp, bottom = if (wide) 24.dp else 96.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    ExternalPlayingBanner(state, playback)
+                    SnackbarHost(hostState = snackbar)
+                }
             }
+
+            if (playback.starting && !immersive) StartingOverlay(playback)
+        }
+    }
+
+    playback.resumePrompt?.let { item ->
+        AlertDialog(
+            onDismissRequest = { playback.dismissResumePrompt() },
+            title = { Text(item.seriesName?.let { "$it · ${item.name}" } ?: item.name) },
+            text = { Text("上次看到 ${formatDuration(item.userData.positionMs)}。") },
+            confirmButton = {
+                TextButton(onClick = { playback.answerResumePrompt(fromStart = false) }) {
+                    Text("继续播放")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { playback.answerResumePrompt(fromStart = true) }) { Text("从头播放") }
+            }
+        )
+    }
+
+    state.confirmation?.let { question ->
+        AlertDialog(
+            onDismissRequest = { state.answerConfirmation(false) },
+            title = { Text(question.title) },
+            text = { Text(question.text) },
+            confirmButton = {
+                TextButton(onClick = { state.answerConfirmation(true) }) {
+                    Text(
+                        question.confirmLabel,
+                        color = if (question.destructive) MaterialTheme.colorScheme.error else Color.Unspecified
+                    )
+                }
+            },
+            dismissButton = { TextButton(onClick = { state.answerConfirmation(false) }) { Text("取消") } }
+        )
+    }
+
+    if (state.pendingLeave != null) {
+        AlertDialog(
+            onDismissRequest = { state.cancelLeave() },
+            title = { Text("有未保存的设置") },
+            text = { Text("离开后，这一页上改了但没保存的内容会丢失。") },
+            confirmButton = {
+                TextButton(onClick = { state.confirmLeave() }) {
+                    Text("放弃修改并离开", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { state.cancelLeave() }) { Text("继续编辑") } }
+        )
+    }
+}
+
+/**
+ * Between pressing play and the player appearing: the file is probed and a
+ * link resolved, which can take a few seconds on the share, and nothing on
+ * screen used to change in the meantime — so play got pressed again.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun StartingOverlay(playback: PlaybackController) {
+    Box(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.45f)),
+        contentAlignment = Alignment.Center
+    ) {
+        ModalMarker()
+        Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+            Column(
+                Modifier.padding(24.dp).widthIn(max = 360.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CircularProgressIndicator(Modifier.size(36.dp))
+                Spacer(Modifier.height(14.dp))
+                Text("正在准备播放", style = MaterialTheme.typography.titleSmall)
+                playback.startingName?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = { playback.cancelStart() }) { Text("取消") }
+            }
+        }
+    }
+}
+
+/**
+ * An external player still running while the viewer browses. Leaving its panel
+ * no longer ends it, so something has to say it is there and lead back.
+ */
+@Composable
+private fun ExternalPlayingBanner(state: AppState, playback: PlaybackController) {
+    val label = playback.externalPlayerLabel ?: return
+    val info = playback.info ?: return
+    if (state.current is Screen.Player) return
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.padding(bottom = 8.dp)
+    ) {
+        Row(
+            Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(Icons.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(
+                "$label 正在播放「${info.item.name}」",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 360.dp)
+            )
+            TextButton(onClick = { playback.showExternalPanel() }) { Text("查看") }
         }
     }
 }
 
 @Composable
 private fun Content(state: AppState, playback: PlaybackController) {
+    // Each page's own remembered state — above all where it was scrolled to —
+    // is filed under its stack entry while it is out of sight. Without this the
+    // page was rebuilt from nothing on the way back, and the grid the viewer
+    // had scrolled through was back at its top.
+    val holder = rememberSaveableStateHolder()
+    val live = state.backStack.map { it.key }.toSet()
+    val known = remember { mutableSetOf<Long>() }
+    LaunchedEffect(live) {
+        (known - live).forEach { holder.removeState(it) }
+        known.retainAll(live)
+        known.addAll(live)
+    }
+
     AnimatedContent(
-        targetState = state.current,
+        targetState = state.currentEntry,
+        contentKey = { it.key },
         // Going in and coming back played the same animation, so the two
         // directions were indistinguishable and the middle of every transition
         // had both screens half-drawn over each other. A short slide says which
@@ -244,44 +408,16 @@ private fun Content(state: AppState, playback: PlaybackController) {
                 ) togetherWith fadeOut(animationSpec = tween(120))
         },
         label = "screen"
-    ) { screen ->
-        when (screen) {
-            is Screen.Home -> HomeScreen(state, playback)
-            is Screen.Library -> LibraryScreen(state, playback, screen.libraryId)
-            is Screen.Detail -> DetailScreen(state, playback)
-            is Screen.Search -> SearchScreen(state, playback)
-            is Screen.Settings -> SettingsScreen(state)
-            is Screen.Player -> PlayerScreen(state, playback)
-        }
-    }
-}
-
-/**
- * The bar above every screen. Its height is fixed whether or not there is
- * anywhere to go back to: it used to collapse to 8dp on a root screen, so every
- * step in and out of a page shoved the whole content area 48dp while the two
- * screens were still cross-fading — a jump the fade had no way to cover.
- *
- * It also carries the status bar inset for the whole app. The window is drawn
- * edge to edge, and this is the only thing between the top of the screen and
- * the first line of content.
- */
-@Composable
-private fun TopRow(state: AppState) {
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .height(56.dp),
-        contentAlignment = Alignment.CenterStart
-    ) {
-        AnimatedVisibility(
-            visible = state.backStack.size > 1,
-            enter = fadeIn(),
-            exit = fadeOut()
-        ) {
-            IconButton(onClick = { state.back() }, modifier = Modifier.padding(start = 4.dp)) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+    ) { entry: BackStackEntry ->
+        holder.SaveableStateProvider(entry.key) {
+            when (val screen = entry.screen) {
+                is Screen.Home -> HomeScreen(state, playback)
+                is Screen.Library -> LibraryScreen(state, playback, screen.libraryId)
+                is Screen.Detail -> DetailScreen(state, playback, screen.itemId)
+                is Screen.Search -> SearchScreen(state, playback)
+                is Screen.Settings -> SettingsScreen(state)
+                is Screen.Player -> PlayerScreen(state, playback)
+                is Screen.Shelf -> ShelfScreen(state, playback, screen.kind)
             }
         }
     }
@@ -317,6 +453,16 @@ internal fun libraryIcon(kind: LibraryKind) = when (kind) {
     LibraryKind.OTHER -> Icons.Filled.FolderOpen
 }
 
+/** A small dot on 设置 while a scan runs, the one background task with no page of its own. */
+@Composable
+private fun SettingsIcon(state: AppState) {
+    if (state.scanStatus.any { it.running }) {
+        BadgedBox(badge = { Badge() }) { Icon(Icons.Filled.Settings, contentDescription = null) }
+    } else {
+        Icon(Icons.Filled.Settings, contentDescription = null)
+    }
+}
+
 @Composable
 private fun SideNavigation(state: AppState) {
     NavigationRail(
@@ -338,18 +484,12 @@ private fun SideNavigation(state: AppState) {
             label = { Text("搜索") },
             colors = railColors()
         )
-        NavigationRailItem(
-            selected = state.current is Screen.Settings,
-            onClick = { state.switchTo(Screen.Settings) },
-            icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
-            label = { Text("设置") },
-            colors = railColors()
-        )
-        Spacer(Modifier.height(16.dp))
-        // Scrollable, because the libraries are unbounded: a fourth one used to
-        // be measured to zero height and simply not exist on a landscape phone.
+        Spacer(Modifier.height(12.dp))
+        // The libraries sit with the other places to browse; settings goes to
+        // the foot of the rail, where desktop applications keep it. It used to
+        // sit between 搜索 and the libraries.
         Column(
-            Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())
+            Modifier.weight(1f, fill = true).verticalScroll(rememberScrollState())
         ) {
             state.libraries.forEach { library ->
                 NavigationRailItem(
@@ -359,17 +499,27 @@ private fun SideNavigation(state: AppState) {
                     label = {
                         // Capped, or one long library name drags the whole rail
                         // wider and takes the width out of the content beside it.
-                        Text(
-                            library.name,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.widthIn(max = 72.dp)
-                        )
+                        Tooltip(library.name) {
+                            Text(
+                                library.name,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 72.dp)
+                            )
+                        }
                     },
                     colors = railColors()
                 )
             }
         }
+        NavigationRailItem(
+            selected = state.current is Screen.Settings,
+            onClick = { state.switchTo(Screen.Settings) },
+            icon = { SettingsIcon(state) },
+            label = { Text("设置") },
+            colors = railColors()
+        )
+        Spacer(Modifier.height(12.dp))
     }
 }
 
@@ -394,7 +544,7 @@ private fun BottomNavigation(state: AppState) {
         NavigationBarItem(
             selected = state.current is Screen.Settings,
             onClick = { state.switchTo(Screen.Settings) },
-            icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+            icon = { SettingsIcon(state) },
             label = { Text("设置") },
             colors = barColors()
         )
@@ -409,6 +559,8 @@ private fun BottomNavigation(state: AppState) {
  *
  * One library goes straight there; several open a menu, because a bar item per
  * library would not fit and would change width every time a library is added.
+ * With none, the menu says so and offers the way to add one, instead of
+ * quietly switching to another tab.
  */
 @Composable
 private fun RowScope.LibrariesItem(state: AppState) {
@@ -418,16 +570,26 @@ private fun RowScope.LibrariesItem(state: AppState) {
     NavigationBarItem(
         selected = state.current is Screen.Library,
         onClick = {
-            when (libraries.size) {
-                0 -> state.switchTo(Screen.Settings)
-                1 -> state.switchTo(Screen.Library(libraries.first().id))
-                else -> open = true
-            }
+            if (libraries.size == 1) state.switchTo(Screen.Library(libraries.first().id)) else open = true
         },
         icon = {
             Box {
                 Icon(Icons.Filled.VideoLibrary, contentDescription = null)
                 DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                    if (libraries.isEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("还没有媒体库") },
+                            enabled = false,
+                            onClick = {}
+                        )
+                        DropdownMenuItem(
+                            text = { Text("去设置里添加…") },
+                            onClick = {
+                                open = false
+                                state.switchTo(Screen.Settings)
+                            }
+                        )
+                    }
                     libraries.forEach { library ->
                         DropdownMenuItem(
                             leadingIcon = {
