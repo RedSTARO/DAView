@@ -107,9 +107,17 @@ class OfflineLibrary(
         progress -= itemId
     }
 
+    private fun forgetCancelled(itemId: String, target: Path) {
+        runCatching { target.deleteIfExists() }
+        repository.deleteDownload(itemId)
+        progress -= itemId
+    }
+
     private fun run(itemId: String, mediaPath: String, target: Path) {
+        // Cancelled is not failed: the row goes, as if never asked for, rather
+        // than staying behind as a red "download failed: cancelled".
         if (itemId in cancelled) {
-            repository.updateDownloadState(itemId, DownloadState.FAILED, "已取消")
+            forgetCancelled(itemId, target)
             return
         }
         repository.updateDownloadState(itemId, DownloadState.RUNNING, null)
@@ -122,6 +130,7 @@ class OfflineLibrary(
                 return
             }
 
+            var stopped = false
             streams.openRange(mediaPath, written, null).use { range ->
                 val size = total.takeIf { it > 0 } ?: ((range.totalSize ?: 0L))
                 RandomAccessFile(target.toFile(), "rw").use { file ->
@@ -130,9 +139,8 @@ class OfflineLibrary(
                     var lastPersist = 0L
                     while (true) {
                         if (itemId in cancelled) {
-                            repository.saveProgressBytes(itemId, written)
-                            repository.updateDownloadState(itemId, DownloadState.FAILED, "已取消")
-                            return
+                            stopped = true
+                            break
                         }
                         val read = range.stream.read(buffer)
                         if (read <= 0) break
@@ -147,10 +155,15 @@ class OfflineLibrary(
                             lastPersist = written
                         }
                     }
-                    if (size > 0 && written < size) {
+                    if (!stopped && size > 0 && written < size) {
                         throw IllegalStateException("下载中断：$written / $size 字节")
                     }
                 }
+            }
+            // After the file is closed: an open file cannot be deleted on Windows.
+            if (stopped) {
+                forgetCancelled(itemId, target)
+                return
             }
             finish(itemId, written)
         } catch (t: Throwable) {

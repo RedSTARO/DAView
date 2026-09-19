@@ -568,7 +568,7 @@ fun PosterCard(
                 // to come back out for the menu to open under the cursor.
                 if (menu != null) {
                     val artworkHeight = width / aspect
-                    DropdownMenu(
+                    AppMenu(
                         expanded = menuAt != null,
                         onDismissRequest = { menuAt = null },
                         offset = menuAt.toDpOffset(density).let {
@@ -826,5 +826,30 @@ fun Chip(text: String, modifier: Modifier = Modifier, color: Color = Color.Unspe
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             content = content
         )
+    }
+}
+
+/**
+ * Whether the side rail is on screen. The rail follows the window's width;
+ * a page measuring only its own share of it came to a different answer
+ * between 600 and about 680dp, and showed the libraries twice.
+ */
+val LocalRailShown = androidx.compose.runtime.staticCompositionLocalOf { false }
+
+/**
+ * A dropdown menu that holds the keyboard while it is open, so Esc and
+ * Backspace close it instead of taking the page behind it back a step.
+ */
+@Composable
+fun AppMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    offset: DpOffset = DpOffset(0.dp, 0.dp),
+    content: @Composable ColumnScope.() -> Unit
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismissRequest, modifier = modifier, offset = offset) {
+        com.daview.app.data.ModalMarker()
+        content()
     }
 }

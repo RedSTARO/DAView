@@ -30,7 +30,7 @@ object DesktopShortcuts {
     val reference: List<Pair<String, String>> = listOf(
         "Alt + ← / 鼠标后退键" to "返回上一页",
         "Backspace" to "返回上一页（输入框外）",
-        "Esc" to "关闭库内搜索，或返回上一页；全屏时先退出全屏",
+        "Esc" to "关闭菜单或库内搜索，或返回上一页；播放时先关列表，再退出全屏",
         "Ctrl + F" to "搜索",
         "F5" to "刷新当前页",
         "F11" to "全屏 / 退出全屏",
@@ -41,7 +41,10 @@ object DesktopShortcuts {
         "[ / ]" to "减速 / 加速（播放器）",
         "# / J" to "切换音轨 / 字幕（播放器）",
         "PageUp / PageDown" to "上一章 / 下一章（播放器）",
-        "F" to "全屏（播放器）"
+        "< / >" to "上一集 / 下一集（播放器）",
+        "Enter" to "跳过片头（播放器，有片头章节时）",
+        "F" to "全屏（播放器）",
+        "Q" to "结束播放（播放器）"
     )
 
     /** True when the key was ours, which stops it reaching the focused control. */
@@ -51,8 +54,17 @@ object DesktopShortcuts {
             // Back, the ways a desktop application usually spells it. A dialog
             // owns the keyboard while it is open, and a text field owns the
             // keys that edit text.
+            // In a text field Alt+← moves by word (Option+← on a Mac).
             event.isAltPressed && event.key == Key.DirectionLeft ->
-                !InputTracker.modalOpen && back(current)
+                !InputTracker.typing && !InputTracker.modalOpen && back(current)
+            // The external player's panel is a page like any other: the keys
+            // that leave a page leave it, and the player keeps going.
+            (event.key == Key.Escape || event.key == Key.Backspace) &&
+                current.current is Screen.Player && playback?.externalPlayerLabel != null ->
+                !InputTracker.modalOpen && !InputTracker.typing && run {
+                    playback?.leaveExternalPanel()
+                    true
+                }
             event.key == Key.Backspace ->
                 !InputTracker.typing && !InputTracker.modalOpen && current.current !is Screen.Player && back(current)
             event.key == Key.Escape -> when {

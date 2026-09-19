@@ -63,7 +63,7 @@ fun SearchScreen(state: AppState, playback: PlaybackController) {
     // The field owns its own text. Routing every keystroke through the query
     // meant the character you typed only appeared once a coroutine had run,
     // which an IME makes very obvious.
-    var query by remember { mutableStateOf(state.searchQuery) }
+    var query by rememberSaveable { mutableStateOf(state.searchQuery) }
 
     // One search per pause in typing rather than one per keystroke, and the
     // result of a stale query cannot land after a newer one. Coming back to the
@@ -156,8 +156,11 @@ fun SearchScreen(state: AppState, playback: PlaybackController) {
                             results(state, playback, state.searchResults)
                         }
                         if (state.searchEpisodes.isNotEmpty()) {
-                            header("分集（${state.searchEpisodes.size}）")
-                            results(state, playback, state.searchEpisodes)
+                            // Only the best matches are fetched; the number is how
+                            // many are shown, not how many there are.
+                            val shown = state.searchEpisodes.size
+                            header(if (shown >= EPISODE_RESULTS) "分集（最相关的 $shown 条）" else "分集（$shown）")
+                            results(state, playback, state.searchEpisodes, episodes = true)
                         }
                     }
                     VerticalScrollbarFor(gridState, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
@@ -173,8 +176,15 @@ private fun LazyGridScope.header(title: String) {
     }
 }
 
-private fun LazyGridScope.results(state: AppState, playback: PlaybackController, items: List<MediaItemDto>) {
-    items(items, key = { it.id }) { item ->
+private fun LazyGridScope.results(
+    state: AppState,
+    playback: PlaybackController,
+    items: List<MediaItemDto>,
+    episodes: Boolean = false
+) {
+    // An episode's picture is a 16:9 still; in a poster-shaped card it was cut
+    // down to a strip. Two cells wide, it keeps its shape.
+    items(items, key = { it.id }, span = { GridItemSpan(if (episodes) minOf(2, maxLineSpan) else 1) }) { item ->
         // As wide as the cell, like the library grid; pinned to 150dp it left a
         // strip of dead space on the right of every card.
         BoxWithConstraints {
@@ -182,10 +192,11 @@ private fun LazyGridScope.results(state: AppState, playback: PlaybackController,
             PosterCard(
                 item,
                 width = maxWidth,
-                shape = CardShape.PORTRAIT,
+                shape = if (episodes) CardShape.LANDSCAPE else CardShape.PORTRAIT,
                 // Which library it is in is part of the answer when two of them
-                // hold the same title.
-                subtitle = listOfNotNull(subtitleFor(item).takeIf { it.isNotBlank() }, libraryName)
+                // hold the same title. An episode already names its series, and
+                // the library name at the end of that line was always cut off.
+                subtitle = if (episodes) subtitleFor(item) else listOfNotNull(subtitleFor(item).takeIf { it.isNotBlank() }, libraryName)
                     .joinToString(" · "),
                 downloaded = state.downloadOf(item.id)?.state == DownloadState.DONE,
                 menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) },
@@ -229,3 +240,6 @@ private fun SearchStart(state: AppState, onPick: (String) -> Unit) {
         }
     }
 }
+
+/** How many episodes a search fetches; kept in step with AppState. */
+private const val EPISODE_RESULTS = 30

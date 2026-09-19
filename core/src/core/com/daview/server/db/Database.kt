@@ -286,6 +286,11 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                 // The container's chapters, as JSON. Null until someone plays
                 // the file and they are read; an empty list means "read, none".
                 "ALTER TABLE items ADD COLUMN chapters TEXT"
+            ),
+            listOf(
+                // The cast's names alone, one per line, for search. Matching
+                // the people JSON itself found every film with an "Actor" in it.
+                "ALTER TABLE items ADD COLUMN people_names TEXT"
             )
         )
     }

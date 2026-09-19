@@ -95,8 +95,10 @@ fun main() {
             onPreviewKeyEvent = { event ->
                 if (event.type != KeyEventType.KeyDown) false
                 else when {
+                    // Whatever is open inside the full-screen player closes
+                    // first; only then does Esc leave full screen.
                     event.key == Key.Escape && fullscreen.value -> {
-                        fullscreen.value = false
+                        if (!com.daview.app.data.InputTracker.handleEscape()) fullscreen.value = false
                         true
                     }
                     event.key == Key.F11 -> {
@@ -133,6 +135,7 @@ fun main() {
             }
 
             if (confirmClose) {
+                com.daview.app.data.ModalMarker()
                 AlertDialog(
                     onDismissRequest = { confirmClose = false },
                     title = { Text("还有正在播放的内容") },

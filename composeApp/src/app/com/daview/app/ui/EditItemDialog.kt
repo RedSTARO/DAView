@@ -55,15 +55,17 @@ fun EditItemDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
 
     fun save() {
         if (name.isBlank()) return
+        // Only the fields that were changed. Every one was sent before, so
+        // correcting a title also pinned the overview, the year and the genres
+        // against every later scrape.
+        val genreList = genres.split('、', ',', '/').map { it.trim() }.filter { it.isNotEmpty() }
         state.updateItem(
             item = item,
-            name = name.trim(),
-            originalName = originalName.trim(),
-            overview = overview.trim(),
-            year = year.toIntOrNull(),
-            genres = genres.split('、', ',', '/')
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
+            name = name.trim().takeIf { it != item.name },
+            originalName = originalName.trim().takeIf { it != item.originalName.orEmpty() },
+            overview = overview.trim().takeIf { it != item.overview.orEmpty() },
+            year = year.toIntOrNull().takeIf { it != item.year },
+            genres = genreList.takeIf { it != item.genres }
         )
         onDismiss()
     }

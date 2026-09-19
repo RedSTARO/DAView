@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -86,7 +87,14 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
     val open: (MediaItemDto) -> Unit = { state.navigate(Screen.Detail(it.id)) }
 
     if (!state.homeLoaded) {
-        LoadingPane()
+        val failed = state.homeError
+        if (failed != null && !state.homeRefreshing) {
+            EmptyState("首页读取失败", failed) {
+                Button(onClick = { state.refreshHome() }) { Text("重试") }
+            }
+        } else {
+            LoadingPane()
+        }
         return
     }
 
@@ -97,26 +105,39 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
 
     val listState = rememberLazyListState()
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val wide = maxWidth >= 600.dp
+        val wide = LocalRailShown.current
         // A share of the height the page actually has, not a fixed band: on a
         // phone held sideways a 380dp banner was the whole screen and more.
         val heroHeight = (maxHeight * 0.52f).coerceIn(220.dp, 460.dp)
         val scanning = state.scanStatus.filter { it.running }
+        // Over the banner's picture the corner is free; anywhere else it sat
+        // on the first row's "see all" or the scan banner's button.
+        val floatingRefresh = heroItem != null && scanning.isEmpty()
 
         // Pull down to refresh where there is a finger to pull with; the
         // desktop has F5 and the button in the corner.
         MaybePullToRefresh(
             enabled = !hasHoverPointer,
-            refreshing = state.homeRefreshing,
-            onRefresh = { state.refreshHome() }
+            refreshing = state.homePulling,
+            onRefresh = { state.refreshHome(pulled = true) }
         ) {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 32.dp)
         ) {
-            if (heroItem == null) {
-                item { Spacer(Modifier.windowInsetsPadding(WindowInsets.statusBars).height(16.dp)) }
+            if (!floatingRefresh) {
+                item(key = "header") {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .windowInsetsPadding(WindowInsets.statusBars)
+                            .padding(start = 20.dp, end = 12.dp, top = 8.dp),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        RefreshButton(state)
+                    }
+                }
             }
             // The running scan leads the page, where it can be seen; it used to
             // sit under every shelf, a couple of thousand dp down.
@@ -124,7 +145,7 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
                 item {
                     ScanBanner(
                         scanning,
-                        topInset = heroItem == null,
+                        topInset = true,
                         onOpen = { state.switchTo(Screen.Settings) }
                     )
                 }
@@ -169,8 +190,13 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
                         )
                     }
                     HomeSection.LATEST -> item(key = "latest") {
+                        // The banner falls back to the newest item when nothing
+                        // is in progress; the row then starts after it.
+                        val rows = if (heroItem != null && home.resume.isEmpty() && home.nextUp.isEmpty() &&
+                            heroItem.id == home.latest.firstOrNull()?.id
+                        ) home.latest.drop(1) else home.latest
                         MediaRow(
-                            "最近添加", home.latest, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
+                            "最近添加", rows, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
                             onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.LATEST)) },
                             downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
                         )
@@ -189,10 +215,10 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
                         MediaRow(
                             "${library.name} · 未观看",
                             home.unwatched[library.id].orEmpty(),
-                            onSeeAll = {
-                                state.updateView(library.id) { it.copy(onlyUnwatched = true) }
-                                state.switchTo(Screen.Library(library.id))
-                            },
+                            // A shelf of its own, like the other rows: switching
+                            // the library's own filter on stuck there, and
+                            // replaced the whole stack besides.
+                            onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.UNWATCHED, library.id)) },
                             downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
                         )
                     }
@@ -202,18 +228,24 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
         }
 
         // Somewhere to ask for fresh shelves that is not only F5 or a gesture.
-        Tooltip("刷新（F5）") {
-            FilledTonalIconButton(
-                onClick = { state.refreshHome() },
-                modifier = Modifier
+        if (floatingRefresh) {
+            Box(
+                Modifier
                     .align(Alignment.TopEnd)
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(12.dp)
-            ) {
-                Icon(Icons.Filled.Refresh, contentDescription = "刷新首页")
-            }
+            ) { RefreshButton(state) }
         }
         VerticalScrollbarFor(listState, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
+    }
+}
+
+@Composable
+private fun RefreshButton(state: AppState) {
+    Tooltip("刷新（F5）") {
+        FilledTonalIconButton(onClick = { state.refreshHome() }) {
+            Icon(Icons.Filled.Refresh, contentDescription = "刷新首页")
+        }
     }
 }
 
@@ -295,7 +327,9 @@ private fun HeroBanner(
     Box(
         Modifier
             .fillMaxWidth()
-            .height(height)
+            // At least this tall, and taller when the text needs it: on a
+            // short landscape screen a fixed band squeezed the buttons flat.
+            .heightIn(min = height)
             // The same menu its card has on the shelves below.
             .secondaryClick(onPointerType = { lastPointer = it }, onOpen = { menuAt = it })
             .combinedClickable(
@@ -310,15 +344,15 @@ private fun HeroBanner(
                 model = art,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.matchParentSize()
             )
         } else {
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHigh))
+            Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.surfaceContainerHigh))
         }
         // Dark behind the status bar icons at the top, dense behind the text at
         // the bottom, clear in between where the picture is.
         Box(
-            Modifier.fillMaxSize().background(
+            Modifier.matchParentSize().background(
                 Brush.verticalGradient(
                     0f to MaterialTheme.colorScheme.background.copy(alpha = 0.55f),
                     0.18f to Color.Transparent,
@@ -377,7 +411,7 @@ private fun HeroBanner(
                 }
             }
         }
-        DropdownMenu(
+        AppMenu(
             expanded = menuAt != null,
             onDismissRequest = { menuAt = null },
             offset = menuAt.toDpOffset(density).let { androidx.compose.ui.unit.DpOffset(it.x, it.y - height) }

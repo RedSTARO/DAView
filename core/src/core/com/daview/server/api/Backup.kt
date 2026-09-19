@@ -168,7 +168,7 @@ fun applyBackup(
 ): BackupSummaryDto {
     require(backup.format == BACKUP_FORMAT) { "不是 DAView 备份文件" }
     require(backup.version <= BACKUP_VERSION) {
-        "备份文件版本 ${backup.version} 比这个服务端（$BACKUP_VERSION）新"
+        "备份文件版本 ${backup.version} 比这个版本的 DAView（$BACKUP_VERSION）新，先更新应用再导入"
     }
 
     val settings = backup.settings
@@ -244,7 +244,16 @@ fun applyBackup(
     }
 
     backup.items.chunked(ITEM_PAGE).forEach { chunk ->
-        context.repository.upsertItems(chunk.map { it.toRecord() })
+        val records = chunk.map { entry -> entry.toRecord().let { it.copy(dto = portableArtwork(context, it.dto)) } }
+        context.repository.upsertItems(records)
+        // The row writer leaves these two alone — the scanner and the scraper
+        // share it and must not touch them — so a restore writes them itself.
+        // They used to be lost, and every hand edit was open to the next scrape.
+        records.forEach { record ->
+            val dto = record.dto
+            if (dto.manualFields.isNotEmpty()) context.repository.setManualFields(dto.id, dto.manualFields)
+            dto.communityRatingSource?.let { context.repository.setRatingSource(dto.id, it) }
+        }
     }
     var mergedUserData = 0
     backup.userData.forEach { row ->
@@ -308,6 +317,32 @@ internal fun ItemRecord.toBackup() = BackupItemDto(
     scrapedAt = scrapedAt,
     probedAt = probedAt
 )
+
+/**
+ * A poster or backdrop picked by hand is a file in the data directory of the
+ * device it was picked on. On any other device that path leads nowhere, and
+ * restoring it used to replace a working picture with none. Where the file is
+ * missing the picture this device already has is kept, and the field stops
+ * counting as typed by hand.
+ */
+private fun portableArtwork(context: ServerContext, dto: com.daview.shared.model.MediaItemDto): com.daview.shared.model.MediaItemDto {
+    fun missing(url: String?) = url != null && url.startsWith(FILE_URL) && !java.io.File(url.removePrefix(FILE_URL)).exists()
+    val posterMissing = missing(dto.posterUrl)
+    val backdropMissing = missing(dto.backdropUrl)
+    if (!posterMissing && !backdropMissing) return dto
+    val local = context.repository.item(dto.id)
+    return dto.copy(
+        posterUrl = if (posterMissing) local?.posterUrl?.takeUnless { missing(it) } else dto.posterUrl,
+        backdropUrl = if (backdropMissing) local?.backdropUrl?.takeUnless { missing(it) } else dto.backdropUrl,
+        manualFields = dto.manualFields.filterNot {
+            (posterMissing && it == com.daview.shared.model.ManualField.POSTER) ||
+                (backdropMissing && it == com.daview.shared.model.ManualField.BACKDROP)
+        }
+    )
+}
+
+/** What [com.daview.server.media.ImageCache] reads a local picture's address as. */
+private const val FILE_URL = "file:"
 
 private fun BackupItemDto.toRecord() = ItemRecord(
     dto = item,

@@ -153,7 +153,7 @@ actual fun InternalPlayer(
     /** The label of a just-mounted text subtitle, selected once media3 lists it. */
     var pendingMount by remember { mutableStateOf<String?>(null) }
     var playbackError by remember { mutableStateOf<String?>(null) }
-    var locked by remember { mutableStateOf(false) }
+    var locked by screenLocked(screen)
     /** What a gesture is doing, shown briefly in the middle of the picture. */
     var hint by remember { mutableStateOf<String?>(null) }
     var boosting by remember { mutableStateOf(false) }
@@ -248,14 +248,17 @@ actual fun InternalPlayer(
                 // the tracks. Media3 would otherwise play its own default.
                 if (!initialApplied) {
                     initialApplied = true
-                    audioStreams.firstOrNull { it.index == selectedAudio }
-                        ?.let { selectTrack(player, C.TRACK_TYPE_AUDIO, it, audioStreams) }
+                    val audioApplied = audioStreams.firstOrNull { it.index == selectedAudio }
+                        ?.let { selectTrack(player, C.TRACK_TYPE_AUDIO, it, audioStreams) } ?: false
                     if (!subtitlesOff) {
                         subtitleStreams.firstOrNull { it.index == selectedSubtitle }
                             ?.takeIf { !(it.isExternal && it.isAss) }
                             ?.let { selectTrack(player, C.TRACK_TYPE_TEXT, it, subtitleStreams) }
                     }
-                    return
+                    // Applied, the change comes back through here; not applied,
+                    // what media3 picked is what plays, and the tick in the menu
+                    // has to say so.
+                    if (audioApplied) return
                 }
                 pendingMount?.let { label ->
                     val group = tracks.groups.firstOrNull { group ->
@@ -313,6 +316,12 @@ actual fun InternalPlayer(
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 playing = isPlaying
+            }
+
+            // Media3's own settings menu has a speed list too. Its choice is
+            // kept like the app's own; the long press's double speed is not.
+            override fun onPlaybackParametersChanged(parameters: PlaybackParameters) {
+                if (!boosting && abs(parameters.speed - screen.speed) > 0.001f) screen.speed = parameters.speed
             }
         }
         player.addListener(listener)
@@ -375,8 +384,15 @@ actual fun InternalPlayer(
 
     // Size of media3's own text subtitles. An ASS script keeps the sizes its
     // author typeset and is not scaled.
-    LaunchedEffect(playerView, subtitleScale) {
-        playerView?.subtitleView?.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * subtitleScale)
+    val effectiveScale = screen.subtitleScale ?: subtitleScale
+    LaunchedEffect(playerView, effectiveScale) {
+        playerView?.subtitleView?.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * effectiveScale)
+    }
+
+    // Locked, the back gesture does nothing either: it is the easiest touch of
+    // all to make by accident.
+    androidx.activity.compose.BackHandler(enabled = locked && !inPictureInPicture) {
+        hint = "屏幕已锁定，点左侧的锁解锁"
     }
     LaunchedEffect(assView, screen.subtitleDelayMs) {
         assView?.delayMs = screen.subtitleDelayMs
@@ -666,7 +682,7 @@ actual fun InternalPlayer(
                     }
                     Box {
                         IconButton(onClick = { tuningMenu = true }) {
-                            Icon(Icons.Filled.Tune, contentDescription = "字幕延迟与播放速度", tint = Color.White)
+                            Icon(Icons.Filled.Tune, contentDescription = "字幕延迟、大小与播放速度", tint = Color.White)
                         }
                         DropdownMenu(tuningMenu, onDismissRequest = { tuningMenu = false }) {
                             val assShowing = assScript != null
@@ -680,6 +696,19 @@ actual fun InternalPlayer(
                                     TextButton(onClick = { screen.subtitleDelayMs -= 100 }) { Text("−0.1 秒") }
                                     TextButton(onClick = { screen.subtitleDelayMs += 100 }) { Text("+0.1 秒") }
                                     TextButton(onClick = { screen.subtitleDelayMs = 0 }, enabled = screen.subtitleDelayMs != 0L) { Text("归零") }
+                                }
+                            }
+                            HorizontalDivider()
+                            Text(
+                                if (assShowing) "字幕大小：ASS / SSA 按原样显示" else "字幕大小 ${(effectiveScale * 100).roundToInt()}%",
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                            if (!assShowing) {
+                                Row(Modifier.padding(horizontal = 8.dp)) {
+                                    TextButton(onClick = { screen.subtitleScale = (effectiveScale - 0.1f).coerceIn(0.5f, 3f) }) { Text("小一点") }
+                                    TextButton(onClick = { screen.subtitleScale = (effectiveScale + 0.1f).coerceIn(0.5f, 3f) }) { Text("大一点") }
+                                    TextButton(onClick = { screen.subtitleScale = null }, enabled = screen.subtitleScale != null) { Text("按设置") }
                                 }
                             }
                             HorizontalDivider()
@@ -931,11 +960,17 @@ private fun installGestures(
         }
     })
 
+    // Every touch that reaches the view itself is consumed: letting one through
+    // would have PlayerView toggle the controller on its own, and then the tap
+    // handler toggle it back.
     view.setOnTouchListener { _, event ->
         if (isLocked()) return@setOnTouchListener true
-        val handled = detector.onTouchEvent(event)
+        detector.onTouchEvent(event)
         if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
-            if (mode == Drag.SEEK) player.seekTo(seekTarget)
+            // Cancelled is the system taking the touch — the back gesture from
+            // the edge, most often — not the viewer letting go where they meant.
+            if (mode == Drag.SEEK && event.actionMasked == MotionEvent.ACTION_UP) player.seekTo(seekTarget)
+            if (mode == Drag.SEEK && event.actionMasked == MotionEvent.ACTION_CANCEL) onHint(null)
             boostedFrom?.let { speed ->
                 boostedFrom = null
                 player.playbackParameters = PlaybackParameters(speed)
@@ -943,7 +978,7 @@ private fun installGestures(
             }
             mode = Drag.NONE
         }
-        handled
+        true
     }
 }
 
@@ -997,7 +1032,7 @@ private val MediaStreamDto.isAss: Boolean
  * come before side-loaded ones. External subtitles are matched by label.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
-private fun selectTrack(player: ExoPlayer, trackType: Int, stream: MediaStreamDto, streamsOfType: List<MediaStreamDto>) {
+private fun selectTrack(player: ExoPlayer, trackType: Int, stream: MediaStreamDto, streamsOfType: List<MediaStreamDto>): Boolean {
     val groups: List<Tracks.Group> = player.currentTracks.groups.filter { it.type == trackType }
     val target = if (stream.isExternal) {
         groups.firstOrNull { group ->
@@ -1011,13 +1046,27 @@ private fun selectTrack(player: ExoPlayer, trackType: Int, stream: MediaStreamDt
                 id == number || id?.endsWith(":$number") == true
             }
         } ?: groups.getOrNull(streamsOfType.filter { !it.isExternal }.indexOfFirst { it.index == stream.index })
-    } ?: return
+    } ?: return false
 
     player.trackSelectionParameters = player.trackSelectionParameters
         .buildUpon()
         .setOverrideForType(TrackSelectionOverride(target.mediaTrackGroup, 0))
         .build()
+    return true
 }
+
+/** The lock lives on the screen, so it holds from one episode to the next. */
+@Composable
+private fun screenLocked(screen: PlayerScreenState): androidx.compose.runtime.MutableState<Boolean> =
+    remember(screen) {
+        object : androidx.compose.runtime.MutableState<Boolean> {
+            override var value: Boolean
+                get() = screen.locked
+                set(value) { screen.locked = value }
+            override fun component1() = value
+            override fun component2(): (Boolean) -> Unit = { value = it }
+        }
+    }
 
 /** The DAView stream behind the n-th media3 group of a type — the inverse of [selectTrack]. */
 @androidx.annotation.OptIn(UnstableApi::class)

@@ -22,6 +22,9 @@ private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; expli
 
 private val stringListSerializer = ListSerializer(String.serializer())
 private val personListSerializer = ListSerializer(PersonDto.serializer())
+
+/** The names in a cast list, one per line, as the search matches them. */
+private fun peopleNames(people: List<PersonDto>): String = people.joinToString("\n") { it.name }
 private val streamListSerializer = ListSerializer(MediaStreamDto.serializer())
 private val stringMapSerializer = MapSerializer(String.serializer(), String.serializer())
 private val providerListSerializer = ListSerializer(MetadataProvider.serializer())
@@ -52,6 +55,34 @@ data class ItemRecord(
 )
 
 class Repository(private val db: Database) {
+
+    init {
+        backfillPeopleNames()
+    }
+
+    /**
+     * Fills [peopleNames] in for rows written before the column existed. Runs
+     * until none are left without it, which after the first start is at once.
+     */
+    private fun backfillPeopleNames() {
+        val pending = db.read { connection ->
+            connection.statement("SELECT id, people FROM items WHERE people_names IS NULL")
+                .useQuery { rs -> rs.map { it.requireString("id") to it.getString("people") } }
+        }
+        if (pending.isEmpty()) return
+        db.transaction { connection ->
+            connection.statement("UPDATE items SET people_names = ? WHERE id = ?").use { statement ->
+                pending.forEach { (id, people) ->
+                    val names = runCatching {
+                        people?.let { json.decodeFromString(personListSerializer, it) }.orEmpty()
+                    }.getOrDefault(emptyList())
+                    statement.setString(1, peopleNames(names))
+                    statement.setString(2, id)
+                    statement.executeUpdate()
+                }
+            }
+        }
+    }
 
     // ------------------------------------------------------------ libraries
 
@@ -348,6 +379,15 @@ class Repository(private val db: Database) {
     }
 
     /** Hands every hand-typed field back to the scraper. */
+    /** Writes the hand-typed field list as given — for a restore, which carries it. */
+    fun setManualFields(itemId: String, fields: List<String>) = db.transaction { connection ->
+        connection.statement("UPDATE items SET manual_fields = ? WHERE id = ?").use {
+            if (fields.isEmpty()) it.setNull(1) else it.setString(1, json.encodeToString(stringListSerializer, fields))
+            it.setString(2, itemId)
+            it.executeUpdate()
+        }
+    }
+
     fun clearManualFields(itemId: String) = db.transaction { connection ->
         connection.statement("UPDATE items SET manual_fields = NULL WHERE id = ?")
             .use { it.setString(1, itemId); it.executeUpdate() }
@@ -389,6 +429,20 @@ class Repository(private val db: Database) {
         connection.statement(
             "UPDATE items SET locked_provider = NULL, scrape_status = NULL, scraped_at = NULL WHERE id = ?"
         ).use { it.setString(1, itemId); it.executeUpdate() }
+    }
+
+    /** Forgets a stored track choice, so the preferences decide again. */
+    fun clearTrackSelection(itemId: String, audio: Boolean, subtitle: Boolean) = db.transaction { connection ->
+        val sets = listOfNotNull(
+            "audio_stream_index = NULL".takeIf { audio },
+            "subtitle_stream_index = NULL".takeIf { subtitle }
+        )
+        if (sets.isEmpty()) return@transaction
+        connection.statement("UPDATE user_data SET ${sets.joinToString()}, updated_at = ? WHERE item_id = ?").use {
+            it.setLong(1, System.currentTimeMillis())
+            it.setString(2, itemId)
+            it.executeUpdate()
+        }
     }
 
     /**
@@ -693,7 +747,7 @@ class Repository(private val db: Database) {
             if (query.searchPeople) {
                 where.append(
                     " AND (i.name LIKE ? OR i.original_name LIKE ? OR i.sort_name LIKE ? " +
-                        "OR i.people LIKE ? OR i.genres LIKE ?)"
+                        "OR i.people_names LIKE ? OR i.genres LIKE ?)"
                 )
                 repeat(5) { binds += pattern }
             } else {
@@ -852,6 +906,7 @@ class Repository(private val db: Database) {
             """
             $SELECT_ITEM
             WHERE i.kind IN ('MOVIE','SERIES') $filter
+              AND i.merged_into IS NULL
               AND COALESCE(u.played, 0) = 0
               AND COALESCE(u.position_ms, 0) = 0
               AND NOT EXISTS (
@@ -1016,9 +1071,9 @@ class Repository(private val db: Database) {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(item_id) DO UPDATE SET
                 position_ms = excluded.position_ms,
-                -- Watching it again is the clearest possible sign that it
-                -- should be back on the shelf.
-                hidden_from_resume = 0, played = excluded.played,
+                -- hidden_from_resume is left alone: undoing a "mark watched"
+                -- must not bring back something taken off Continue Watching.
+                played = excluded.played,
                 play_count = excluded.play_count, favorite = excluded.favorite,
                 last_played_at = excluded.last_played_at,
                 audio_stream_index = excluded.audio_stream_index,
@@ -1265,7 +1320,10 @@ class Repository(private val db: Database) {
                 ON CONFLICT(item_id) DO UPDATE SET
                     played = excluded.played, position_ms = 0,
                     play_count = excluded.play_count,
-                    last_played_at = excluded.last_played_at, updated_at = excluded.updated_at
+                    -- Marking something unwatched is not watching it: the old
+                    -- time stays, or the series jumps to the front of Next Up.
+                    last_played_at = COALESCE(excluded.last_played_at, user_data.last_played_at),
+                    updated_at = excluded.updated_at
                 """.trimIndent()
             ).use {
                 val now = System.currentTimeMillis()
@@ -1273,7 +1331,7 @@ class Repository(private val db: Database) {
                 it.setInt(2, if (played) 1 else 0)
                 it.setString(3, itemId)
                 it.setInt(4, if (played) 1 else 0)
-                it.setLong(5, now)
+                if (played) it.setLong(5, now) else it.setNull(5)
                 it.setLong(6, now)
                 it.executeUpdate()
             }
@@ -1339,6 +1397,7 @@ class Repository(private val db: Database) {
         statement.setString(++i, json.encodeToString(stringListSerializer, dto.genres))
         statement.setString(++i, json.encodeToString(stringListSerializer, dto.studios))
         statement.setString(++i, json.encodeToString(personListSerializer, dto.people))
+        statement.setString(++i, peopleNames(dto.people))
         dto.indexNumber?.let { statement.setInt(++i, it) } ?: statement.setNull(++i)
         dto.parentIndexNumber?.let { statement.setInt(++i, it) } ?: statement.setNull(++i)
         statement.setString(++i, dto.posterUrl)
@@ -1474,13 +1533,13 @@ class Repository(private val db: Database) {
         const val ITEM_COLUMNS = """
                 id, library_id, kind, parent_id, series_id, name, original_name, sort_name, overview,
                 year, premiere_date, runtime_ms, community_rating, official_rating, genres, studios, people,
-                index_number, parent_index_number, poster_url, backdrop_url, logo_url, provider_ids,
+                people_names, index_number, parent_index_number, poster_url, backdrop_url, logo_url, provider_ids,
                 locked_provider, scrape_status, merged_into, path, size_bytes, media_streams,
                 date_created, date_modified, etag, scraped_at, probed_at
         """
 
         const val ITEM_PLACEHOLDERS =
-            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?"
 
         const val UPSERT_ITEM = """
             INSERT INTO items($ITEM_COLUMNS) VALUES ($ITEM_PLACEHOLDERS)
@@ -1491,6 +1550,7 @@ class Repository(private val db: Database) {
                 premiere_date = excluded.premiere_date, runtime_ms = excluded.runtime_ms,
                 community_rating = excluded.community_rating, official_rating = excluded.official_rating,
                 genres = excluded.genres, studios = excluded.studios, people = excluded.people,
+                people_names = excluded.people_names,
                 index_number = excluded.index_number, parent_index_number = excluded.parent_index_number,
                 poster_url = excluded.poster_url, backdrop_url = excluded.backdrop_url, logo_url = excluded.logo_url,
                 provider_ids = excluded.provider_ids, locked_provider = excluded.locked_provider,
@@ -1526,6 +1586,8 @@ class Repository(private val db: Database) {
                 genres = CASE WHEN items.scraped_at IS NULL THEN excluded.genres ELSE items.genres END,
                 studios = CASE WHEN items.scraped_at IS NULL THEN excluded.studios ELSE items.studios END,
                 people = CASE WHEN items.scraped_at IS NULL THEN excluded.people ELSE items.people END,
+                people_names = CASE WHEN items.scraped_at IS NULL
+                    THEN excluded.people_names ELSE items.people_names END,
                 poster_url = CASE WHEN items.scraped_at IS NULL THEN excluded.poster_url ELSE items.poster_url END,
                 backdrop_url = CASE WHEN items.scraped_at IS NULL
                     THEN excluded.backdrop_url ELSE items.backdrop_url END,

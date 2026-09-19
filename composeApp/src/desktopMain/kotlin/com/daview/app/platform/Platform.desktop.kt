@@ -195,8 +195,11 @@ actual fun requestNotificationPermission() = Unit
 fun chooseFile(title: String, extensions: List<String>): File? {
     val dialog = FileDialog(null as Frame?, title, FileDialog.LOAD).apply {
         directory = lastDirectory ?: System.getProperty("user.home")
-        setFilenameFilter { _, name -> extensions.any { name.endsWith(".$it", ignoreCase = true) } }
-        if (System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)) {
+        // No extensions is any file: an executable on macOS or Linux has none.
+        if (extensions.isNotEmpty()) {
+            setFilenameFilter { _, name -> extensions.any { name.endsWith(".$it", ignoreCase = true) } }
+        }
+        if (extensions.isNotEmpty() && System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)) {
             file = extensions.joinToString(";") { "*.$it" }
         }
         isVisible = true
@@ -225,12 +228,12 @@ actual suspend fun saveTextFile(suggestedName: String, write: (Appendable) -> Un
         val directory = dialog.directory
         val chosen = dialog.file ?: return@withContext null
         lastDirectory = directory
+        // A failed write is thrown, not turned into the null that means the
+        // dialog was cancelled — the caller has to be able to say which.
         withContext(Dispatchers.IO) {
             val target = File(directory, chosen)
-            runCatching {
-                target.bufferedWriter().use { write(it) }
-                target.absolutePath
-            }.getOrNull()
+            target.bufferedWriter().use { write(it) }
+            target.absolutePath
         }
     }
 

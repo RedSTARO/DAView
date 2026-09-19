@@ -39,15 +39,22 @@ object TrackMapping {
     /**
      * mpv `sid` for a DAView subtitle stream index. External files sit after
      * every embedded track, which is where `sub-add` puts them.
+     *
+     * [attached] is the external files that were actually added, when that is
+     * known: one that could not be fetched is not in mpv's list, and every file
+     * after it moves up a place.
      */
-    fun subtitleId(streams: List<MediaStreamDto>, index: Int?): Int? {
+    fun subtitleId(streams: List<MediaStreamDto>, index: Int?, attached: Set<Int>? = null): Int? {
         if (index == null) return null
         val embedded = embeddedSubtitles(streams)
         val embeddedPosition = embedded.indexOfFirst { it.index == index }
         if (embeddedPosition >= 0) return embeddedPosition + 1
-        val externalPosition = externalSubtitles(streams).indexOfFirst { it.index == index }
+        val externalPosition = attachedExternals(streams, attached).indexOfFirst { it.index == index }
         return if (externalPosition < 0) null else embedded.size + externalPosition + 1
     }
+
+    private fun attachedExternals(streams: List<MediaStreamDto>, attached: Set<Int>?): List<MediaStreamDto> =
+        externalSubtitles(streams).let { all -> if (attached == null) all else all.filter { it.index in attached } }
 
     /**
      * The way back: a DAView index for the track mpv says it is playing.
@@ -65,10 +72,10 @@ object TrackMapping {
         return embeddedAudio(streams).getOrNull(mpvId - 1)?.index
     }
 
-    fun subtitleIndex(streams: List<MediaStreamDto>, mpvId: Int?): Int? {
+    fun subtitleIndex(streams: List<MediaStreamDto>, mpvId: Int?, attached: Set<Int>? = null): Int? {
         if (mpvId == null || mpvId < 1) return null
         val embedded = embeddedSubtitles(streams)
         embedded.getOrNull(mpvId - 1)?.let { return it.index }
-        return externalSubtitles(streams).getOrNull(mpvId - 1 - embedded.size)?.index
+        return attachedExternals(streams, attached).getOrNull(mpvId - 1 - embedded.size)?.index
     }
 }

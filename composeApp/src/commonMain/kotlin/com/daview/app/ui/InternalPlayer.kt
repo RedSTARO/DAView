@@ -20,6 +20,15 @@ class PlayerScreenState {
 
     /** Playback speed. */
     var speed by mutableStateOf(1f)
+
+    /**
+     * Touch locked against pockets and small hands (Android). Kept across
+     * episodes: the next one rolling in is exactly when nobody is holding it.
+     */
+    var locked by mutableStateOf(false)
+
+    /** Subtitle size set from inside the player, over the app's setting. */
+    var subtitleScale by mutableStateOf<Float?>(null)
 }
 
 /**

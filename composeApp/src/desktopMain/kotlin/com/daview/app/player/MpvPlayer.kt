@@ -155,6 +155,9 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         option("msg-level", "all=v")
         // What the viewer had last time, rather than full volume every file.
         option("volume", config.volume.coerceIn(0, MAX_VOLUME).toString())
+        // mpv's own keys go up to 130 otherwise, past what the app's bar and
+        // its stored preference allow.
+        option("volume-max", MAX_VOLUME.toString())
         option("mute", if (config.muted) "yes" else "no")
         option("speed", String.format(Locale.ROOT, "%.2f", config.speed))
         option("sub-scale", String.format(Locale.ROOT, "%.2f", config.subtitleScale))
@@ -193,8 +196,9 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
      * in the order they are added, which is how the caller maps them back to
      * DAView's own stream indices.
      */
-    fun addSubtitle(url: String, title: String, language: String?) =
-        command("sub-add", url, "auto", title, language ?: "")
+    /** False when mpv could not add it — the file could not be fetched, usually. */
+    fun addSubtitle(url: String, title: String, language: String?): Boolean =
+        commandResult("sub-add", url, "auto", title, language ?: "") >= 0
 
     /**
      * Track selection is deliberately split from switching a track off.
@@ -346,6 +350,16 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
     var subtitleDelayMs: Long
         get() = property("sub-delay")?.toDoubleOrNull()?.let { (it * 1000).toLong() } ?: 0L
         set(value) = setProperty("sub-delay", String.format(Locale.ROOT, "%.3f", value / 1000.0))
+
+    /**
+     * The same values as the properties above, or null when mpv did not answer
+     * — shutting down, or not started yet. Reading them back into the stored
+     * preferences must not turn a failed read into "volume 100, speed 1".
+     */
+    val volumeOrNull: Int? get() = property("volume")?.toDoubleOrNull()?.toInt()
+    val mutedOrNull: Boolean? get() = property("mute")?.let { it == "yes" }
+    val speedOrNull: Float? get() = property("speed")?.toFloatOrNull()
+    val subtitleDelayOrNull: Long? get() = property("sub-delay")?.toDoubleOrNull()?.let { (it * 1000).toLong() }
 
     var subtitleScale: Float
         get() = property("sub-scale")?.toFloatOrNull() ?: 1f

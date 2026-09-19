@@ -301,23 +301,16 @@ actual fun PlatformPlayerSettings() {
     }
 }
 
-/** The platform chooser, for picking any player executable. */
+/**
+ * The platform chooser, for picking any player executable. Through the shared
+ * chooser, which filters in a way Windows' dialog honours and opens where the
+ * last one was left.
+ */
 private fun pickExecutable(): String? {
-    val dialog = FileDialog(null as Frame?, "选择播放器程序", FileDialog.LOAD).apply {
-        isVisible = true
-    }
-    val file = dialog.file ?: return null
-    return File(dialog.directory ?: "", file).absolutePath
+    val windows = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
+    return com.daview.app.platform.chooseFile("选择播放器程序", if (windows) listOf("exe") else emptyList())?.absolutePath
 }
 
 /** The platform chooser, filtered to shared libraries. */
-private fun pickLibrary(): String? {
-    val dialog = FileDialog(null as Frame?, "选择 libmpv", FileDialog.LOAD).apply {
-        setFilenameFilter { _, name ->
-            name.endsWith(".dll", true) || name.contains(".so") || name.endsWith(".dylib", true)
-        }
-        isVisible = true
-    }
-    val file = dialog.file ?: return null
-    return File(dialog.directory ?: "", file).absolutePath
-}
+private fun pickLibrary(): String? =
+    com.daview.app.platform.chooseFile("选择 libmpv", listOf("dll", "so", "dylib"))?.absolutePath

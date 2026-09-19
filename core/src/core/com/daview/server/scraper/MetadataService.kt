@@ -291,9 +291,44 @@ class MetadataService(
      * travel in the sync file, newest wins, and a plain delete would lose to the
      * copy still sitting in that file — the pin would be back on the next pull.
      */
-    fun unpin(item: MediaItemDto) {
+    fun unpin(item: MediaItemDto, order: List<MetadataProvider>, config: ScraperConfig) {
         repository.clearItemLock(item.id)
         repository.savePin(item.id, MetadataProvider.NONE.name, "")
+
+        // Matching again has to start from the folder, not from the pick being
+        // taken back: its ids would be looked up straight away and its title
+        // searched for, and the same entry would come back. Only ids the
+        // folder name itself carries survive, and fields typed in by hand.
+        val folder = folderTitle(item)
+        val manual = item.manualFields.toSet()
+        fun <T> typed(field: String, value: T, otherwise: T): T = if (field in manual) value else otherwise
+        val base = stripScrapedFields(item).copy(
+            name = typed(ManualField.NAME, item.name, folder.title.ifBlank { item.name }),
+            originalName = typed(ManualField.ORIGINAL_NAME, item.originalName, null),
+            overview = typed(ManualField.OVERVIEW, item.overview, null),
+            year = typed(ManualField.YEAR, item.year, folder.year ?: item.year),
+            genres = typed(ManualField.GENRES, item.genres, emptyList()),
+            posterUrl = typed(ManualField.POSTER, item.posterUrl, null),
+            backdropUrl = typed(ManualField.BACKDROP, item.backdropUrl, null),
+            providerIds = folder.providerIds,
+            lockedProvider = null,
+            scrapeStatus = ScrapeStatus.NONE
+        )
+        if (item.kind == ItemKind.SERIES) resetEpisodes(item.id)
+        if (enrichItem(base, order, config)) return
+
+        // Nothing matched on its own: the item goes back to what the folder
+        // says rather than keeping the details of the entry it was pinned to.
+        val record = repository.itemRecord(item.id) ?: return
+        repository.upsertItem(
+            record.copy(
+                dto = base.copy(
+                    sortName = NameParser.sortName(base.name),
+                    scrapeStatus = ScrapeStatus.UNMATCHED
+                ),
+                scrapedAt = null
+            )
+        )
     }
 
     /**

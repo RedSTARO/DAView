@@ -275,7 +275,7 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
                     TipIconButton("扫描", onClick = { scanMenu = true }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "扫描")
                     }
-                    DropdownMenu(scanMenu, onDismissRequest = { scanMenu = false }) {
+                    AppMenu(scanMenu, onDismissRequest = { scanMenu = false }) {
                         ScanMenuItems(state, library.id) { scanMenu = false }
                     }
                 }
@@ -428,6 +428,20 @@ private fun <T> ChoiceRow(label: String, options: List<Pair<T, String>>, selecte
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ChipChoiceRow(label: String, options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
+    Column(Modifier.padding(vertical = 6.dp)) {
+        Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(6.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { (value, text) ->
+                FilterChip(selected = value == selected, onClick = { onSelect(value) }, label = { Text(text) })
+            }
+        }
+    }
+}
+
 /** Tells the app while this form holds edits nobody saved, so leaving can ask first. */
 @Composable
 private fun DirtyTracker(state: AppState, section: String, dirty: Boolean) {
@@ -512,9 +526,12 @@ private fun StoredSecret(state: AppState, key: String, label: String, isSet: Boo
 private fun StorageSection(state: AppState) {
     val settings = state.serverSettings ?: return
     val scope = rememberCoroutineScope()
-    var url by remember(settings) { mutableStateOf(settings.storage.url) }
-    var user by remember(settings) { mutableStateOf(settings.storage.username) }
-    var password by remember(settings) { mutableStateOf("") }
+    // Keyed on the storage part alone: saving anything else on the page —
+    // the metadata language, a key — rebuilt this form and threw away what
+    // had been typed into it.
+    var url by remember(settings.storage) { mutableStateOf(settings.storage.url) }
+    var user by remember(settings.storage) { mutableStateOf(settings.storage.username) }
+    var password by remember(settings.storage) { mutableStateOf("") }
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
@@ -622,9 +639,11 @@ private fun StorageSection(state: AppState) {
 @Composable
 private fun ScraperSection(state: AppState) {
     val settings = state.serverSettings ?: return
-    var tmdb by remember(settings) { mutableStateOf("") }
-    var tvdb by remember(settings) { mutableStateOf("") }
-    var bangumi by remember(settings) { mutableStateOf("") }
+    // Emptied by save() itself; keyed on nothing, so clearing one key or saving
+    // the storage form does not empty the others.
+    var tmdb by remember { mutableStateOf("") }
+    var tvdb by remember { mutableStateOf("") }
+    var bangumi by remember { mutableStateOf("") }
     val dirty = tmdb.isNotEmpty() || tvdb.isNotEmpty() || bangumi.isNotEmpty()
     DirtyTracker(state, "scraper", dirty)
 
@@ -708,15 +727,17 @@ private fun PlaybackSection(state: AppState) {
             options = ResumeBehavior.entries.map { it to it.label },
             selected = state.resumeBehavior
         ) { state.changeResumeBehavior(it) }
-        ChoiceRow(
+        // Chips that wrap rather than a segmented row: six languages do not fit
+        // across a phone, which is why the list used to stop at three.
+        ChipChoiceRow(
             label = "首选音轨语言",
-            options = listOf("" to "默认") + PREFERRED_LANGUAGES.take(3),
-            selected = state.preferredAudioLanguage.takeIf { it.isBlank() || PREFERRED_LANGUAGES.take(3).any { p -> p.first == it } } ?: ""
+            options = listOf("" to "默认") + PREFERRED_LANGUAGES,
+            selected = state.preferredAudioLanguage
         ) { state.changePreferredAudioLanguage(it) }
-        ChoiceRow(
+        ChipChoiceRow(
             label = "首选字幕",
-            options = listOf("" to "默认", "zh-Hans" to "简体中文", "zh-Hant" to "繁体中文", SUBTITLE_PREF_OFF to "关闭"),
-            selected = state.preferredSubtitleLanguage.takeIf { it in setOf("", "zh-Hans", "zh-Hant", SUBTITLE_PREF_OFF) } ?: ""
+            options = listOf("" to "默认") + PREFERRED_LANGUAGES + (SUBTITLE_PREF_OFF to "关闭"),
+            selected = state.preferredSubtitleLanguage
         ) { state.changePreferredSubtitleLanguage(it) }
         Hint("只用于还没选过音轨和字幕的内容。在某一集里换了音轨或字幕，同一部剧的下一集会沿用那个选择。")
         ChoiceRow(
@@ -752,7 +773,7 @@ private fun DefaultPlayerRow(state: AppState) {
         }
         Box {
             TextButton(onClick = { open = true }) { Text("更改") }
-            DropdownMenu(open, onDismissRequest = { open = false }) {
+            AppMenu(open, onDismissRequest = { open = false }) {
                 DropdownMenuItem(
                     text = { Text("自动（按检测顺序）") },
                     onClick = { open = false; state.setPreferredPlayer("") }
@@ -821,7 +842,9 @@ private fun SyncSection(state: AppState) {
         val base = settings ?: SyncSettingsDto()
         val updated = state.library.updateSyncSettings(transform(base))
         settings = updated
-        path = updated.remotePath
+        // A path typed in and not yet saved stays; changing the interval used
+        // to put the saved one back over it.
+        if (path == base.remotePath) path = updated.remotePath
     }
 
     Column(Modifier.padding(horizontal = 20.dp)) {
@@ -992,11 +1015,16 @@ private fun BackupSection(state: AppState) {
                         )
                         busy = true
                         try {
-                            val saved = runCatching {
+                            // No file chosen is not a failure: the dialog was
+                            // closed, and nothing needs saying. A write that failed
+                            // says why.
+                            runCatching {
                                 saveTextFile(backupFileName()) { out -> chunks.forEach(out::append) }
-                            }.getOrNull()
-                            message = saved?.let { "已导出到 $it" }
-                            if (saved == null) error = "没有写入文件"
+                            }.onSuccess { saved ->
+                                message = saved?.let { "已导出到 $it" }
+                            }.onFailure {
+                                error = "导出失败：${it.message ?: it::class.simpleName}"
+                            }
                         } finally {
                             busy = false
                         }

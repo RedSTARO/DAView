@@ -83,14 +83,28 @@ class ManualEditsTest {
         repository.upsertItem(ItemRecord(dto = movie("p").copy(lockedProvider = MetadataProvider.TMDB)))
         repository.savePin("p", MetadataProvider.TMDB.name, "603")
 
-        service.unpin(fresh("p"))
+        service.unpin(fresh("p"), listOf(MetadataProvider.TMDB), config)
         val unlocked = fresh("p")
         assertNull(unlocked.lockedProvider)
-        assertEquals(ScrapeStatus.NONE, unlocked.scrapeStatus)
         assertEquals(MetadataProvider.NONE.name, repository.pin("p")?.provider, "the pin stays as a tombstone")
+        // The pinned id is not looked up again: matching starts from the folder,
+        // and this scraper's search finds nothing for it.
+        assertNull(unlocked.providerIds["tmdb"], "the pinned id must not be reused")
+        assertEquals(ScrapeStatus.UNMATCHED, unlocked.scrapeStatus)
+        assertNull(unlocked.overview, "the pinned entry's details go with it")
 
         service.enrichItem(unlocked, listOf(MetadataProvider.TMDB), config)
         assertNull(fresh("p").lockedProvider, "the tombstone must not lock the item again")
+    }
+
+    @Test
+    fun `unpinning keeps what was typed in by hand`() {
+        repository.upsertItem(ItemRecord(dto = movie("q").copy(lockedProvider = MetadataProvider.TMDB)))
+        repository.updateItemFields("q", name = "我改的片名", originalName = null, overview = null, year = null, genres = null)
+
+        service.unpin(fresh("q"), listOf(MetadataProvider.TMDB), config)
+
+        assertEquals("我改的片名", fresh("q").name)
     }
 }
 

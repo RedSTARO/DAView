@@ -156,6 +156,10 @@ actual fun InternalPlayer(
     var selectedSubtitle by remember { mutableStateOf(info.subtitleStreamIndex?.takeIf { it != SUBTITLE_OFF }) }
     /** A subtitle file picked from this computer for this session. */
     var mountedSubtitle by remember { mutableStateOf<String?>(null) }
+    /** The external subtitle files mpv actually took, once they are added. */
+    var attachedSubtitles by remember { mutableStateOf<Set<Int>?>(null) }
+    /** From opening the file until its first frame, which over the network is a while. */
+    var loading by remember { mutableStateOf(true) }
     var failure by remember { mutableStateOf<String?>(null) }
     var ending by remember { mutableStateOf<Ending?>(null) }
     val configured = remember { AtomicBoolean(false) }
@@ -223,7 +227,7 @@ actual fun InternalPlayer(
         selectedSubtitle = index
         mountedSubtitle = null
         if (index == null) player?.disableSubtitle()
-        else TrackMapping.subtitleId(info.item.mediaStreams, index)?.let { player?.selectSubtitle(it) }
+        else TrackMapping.subtitleId(info.item.mediaStreams, index, attachedSubtitles)?.let { player?.selectSubtitle(it) }
         report(subtitle = index)
     }
 
@@ -363,7 +367,10 @@ actual fun InternalPlayer(
                         // does nothing else: ending the film is the close button
                         // or `q`, not the key people press to get out of full
                         // screen.
-                        MSG_ESCAPE -> if (fullscreen?.value == true) fullscreen.value = false
+                        MSG_ESCAPE -> when {
+                            panel != null -> panel = null
+                            fullscreen?.value == true -> fullscreen.value = false
+                        }
                         MSG_PREVIOUS -> skip(info.previousItemId)
                         MSG_NEXT -> skip(info.nextItemId)
                         MSG_SKIP -> skipIntroAction()
@@ -379,7 +386,7 @@ actual fun InternalPlayer(
                         volume = PlayerPreferences.volume,
                         muted = PlayerPreferences.muted,
                         speed = screen.speed,
-                        subtitleScale = subtitleScale,
+                        subtitleScale = screen.subtitleScale ?: subtitleScale,
                         subtitleDelayMs = screen.subtitleDelayMs
                     )
                 )
@@ -395,16 +402,22 @@ actual fun InternalPlayer(
         unboundKeys = listOf(
             listOf("SHARP", "#") to MSG_AUDIO,
             listOf("j") to MSG_SUBTITLE,
-            listOf("f") to MSG_FULLSCREEN,
+            listOf("f", "F11") to MSG_FULLSCREEN,
             listOf("ESC", "ESCAPE") to MSG_ESCAPE,
             listOf("<") to MSG_PREVIOUS,
             listOf(">") to MSG_NEXT
         ).filterNot { (names, message) -> names.any { created.bindKey(it, message) } }
-            .map { (names, _) -> names.first() }
-        created.bindCommand("UP", "add volume 5")
-        created.bindCommand("DOWN", "add volume -5")
-        created.bindCommand("LEFT", "seek -5")
-        created.bindCommand("RIGHT", "seek 5")
+            .map { (names, _) -> names.first() } +
+            listOf(
+                "UP" to "add volume 5",
+                "DOWN" to "add volume -5",
+                "LEFT" to "seek -5",
+                "RIGHT" to "seek 5",
+                // mpv's defaults have these the other way round from the
+                // app's side and from the shortcut list.
+                "PGUP" to "add chapter -1",
+                "PGDWN" to "add chapter 1"
+            ).filterNot { (key, command) -> created.bindCommand(key, command) }.map { it.first }
         // What mpv's OSD shows as the title: the show, the episode number and
         // its name — the number was missing, which is the part that says where
         // in the run this is.
@@ -413,17 +426,19 @@ actual fun InternalPlayer(
         attachTracks = {
             // Every external subtitle is attached in a fixed order, because that
             // order is what TrackMapping turns DAView's indices into.
+            val added = mutableSetOf<Int>()
             TrackMapping.externalSubtitles(info.item.mediaStreams).forEach { stream ->
                 info.subtitleUrls[stream.index]?.let { url ->
-                    created.addSubtitle(url, stream.displayTitle, stream.language)
+                    if (created.addSubtitle(url, stream.displayTitle, stream.language)) added += stream.index
                 }
             }
+            attachedSubtitles = added
             TrackMapping.audioId(info.item.mediaStreams, selectedAudio)
                 ?.let { created.selectAudio(it) }
             if (selectedSubtitle == null) {
                 created.disableSubtitle()
             } else {
-                TrackMapping.subtitleId(info.item.mediaStreams, selectedSubtitle)
+                TrackMapping.subtitleId(info.item.mediaStreams, selectedSubtitle, added)
                     ?.let { created.selectSubtitle(it) }
             }
             chapters = created.chapters
@@ -443,11 +458,13 @@ actual fun InternalPlayer(
             TrackMapping.audioIndex(info.item.mediaStreams, active.audioId)
                 ?.let { if (it != selectedAudio) selectedAudio = it }
             if (mountedSubtitle == null) {
-                val applied = TrackMapping.subtitleId(info.item.mediaStreams, selectedSubtitle)
+                // A choice whose file never made it into mpv is not "off":
+                // it is kept, for the next time the file can be fetched.
+                val applied = TrackMapping.subtitleId(info.item.mediaStreams, selectedSubtitle, attachedSubtitles)
                 if (active.subtitleOff) {
                     if (selectedSubtitle != null && applied != null) selectedSubtitle = null
                 } else {
-                    TrackMapping.subtitleIndex(info.item.mediaStreams, active.subtitleId)
+                    TrackMapping.subtitleIndex(info.item.mediaStreams, active.subtitleId, attachedSubtitles)
                         ?.let { if (it != selectedSubtitle) selectedSubtitle = it }
                 }
             }
@@ -466,11 +483,14 @@ actual fun InternalPlayer(
             paused = active.paused
             // The keys on mpv's side change these too; the bar and the stored
             // preference follow whoever changed them.
-            active.volume.let { if (it != volume) { volume = it; PlayerPreferences.volume = it } }
-            active.muted.let { if (it != muted) { muted = it; PlayerPreferences.muted = it } }
-            active.speed.let { if (kotlin.math.abs(it - speed) > 0.001f) { speed = it; screen.speed = it } }
+            active.volumeOrNull?.let { if (it != volume) { volume = it; PlayerPreferences.volume = it } }
+            active.mutedOrNull?.let { if (it != muted) { muted = it; PlayerPreferences.muted = it } }
+            active.speedOrNull?.let { if (kotlin.math.abs(it - speed) > 0.001f) { speed = it; screen.speed = it } }
+            // mpv's z / x change the delay too.
+            active.subtitleDelayOrNull?.let { if (it != screen.subtitleDelayMs) screen.subtitleDelayMs = it }
             chapter = active.chapter
             val nowBuffering = active.buffering
+            if (loading && active.positionMs != null && !nowBuffering) loading = false
             bufferingPercent = if (nowBuffering) active.bufferingPercent else null
             if (nowBuffering && !buffering) bufferingSince = System.currentTimeMillis()
             buffering = nowBuffering
@@ -554,14 +574,17 @@ actual fun InternalPlayer(
                     panel = null
                     return
                 }
-                if (e.clickCount >= 2) {
-                    pendingClick?.cancel()
-                    toggleFullscreen()
-                } else {
-                    pendingClick = scope.launch {
-                        delay(DOUBLE_CLICK_MS)
+                when (e.clickCount) {
+                    1 -> pendingClick = scope.launch {
+                        delay(doubleClickMs())
                         player?.togglePause()
                     }
+                    2 -> {
+                        pendingClick?.cancel()
+                        toggleFullscreen()
+                    }
+                    // A third click is the end of a double click, not another.
+                    else -> pendingClick?.cancel()
                 }
             }
         }
@@ -594,6 +617,10 @@ actual fun InternalPlayer(
     LaunchedEffect(showControls, isFullscreen) {
         canvas.cursor = if (!showControls && isFullscreen) blankCursor else Cursor.getDefaultCursor()
     }
+
+    // Esc on the app's side, and in full screen before the window's own handler
+    // leaves full screen: an open list closes first.
+    com.daview.app.data.OnEscape(enabled = panel != null) { panel = null }
 
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
@@ -635,7 +662,7 @@ actual fun InternalPlayer(
                         true
                     }
                     event.key == Key.Q -> { if (ending == null) ending = Ending.ABANDONED; true }
-                    event.key == Key.Enter -> { skipIntroAction(); true }
+                    event.key == Key.Enter && failure == null -> { skipIntroAction(); true }
                     else -> false
                 }
             }
@@ -668,8 +695,13 @@ actual fun InternalPlayer(
     }
     skipIntroAction = { skipIntro() }
 
-    if (failure == null && introEnd != null && !showControls) {
-        SkipOverlay(canvas = canvas, onSkip = { skipIntro() })
+    // Shown for as long as the opening plays, above the controls when they are up.
+    if (failure == null && introEnd != null) {
+        SkipOverlay(
+            canvas = canvas,
+            lift = if (!showControls) 0 else if (panel == null) BAR_HEIGHT else BAR_HEIGHT + PANEL_HEIGHT,
+            onSkip = { skipIntro() }
+        )
     }
 
     if (failure == null) {
@@ -687,7 +719,7 @@ actual fun InternalPlayer(
                 volume = volume,
                 muted = muted,
                 speed = speed,
-                buffering = buffering,
+                buffering = buffering || loading,
                 bufferingPercent = bufferingPercent,
                 chapters = chapters,
                 chapter = chapter,
@@ -718,8 +750,10 @@ actual fun InternalPlayer(
                 onMountSubtitle = { panel = null; mountSubtitleFile() },
                 onSubtitleDelay = { changeSubtitleDelay(it) },
                 onSubtitleSize = { up ->
-                    val value = ((player?.subtitleScale ?: subtitleScale) + if (up) 0.1f else -0.1f).coerceIn(0.5f, 3f)
+                    val value = ((player?.subtitleScale ?: screen.subtitleScale ?: subtitleScale) + if (up) 0.1f else -0.1f).coerceIn(0.5f, 3f)
                     player?.subtitleScale = value
+                    // Kept for the next episode, as the delay is.
+                    screen.subtitleScale = value
                     player?.showText("字幕大小 ${(value * 100).toInt()}%", 1200)
                     stirred()
                 },
@@ -803,10 +837,12 @@ private fun ControlsOverlay(
                 focusableWindowState = false
                 isAutoRequestFocus = false
                 title = "DAView 播放控制"
+                keepOwnerFullscreen()
             }
         },
         dispose = { it.dispose() },
         update = { dialog ->
+            dialog.keepOwnerFullscreen()
             dialog.setBounds(area.x, area.y + area.height - overlayHeight, area.width, overlayHeight)
         }
     ) {
@@ -822,9 +858,30 @@ private fun ControlsOverlay(
     }
 }
 
+/**
+ * Stops this window from throwing the main window out of full screen.
+ *
+ * Skiko hangs a listener on every Compose window that, whenever the window is
+ * shown, applies that window's own full-screen flag through
+ * `GraphicsDevice.setFullScreenWindow` — and for a window that is not full
+ * screen that call is `setFullScreenWindow(null)`, which ends full screen for
+ * whichever window on the display had it. Every time the controls appeared,
+ * the film dropped out of full screen. The listener is attached when the
+ * window gets its native peer, so the peer is made here and the listener taken
+ * off before the window is ever shown. None of these windows is ever full
+ * screen itself, so nothing is lost.
+ */
+private fun java.awt.Window.keepOwnerFullscreen() {
+    if (!isDisplayable) addNotify()
+    // Internal to skiko, so matched by name.
+    componentListeners
+        .filter { it.javaClass.name == "org.jetbrains.skiko.FullscreenAdapter" }
+        .forEach { removeComponentListener(it) }
+}
+
 /** A small "skip the opening" button over the bottom right of the picture. */
 @Composable
-private fun SkipOverlay(canvas: Canvas, onSkip: () -> Unit) {
+private fun SkipOverlay(canvas: Canvas, lift: Int, onSkip: () -> Unit) {
     var bounds by remember { mutableStateOf<Rectangle?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -844,10 +901,13 @@ private fun SkipOverlay(canvas: Canvas, onSkip: () -> Unit) {
                 runCatching { isTransparent = true }
                 focusableWindowState = false
                 isAutoRequestFocus = false
+                keepOwnerFullscreen()
             }
         },
         dispose = { it.dispose() },
-        update = { dialog -> dialog.setBounds(area.x + area.width - 220, area.y + area.height - 100, 190, 64) }
+        update = { dialog ->
+            dialog.keepOwnerFullscreen()
+            dialog.setBounds(area.x + area.width - 220, area.y + area.height - 100 - lift, 190, 64) }
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Button(onClick = onSkip) { Text("跳过片头（Enter）") }
@@ -970,21 +1030,21 @@ private fun Controls(
         )
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            ControlButton(enabled = onPrevious != null, onClick = { onPrevious?.invoke() }) {
+            ControlButton("上一集（<）", enabled = onPrevious != null, onClick = { onPrevious?.invoke() }) {
                 Icon(Icons.Filled.SkipPrevious, contentDescription = "上一集（<）", tint = if (onPrevious != null) white else dim.copy(alpha = 0.35f))
             }
-            ControlButton(onClick = onTogglePause) {
+            ControlButton(if (paused) "播放（空格）" else "暂停（空格）", onClick = onTogglePause) {
                 Icon(
                     if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
                     contentDescription = if (paused) "播放（空格）" else "暂停（空格）",
                     tint = white
                 )
             }
-            ControlButton(enabled = onNext != null, onClick = { onNext?.invoke() }) {
+            ControlButton("下一集（>）", enabled = onNext != null, onClick = { onNext?.invoke() }) {
                 Icon(Icons.Filled.SkipNext, contentDescription = "下一集（>）", tint = if (onNext != null) white else dim.copy(alpha = 0.35f))
             }
             Spacer(Modifier.width(4.dp))
-            ControlButton(onClick = onToggleMute) {
+            ControlButton(if (muted) "取消静音（M）" else "静音（M）", onClick = onToggleMute) {
                 Icon(
                     if (muted || volume == 0) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                     contentDescription = if (muted) "取消静音（M）" else "静音（M）",
@@ -1001,33 +1061,34 @@ private fun Controls(
                 ),
                 modifier = Modifier.width(96.dp)
             )
+            Spacer(Modifier.width(8.dp))
             Text("${if (muted) 0 else volume}", color = dim, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(28.dp))
             Spacer(Modifier.weight(1f))
             TextButton(onClick = { onPanel(Panel.SPEED) }) {
                 Text(formatSpeed(speed), color = if (speed != 1f) MaterialTheme.colorScheme.secondary else white)
             }
             if (chapters.isNotEmpty()) {
-                ControlButton(onClick = { onPanel(Panel.CHAPTERS) }) {
+                ControlButton("章节（PgUp / PgDn）", onClick = { onPanel(Panel.CHAPTERS) }) {
                     Icon(Icons.AutoMirrored.Filled.Toc, contentDescription = "章节（PgUp / PgDn）", tint = white)
                 }
             }
-            ControlButton(onClick = { onPanel(Panel.AUDIO) }) {
+            ControlButton("音轨（#）", onClick = { onPanel(Panel.AUDIO) }) {
                 Icon(Icons.Filled.Audiotrack, contentDescription = "音轨（#）", tint = white)
             }
-            ControlButton(onClick = { onPanel(Panel.SUBTITLE) }) {
+            ControlButton("字幕（J）", onClick = { onPanel(Panel.SUBTITLE) }) {
                 Icon(Icons.Filled.ClosedCaption, contentDescription = "字幕（J）", tint = white)
             }
-            ControlButton(onClick = { onPanel(Panel.SUBTITLE_TUNING) }) {
+            ControlButton("字幕延迟与大小", onClick = { onPanel(Panel.SUBTITLE_TUNING) }) {
                 Icon(Icons.Filled.Tune, contentDescription = "字幕延迟与大小", tint = white)
             }
-            ControlButton(onClick = onToggleFullscreen) {
+            ControlButton(if (fullscreen) "退出全屏（Esc / F）" else "全屏（F / 双击画面）", onClick = onToggleFullscreen) {
                 Icon(
                     if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
                     contentDescription = if (fullscreen) "退出全屏（Esc / F）" else "全屏（F / 双击画面）",
                     tint = white
                 )
             }
-            ControlButton(onClick = onClose) {
+            ControlButton("结束播放（Q）", onClick = onClose) {
                 Icon(Icons.Filled.Close, contentDescription = "结束播放（Q）", tint = white)
             }
         }
@@ -1227,9 +1288,26 @@ private fun PanelTitle(text: String) {
  * which is the picture, and the bar's own window is too short to hold it. The
  * label goes to the screen reader and every key is listed under 设置 → 通用.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun ControlButton(enabled: Boolean = true, onClick: () -> Unit, content: @Composable () -> Unit) {
-    IconButton(onClick = onClick, enabled = enabled) { content() }
+private fun ControlButton(tip: String, enabled: Boolean = true, onClick: () -> Unit, content: @Composable () -> Unit) {
+    // Above the button, inside the controls' own window: a tooltip below it
+    // would fall outside the window and not be drawn.
+    androidx.compose.foundation.TooltipArea(
+        tooltip = {
+            Surface(color = Color(0xE6202020), contentColor = Color.White, shape = MaterialTheme.shapes.small) {
+                Text(tip, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+            }
+        },
+        delayMillis = 400,
+        tooltipPlacement = androidx.compose.foundation.TooltipPlacement.ComponentRect(
+            anchor = Alignment.TopCenter,
+            alignment = Alignment.TopCenter,
+            offset = androidx.compose.ui.unit.DpOffset(0.dp, (-4).dp)
+        )
+    ) {
+        IconButton(onClick = onClick, enabled = enabled) { content() }
+    }
 }
 
 /** A read-only status in the same register as the rest of the bar. */
@@ -1361,7 +1439,9 @@ private const val TICK_MS = 250L
 private const val CHROME_LINGER_MS = 3000L
 
 /** How long a first click waits to see whether it is the start of a double click. */
-private const val DOUBLE_CLICK_MS = 250L
+/** The system's double-click time; Windows' default is 500 ms, not the 250 once assumed here. */
+private fun doubleClickMs(): Long =
+    (java.awt.Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval") as? Int)?.toLong() ?: 500L
 
 /** mpv's own step, so ← and → mean the same whichever side has the keyboard. */
 private const val SEEK_STEP_SECONDS = 5

@@ -46,6 +46,14 @@ object NotificationPermission {
             PackageManager.PERMISSION_GRANTED
         if (granted) return
         asked = true
+        // Said before the system asks, which gives no reason of its own.
+        runCatching {
+            android.widget.Toast.makeText(
+                activity,
+                "扫描和下载在后台运行时，进度显示在通知栏，需要通知权限。",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
         runCatching { launcher?.launch(Manifest.permission.POST_NOTIFICATIONS) }
     }
 }

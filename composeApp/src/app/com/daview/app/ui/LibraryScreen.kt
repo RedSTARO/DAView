@@ -114,9 +114,19 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
     // Filed with this page's stack entry, so it is still here when the page is
     // come back to — which is the loop picking something to watch actually is.
     val gridState = rememberLazyGridState()
+    // The list view's own position. Jumping to a letter and "back to the top
+    // after a new order" only ever moved the grid's, so in the list they did
+    // nothing at all.
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    suspend fun scrollTo(position: Int) {
+        if (view.layout == LibraryLayout.LIST) listState.scrollToItem(position) else gridState.scrollToItem(position)
+    }
 
     var searchOpen by rememberSaveable(libraryId) { mutableStateOf(state.searchOf(libraryId).isNotBlank()) }
     var searchText by rememberSaveable(libraryId) { mutableStateOf(state.searchOf(libraryId)) }
+    // Set when the field is opened by hand; only then does it take the focus.
+    // Coming back to the page with it open used to pull the keyboard up again.
+    var focusSearch by remember { mutableStateOf(false) }
     var selection by remember(libraryId) { mutableStateOf<Set<String>?>(null) }
     var editOpen by remember { mutableStateOf(false) }
 
@@ -127,13 +137,24 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
             .collect { state.setLibrarySearch(libraryId, it) }
     }
 
+    // "Clear filters" clears the search as well; the field has to say so,
+    // or it shows words the list is no longer filtered by.
+    LaunchedEffect(libraryId) {
+        snapshotFlow { state.searchOf(libraryId) }.collect { stored ->
+            if (stored.isEmpty() && searchText.isNotEmpty()) {
+                searchText = ""
+                searchOpen = false
+            }
+        }
+    }
+
     // A new order or filter starts from the top of it.
     LaunchedEffect(libraryId) {
         var seen = state.libraryScrollToTop
         snapshotFlow { state.libraryScrollToTop }.collect {
             if (it != seen) {
                 seen = it
-                gridState.scrollToItem(0)
+                scrollTo(0)
             }
         }
     }
@@ -187,6 +208,7 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
             ) {
                 TipIconButton(if (searchOpen) "关闭库内搜索（Esc）" else "在这个媒体库里搜索", onClick = {
                     searchOpen = !searchOpen
+                    focusSearch = searchOpen
                     if (!searchOpen) searchText = ""
                 }) {
                     Icon(
@@ -197,7 +219,7 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
                 if (view.sort == "sortName") LetterJump(state, libraryId, view.descending) { position ->
                     scope.launch {
                         state.ensureLibraryLoaded(libraryId, position)
-                        gridState.scrollToItem(position.coerceIn(0, (state.libraryItems.size - 1).coerceAtLeast(0)))
+                        scrollTo(position.coerceIn(0, (state.libraryItems.size - 1).coerceAtLeast(0)))
                     }
                 }
                 TipIconButton(
@@ -230,7 +252,12 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
         if (searchOpen && selected == null) {
             val focus = remember { FocusRequester() }
             // It opens to be typed into; a second click on the field was needed.
-            LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+            LaunchedEffect(Unit) {
+                if (focusSearch) {
+                    focusSearch = false
+                    runCatching { focus.requestFocus() }
+                }
+            }
             OutlinedTextField(
                 value = searchText,
                 onValueChange = { searchText = it },
@@ -299,7 +326,7 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
                 }
             }
 
-            view.layout == LibraryLayout.LIST -> LibraryList(state, playback, selection) { id ->
+            view.layout == LibraryLayout.LIST -> LibraryList(state, playback, selection, listState) { id ->
                 selection = selection?.let { if (id in it) it - id else it + id }
             }
 
@@ -430,7 +457,7 @@ private fun <T> ChoiceChip(label: String, selected: Boolean, options: List<Pair<
             label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             trailingIcon = { Icon(Icons.Filled.ArrowDropDown, contentDescription = null) }
         )
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        AppMenu(expanded = open, onDismissRequest = { open = false }) {
             options.forEach { (value, text) ->
                 DropdownMenuItem(
                     text = { Text(text) },
@@ -458,7 +485,7 @@ private fun LetterJump(state: AppState, libraryId: String, descending: Boolean, 
         TipIconButton("按首字母跳转", onClick = { open = true }) {
             Icon(Icons.Filled.SortByAlpha, contentDescription = "按首字母跳转")
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        AppMenu(expanded = open, onDismissRequest = { open = false }) {
             fun jump(boundary: String) {
                 open = false
                 scope.launch { onPosition(state.libraryPosition(libraryId, boundary)) }
@@ -502,7 +529,7 @@ private fun LibraryMoreMenu(
         TipIconButton("更多", onClick = { open = true }) {
             Icon(Icons.Filled.MoreVert, contentDescription = "更多操作")
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        AppMenu(expanded = open, onDismissRequest = { open = false }) {
             ScanMenuItems(state, libraryId) { open = false }
             HorizontalDivider()
             if (showDensity) {
@@ -537,9 +564,9 @@ private fun LibraryList(
     state: AppState,
     playback: PlaybackController,
     selection: Set<String>?,
+    listState: androidx.compose.foundation.lazy.LazyListState,
     onToggle: (String) -> Unit
 ) {
-    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collect { last ->
             val id = state.libraryItemsOf ?: return@collect
@@ -649,7 +676,7 @@ fun ListEntry(
                 }
             }
         }
-        DropdownMenu(
+        AppMenu(
             expanded = menuAt != null && selected == null,
             onDismissRequest = { menuAt = null },
             offset = menuAt.toDpOffset(density)
@@ -682,7 +709,7 @@ fun SelectionBar(
         var open by remember { mutableStateOf(false) }
         Box {
             FilledTonalButton(onClick = { open = true }, enabled = count > 0) { Text("操作") }
-            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            AppMenu(expanded = open, onDismissRequest = { open = false }) {
                 DropdownMenuItem(text = { Text("标记为已观看") }, onClick = {
                     open = false; state.markMany(items, true); onClose()
                 })

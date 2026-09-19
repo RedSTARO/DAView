@@ -149,7 +149,10 @@ fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                         onValueChange = { query = it },
                         label = { Text("搜索要并入的条目") },
                         singleLine = true,
-                        enabled = !busy,
+                        // Read-only rather than disabled while a search runs: a
+                        // disabled field drops the focus, and the cursor was
+                        // gone after every search.
+                        readOnly = busy,
                         // Enter searches; the only way used to be the button below.
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { run {} }),

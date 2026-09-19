@@ -50,14 +50,16 @@ sealed interface Screen {
     data class Player(val itemId: String) : Screen
 
     /** Everything on one of the home shelves, not only the first two dozen. */
-    data class Shelf(val kind: ShelfKind) : Screen
+    /** [libraryId] is for the shelves that belong to one library. */
+    data class Shelf(val kind: ShelfKind, val libraryId: String? = null) : Screen
 }
 
 enum class ShelfKind(val title: String) {
     RESUME("继续观看"),
     NEXT_UP("接下来"),
     LATEST("最近添加"),
-    FAVOURITES("收藏")
+    FAVOURITES("收藏"),
+    UNWATCHED("未观看")
 }
 
 /**
@@ -612,13 +614,25 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     /** The screens on the stack, for putting it back after the process was reclaimed. */
-    fun encodeStack(): List<String> = backStack.mapNotNull { it.screen.encode() }
+    fun encodeStack(): List<String> = backStack.mapNotNull { entry ->
+        entry.screen.encode()?.let { "${entry.key}|$it" }
+    }
 
+    /**
+     * Puts the stack back with the keys it had. Each page's saved state — the
+     * scroll position, what was typed in the search box — is filed under its
+     * key; new keys found nothing, and the pages came back at the top.
+     */
     fun restoreStack(encoded: List<String>) {
-        val screens = encoded.mapNotNull(::decodeScreen)
-        if (screens.isEmpty() || screens == listOf(Screen.Home)) return
+        val entries = encoded.mapNotNull { line ->
+            val key = line.substringBefore('|', "").toLongOrNull()
+            val screen = decodeScreen(if (key != null) line.substringAfter('|') else line) ?: return@mapNotNull null
+            BackStackEntry(screen, key ?: nextKey++)
+        }
+        if (entries.isEmpty() || entries.map { it.screen } == listOf(Screen.Home)) return
         backStack.clear()
-        screens.forEach { backStack.add(entry(it)) }
+        backStack.addAll(entries)
+        nextKey = maxOf(nextKey, entries.maxOf { it.key } + 1)
         onEnter(current, returning = false)
     }
 
@@ -634,7 +648,7 @@ class AppState(private val scope: CoroutineScope) {
                 refreshLibraries()
                 loadServerSettings()
             }
-            is Screen.Shelf -> loadShelf(screen.kind)
+            is Screen.Shelf -> loadShelf(screen)
             else -> Unit
         }
     }
@@ -676,7 +690,7 @@ class AppState(private val scope: CoroutineScope) {
                 refreshLibraries()
                 loadServerSettings()
             }
-            is Screen.Shelf -> loadShelf(screen.kind)
+            is Screen.Shelf -> loadShelf(screen)
             is Screen.Search -> {
                 searchedFor = null
                 search(searchQuery)
@@ -726,12 +740,31 @@ class AppState(private val scope: CoroutineScope) {
     var homeRefreshing by mutableStateOf(false)
         private set
 
-    fun refreshHome() = run {
+    /**
+     * True only for a refresh the viewer asked for by pulling. Every automatic
+     * one — returning to the page, a scan finishing — used to spin the pull
+     * indicator too.
+     */
+    var homePulling by mutableStateOf(false)
+        private set
+
+    /** Why the home page could not be read the first time; it spun for ever. */
+    var homeError by mutableStateOf<String?>(null)
+        private set
+
+    fun refreshHome(pulled: Boolean = false) = scope.launch {
         homeRefreshing = true
+        if (pulled) homePulling = true
         try {
             loadHome()
+            homeError = null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            if (homeLoaded) notify(describe(e)) else homeError = describe(e)
         } finally {
             homeRefreshing = false
+            if (pulled) homePulling = false
         }
     }
 
@@ -919,26 +952,37 @@ class AppState(private val scope: CoroutineScope) {
 
     var shelfItems by mutableStateOf<List<MediaItemDto>>(emptyList())
         private set
-    var shelfOf by mutableStateOf<ShelfKind?>(null)
+    var shelfOf by mutableStateOf<Screen.Shelf?>(null)
         private set
     var shelfLoading by mutableStateOf(false)
         private set
 
-    fun loadShelf(kind: ShelfKind) {
-        if (shelfOf != kind) {
+    /** Why the shelf could not be read, for the page to say so and offer a retry. */
+    var shelfError by mutableStateOf<String?>(null)
+        private set
+
+    fun loadShelf(shelf: Screen.Shelf) {
+        if (shelfOf != shelf) {
             shelfItems = emptyList()
             shelfOf = null
         }
         shelfLoading = true
-        run {
+        shelfError = null
+        scope.launch {
             try {
-                shelfItems = when (kind) {
+                shelfItems = when (shelf.kind) {
                     ShelfKind.RESUME -> library.resume(200, links)
                     ShelfKind.NEXT_UP -> library.nextUp(200, links)
                     ShelfKind.LATEST -> library.latest(null, 200, links)
                     ShelfKind.FAVOURITES -> library.items(links, favorite = true, sort = "sortName", limit = 500).items
+                    ShelfKind.UNWATCHED -> shelf.libraryId?.let { library.unwatched(it, 500, links) }.orEmpty()
                 }
-                shelfOf = kind
+                shelfOf = shelf
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Said on the page, with a retry; it used to spin for ever.
+                if (shelfOf == shelf) notify(describe(e)) else shelfError = describe(e)
             } finally {
                 shelfLoading = false
             }
@@ -975,6 +1019,7 @@ class AppState(private val scope: CoroutineScope) {
             val seasonId = when {
                 item.kind == ItemKind.EPISODE -> item.parentId
                 detailItem?.id == itemId && seasons.any { it.id == detailSeasonId } -> detailSeasonId
+                seasonChoices[itemId]?.let { chosen -> seasons.any { it.id == chosen } } == true -> seasonChoices[itemId]
                 else -> seasons.firstOrNull { it.id == nextUp?.parentId }?.id ?: seasons.firstOrNull()?.id
             }
             val episodes = seasonId?.let { library.children(it, links) } ?: emptyList()
@@ -995,9 +1040,17 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     fun selectSeason(seasonId: String) = run {
+        detailItem?.id?.let { seasonChoices[it] = seasonId }
         detailSeasonId = seasonId
         detailEpisodes = library.children(seasonId, links)
     }
+
+    /**
+     * The season picked on each series page this run. Opening an episode from
+     * the list replaces the page's item, so on the way back the page is built
+     * afresh — and it used to fall back to the next-up season every time.
+     */
+    private val seasonChoices = HashMap<String, String>()
 
     // ------------------------------------------------------------ search
 
@@ -1215,7 +1268,7 @@ class AppState(private val scope: CoroutineScope) {
             searchedFor = null
             search(searchQuery)
         }
-        (current as? Screen.Shelf)?.let { loadShelf(it.kind) }
+        (current as? Screen.Shelf)?.let { loadShelf(it) }
         refreshHome()
     }
 
@@ -1296,18 +1349,19 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     /** Writes fields a person corrected by hand. Blank fields are cleared. */
+    /** Null is "not changed": only what was changed is written, and marked as typed by hand. */
     fun updateItem(
         item: MediaItemDto,
-        name: String,
-        originalName: String,
-        overview: String,
+        name: String?,
+        originalName: String?,
+        overview: String?,
         year: Int?,
-        genres: List<String>
+        genres: List<String>?
     ) = run {
         val updated = library.updateItem(
             id = item.id,
             links = links,
-            name = name.takeIf { it.isNotBlank() },
+            name = name?.takeIf { it.isNotBlank() },
             originalName = originalName,
             overview = overview,
             year = year,
@@ -1354,9 +1408,22 @@ class AppState(private val scope: CoroutineScope) {
 
     fun setTrackSelection(item: MediaItemDto, audio: Int?, subtitle: Int?) = run {
         library.setTrackSelection(item.id, audio, subtitle)
+        trackChoiceChanged(item)
+    }
+
+    /** Back to "automatic": the language preferences and the file's defaults decide. */
+    fun resetTrackSelection(item: MediaItemDto, audio: Boolean) = run {
+        library.clearTrackSelection(item.id, audio = audio, subtitle = !audio)
+        trackChoiceChanged(item)
+    }
+
+    private suspend fun trackChoiceChanged(item: MediaItemDto) {
         val fresh = library.item(item.id, links)
         replaceEverywhere(fresh)
         detailEpisodes = detailEpisodes.map { if (it.id == fresh.id) fresh else it }
+        // On a series page the pickers belong to its next episode, which is
+        // kept apart from the lists above; the label did not move before.
+        if (detailNextUp?.id == fresh.id) detailNextUp = fresh
     }
 
     // ------------------------------------------------------------ scanning
@@ -1493,7 +1560,7 @@ fun Screen.encode(): String? = when (this) {
     is Screen.Detail -> "detail:$itemId"
     Screen.Search -> "search"
     Screen.Settings -> "settings"
-    is Screen.Shelf -> "shelf:${kind.name}"
+    is Screen.Shelf -> "shelf:${kind.name}" + (libraryId?.let { ":$it" } ?: "")
     // A player cannot be put back: the session behind it is gone.
     is Screen.Player -> null
 }
@@ -1507,7 +1574,8 @@ fun decodeScreen(value: String): Screen? {
         "detail" -> arg.takeIf { it.isNotBlank() }?.let { Screen.Detail(it) }
         "search" -> Screen.Search
         "settings" -> Screen.Settings
-        "shelf" -> ShelfKind.entries.firstOrNull { it.name == arg }?.let { Screen.Shelf(it) }
+        "shelf" -> ShelfKind.entries.firstOrNull { it.name == arg.substringBefore(':') }
+            ?.let { Screen.Shelf(it, arg.substringAfter(':', "").ifBlank { null }) }
         else -> null
     }
 }

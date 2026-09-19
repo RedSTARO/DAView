@@ -67,7 +67,9 @@ fun PlayerScreen(state: AppState, playback: PlaybackController) {
 
     Box(Modifier.fillMaxSize().background(if (external) MaterialTheme.colorScheme.background else Color.Black)) {
         when {
-            upNext != null -> UpNextCard(playback, upNext)
+            // Once the next episode is opening, the card that offered it goes:
+            // pressing it again would start a second one.
+            upNext != null && !playback.starting -> UpNextCard(playback, upNext)
             info == null -> if (playback.starting) Switching(playback.startingName) else EmptyState(
                 "没有正在播放的内容",
                 "回到媒体库选择要播放的影片。"
@@ -257,14 +259,18 @@ fun ExternalPlaybackPanel(state: AppState, playback: PlaybackController) {
                     // Browsing while the film plays: the panel steps aside and
                     // the player keeps going. The only way out used to be the
                     // button that also killed the player.
-                    FilledTonalButton(onClick = { playback.leaveExternalPanel() }) {
-                        Text("返回浏览")
+                    // Only where the app can tell when the player exits; on a
+                    // phone the film is in another app, and leaving here ends it.
+                    if (playback.canBrowseDuringExternal) {
+                        FilledTonalButton(onClick = { playback.leaveExternalPanel() }) {
+                            Text("返回浏览")
+                        }
                     }
                     TextButton(onClick = {
                         playback.stopExternal()
                         state.back()
                     }) {
-                        Text("结束播放并关闭 $label")
+                        Text(if (playback.canBrowseDuringExternal) "结束播放并关闭 $label" else "结束播放")
                     }
                 }
 

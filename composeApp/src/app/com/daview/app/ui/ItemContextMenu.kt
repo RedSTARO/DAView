@@ -279,7 +279,8 @@ fun ColumnScope.ItemMenuItems(
                     DownloadState.DONE -> state.confirm(
                         Confirmation(
                             title = "删除「${item.name}」的本地文件？",
-                            text = "删除后这一集要再联网播放或重新下载。${formatSize(existing.totalBytes)}".trim(),
+                            text = ("删除后${if (item.kind == ItemKind.EPISODE) "这一集" else "它"}要再联网播放或重新下载。" +
+                                formatSize(existing.totalBytes)).trim(),
                             confirmLabel = "删除",
                             destructive = true,
                             action = { state.removeDownload(item.id) }

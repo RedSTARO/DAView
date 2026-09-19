@@ -323,6 +323,9 @@ class MediaFacade(private val context: ServerContext) {
     suspend fun setTrackSelection(id: String, audio: Int?, subtitle: Int?) =
         io { context.repository.setTrackSelection(id, audio, subtitle) }
 
+    suspend fun clearTrackSelection(id: String, audio: Boolean, subtitle: Boolean) =
+        io { context.repository.clearTrackSelection(id, audio, subtitle) }
+
     /** Hands every hand-typed field back to the scraper and scrapes again. */
     suspend fun revertManualEdits(id: String, links: AssetLinks): MediaItemDto = io {
         context.repository.item(id) ?: notFound("条目不存在")
@@ -333,8 +336,8 @@ class MediaFacade(private val context: ServerContext) {
     /** Takes a manual identify off and lets the item match on its own again. */
     suspend fun unpin(id: String, links: AssetLinks): MediaItemDto = io {
         val item = identifiable(id)
-        context.metadata.unpin(item)
-        refreshItem(id, links)
+        context.metadata.unpin(item, context.providerOrderFor(item), context.scraperConfigFor(item))
+        (context.repository.item(id) ?: item).withAssetUrls(links)
     }
 
     /**
@@ -531,11 +534,16 @@ class MediaFacade(private val context: ServerContext) {
         val audio = TrackChoice.audio(item, previousChoice, request.preferredAudioLanguage)
         val subtitle = TrackChoice.subtitle(item, previousChoice, request.preferredSubtitleLanguage)
 
+        // Where the viewer asked to start — the beginning, for "play from the
+        // start" — or else where they stopped. The player is told the same
+        // place the session starts from; it used to be told the stored one
+        // whatever was asked for, so "from the start" resumed anyway.
+        val startAt = request.startPositionMs ?: userData.positionMs
         val session = context.playback.start(
             item = item,
             player = request.player,
             deviceName = request.deviceName,
-            startPositionMs = request.startPositionMs ?: userData.positionMs,
+            startPositionMs = startAt,
             audioStreamIndex = audio,
             subtitleStreamIndex = subtitle
         )
@@ -563,7 +571,7 @@ class MediaFacade(private val context: ServerContext) {
             item = item.withAssetUrls(links),
             streamUrl = links.stream(item.id, mediaPath.substringAfterLast('/'), session.id, proxy),
             directUrl = direct,
-            startPositionMs = userData.positionMs,
+            startPositionMs = startAt,
             audioStreamIndex = audio,
             subtitleStreamIndex = subtitle,
             // A subtitle is a few kilobytes the player fetches once, and the

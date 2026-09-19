@@ -71,6 +71,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -86,6 +87,7 @@ import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import com.daview.app.data.ThemeMode
 import com.daview.app.theme.DaViewTheme
+import com.daview.app.ui.AppMenu
 import com.daview.app.ui.DetailScreen
 import com.daview.app.ui.HomeScreen
 import com.daview.app.ui.LibraryScreen
@@ -231,7 +233,11 @@ private fun Library(state: AppState) {
                 // middle of a wide window with empty bands on either side.
                 wide -> Row(Modifier.fillMaxSize()) {
                     SideNavigation(state)
-                    Box(Modifier.fillMaxSize()) { Content(state, playback) }
+                    Box(Modifier.fillMaxSize()) {
+                        androidx.compose.runtime.CompositionLocalProvider(com.daview.app.ui.LocalRailShown provides true) {
+                            Content(state, playback)
+                        }
+                    }
                 }
 
                 else -> Column(Modifier.fillMaxSize()) {
@@ -260,7 +266,10 @@ private fun Library(state: AppState) {
         }
     }
 
+    // Each of these owns the keyboard while it is up: Esc and Backspace must
+    // close it, not the page behind it.
     playback.resumePrompt?.let { item ->
+        ModalMarker()
         AlertDialog(
             onDismissRequest = { playback.dismissResumePrompt() },
             title = { Text(item.seriesName?.let { "$it · ${item.name}" } ?: item.name) },
@@ -277,6 +286,7 @@ private fun Library(state: AppState) {
     }
 
     state.confirmation?.let { question ->
+        ModalMarker()
         AlertDialog(
             onDismissRequest = { state.answerConfirmation(false) },
             title = { Text(question.title) },
@@ -294,6 +304,7 @@ private fun Library(state: AppState) {
     }
 
     if (state.pendingLeave != null) {
+        ModalMarker()
         AlertDialog(
             onDismissRequest = { state.cancelLeave() },
             title = { Text("有未保存的设置") },
@@ -317,7 +328,12 @@ private fun Library(state: AppState) {
 @Composable
 private fun StartingOverlay(playback: PlaybackController) {
     Box(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.45f)),
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.45f))
+            // The page underneath is not to be used while the film opens: a
+            // second play pressed through the scrim cancelled the first.
+            .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } } },
         contentAlignment = Alignment.Center
     ) {
         ModalMarker()
@@ -417,7 +433,7 @@ private fun Content(state: AppState, playback: PlaybackController) {
                 is Screen.Search -> SearchScreen(state, playback)
                 is Screen.Settings -> SettingsScreen(state)
                 is Screen.Player -> PlayerScreen(state, playback)
-                is Screen.Shelf -> ShelfScreen(state, playback, screen.kind)
+                is Screen.Shelf -> ShelfScreen(state, playback, screen)
             }
         }
     }
@@ -575,7 +591,7 @@ private fun RowScope.LibrariesItem(state: AppState) {
         icon = {
             Box {
                 Icon(Icons.Filled.VideoLibrary, contentDescription = null)
-                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                AppMenu(expanded = open, onDismissRequest = { open = false }) {
                     if (libraries.isEmpty()) {
                         DropdownMenuItem(
                             text = { Text("还没有媒体库") },

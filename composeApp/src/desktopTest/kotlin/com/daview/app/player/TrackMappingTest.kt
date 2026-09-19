@@ -96,4 +96,18 @@ class TrackMappingTest {
         assertNull(TrackMapping.subtitleIndex(streams, 4))
         assertNull(TrackMapping.subtitleIndex(streams, null))
     }
+
+    /**
+     * An external file that could not be fetched never enters mpv's list, so
+     * the ones after it move up a place — and a choice of the missing one maps
+     * to nothing rather than to its neighbour.
+     */
+    @Test
+    fun `a subtitle file that failed to attach moves the later ones up`() {
+        val attached = setOf(1001)
+        assertNull(TrackMapping.subtitleId(streams, 1000, attached))
+        assertEquals(2, TrackMapping.subtitleId(streams, 1001, attached))
+        assertEquals(1001, TrackMapping.subtitleIndex(streams, 2, attached))
+        assertNull(TrackMapping.subtitleIndex(streams, 3, attached))
+    }
 }

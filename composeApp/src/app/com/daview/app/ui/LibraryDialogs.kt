@@ -310,10 +310,14 @@ fun WebDavPickerDialog(state: AppState, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("添加媒体库") },
         text = {
-            Column {
+            // Scrolls as a whole on a short window: the name and the kind below
+            // the list were pushed out of reach on a phone held sideways.
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { load("/") }, enabled = !atRoot && !loading) {
-                        Icon(Icons.Filled.Home, contentDescription = null)
+                    Tooltip("回到根目录") {
+                        TextButton(onClick = { load("/") }, enabled = !atRoot && !loading) {
+                            Icon(Icons.Filled.Home, contentDescription = "回到根目录")
+                        }
                     }
                     TextButton(
                         onClick = { load("/" + path.trim('/').substringBeforeLast('/', "")) },

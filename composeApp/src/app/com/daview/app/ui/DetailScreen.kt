@@ -130,7 +130,7 @@ fun DetailScreen(state: AppState, playback: PlaybackController, itemId: String) 
     // Opened from its own episode's row on a busy series, the page scrolls to
     // the episodes rather than the cast.
     Box(Modifier.fillMaxSize()) {
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 48.dp)) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
             item { DetailHeader(state, playback, item) }
 
             // The episodes come first: on a series page they are what the page
@@ -559,7 +559,7 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
                             Spacer(Modifier.size(6.dp))
                             Text("外部播放器")
                         }
-                        DropdownMenu(expanded = playerMenu, onDismissRequest = { playerMenu = false }) {
+                        AppMenu(expanded = playerMenu, onDismissRequest = { playerMenu = false }) {
                             playback.externalPlayers.forEach { player ->
                                 DropdownMenuItem(
                                     text = {
@@ -626,7 +626,9 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
             DetailMoreMenu(state, playback, item, target)
         }
 
-        playback.errorFor(item.id)?.let {
+        // On a series page what played is its episode, whose failure is filed
+        // under the episode's id.
+        (playback.errorFor(item.id) ?: target?.let { playback.errorFor(it.id) })?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
@@ -672,7 +674,7 @@ private fun DetailMoreMenu(state: AppState, playback: PlaybackController, item: 
         TipIconButton("更多", onClick = { open = true }) {
             Icon(Icons.Filled.MoreVert, contentDescription = "更多操作")
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        AppMenu(expanded = open, onDismissRequest = { open = false }) {
             if (!item.isPlayable && (item.episodeCount ?: 0) > 0) {
                 DropdownMenuItem(
                     text = { Text(if (item.kind == ItemKind.SEASON) "下载本季（${item.episodeCount} 集）" else "下载全部（${item.episodeCount} 集）") },
@@ -756,8 +758,8 @@ private fun TrackPickers(state: AppState, item: MediaItemDto) {
             TrackPicker(
                 label = "音轨",
                 current = audio.firstOrNull { it.index == chosenAudio }?.displayTitle ?: "自动",
-                options = audio.map { it.index to it.displayTitle }
-            ) { state.setTrackSelection(item, it, null) }
+                options = listOf(AUTOMATIC to "自动（按首选语言）") + audio.map { it.index to it.displayTitle }
+            ) { if (it == AUTOMATIC) state.resetTrackSelection(item, audio = true) else state.setTrackSelection(item, it, null) }
         }
         if (subtitles.isNotEmpty()) {
             TrackPicker(
@@ -767,11 +769,15 @@ private fun TrackPickers(state: AppState, item: MediaItemDto) {
                     null -> "自动"
                     else -> subtitles.firstOrNull { it.index == chosenSubtitle }?.displayTitle ?: "自动"
                 },
-                options = subtitles.map { it.index to it.displayTitle } + (SUBTITLE_OFF to "关闭字幕")
-            ) { state.setTrackSelection(item, null, it) }
+                options = listOf(AUTOMATIC to "自动（按首选语言）") + subtitles.map { it.index to it.displayTitle } +
+                    (SUBTITLE_OFF to "关闭字幕")
+            ) { if (it == AUTOMATIC) state.resetTrackSelection(item, audio = false) else state.setTrackSelection(item, null, it) }
         }
     }
 }
+
+/** The pickers' "no choice of my own" entry; no stream has this index. */
+private const val AUTOMATIC = Int.MIN_VALUE
 
 @Composable
 private fun TrackPicker(label: String, current: String, options: List<Pair<Int, String>>, onPick: (Int) -> Unit) {
@@ -780,7 +786,7 @@ private fun TrackPicker(label: String, current: String, options: List<Pair<Int, 
         TextButton(onClick = { open = true }) {
             Text("$label：$current", maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 240.dp))
         }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        AppMenu(expanded = open, onDismissRequest = { open = false }) {
             options.forEach { (index, text) ->
                 DropdownMenuItem(text = { Text(text) }, onClick = { open = false; onPick(index) })
             }
@@ -1141,7 +1147,7 @@ private fun EpisodeRow(
             }
         }
 
-        DropdownMenu(
+        AppMenu(
             expanded = menuAt != null,
             onDismissRequest = { menuAt = null },
             offset = menuAt.toDpOffset(density)

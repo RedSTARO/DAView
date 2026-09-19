@@ -1,5 +1,7 @@
 package com.daview.app.ui
 
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -27,17 +29,28 @@ import com.daview.shared.model.DownloadState
  * every favourite across the libraries at once.
  */
 @Composable
-fun ShelfScreen(state: AppState, playback: PlaybackController, kind: ShelfKind) {
-    val landscape = kind != ShelfKind.FAVOURITES
+fun ShelfScreen(state: AppState, playback: PlaybackController, shelf: Screen.Shelf) {
+    val kind = shelf.kind
+    val landscape = kind != ShelfKind.FAVOURITES && kind != ShelfKind.UNWATCHED
+    val libraryName = shelf.libraryId?.let { id -> state.libraries.firstOrNull { it.id == id }?.name }
     val gridState = rememberLazyGridState()
     Column(Modifier.fillMaxSize()) {
         ScreenTopBar(
-            title = kind.title,
-            subtitle = if (state.shelfOf == kind) "${state.shelfItems.size} 项" else null,
+            title = libraryName?.let { "$it · ${kind.title}" } ?: kind.title,
+            subtitle = if (state.shelfOf == shelf) "${state.shelfItems.size} 项" else null,
             onBack = if (state.canGoBack) ({ state.back() }) else null
         )
         when {
-            state.shelfOf != kind -> LoadingPane()
+            state.shelfOf != shelf -> {
+                val failed = state.shelfError
+                if (failed != null && !state.shelfLoading) {
+                    EmptyState("读取失败", failed) {
+                        Button(onClick = { state.loadShelf(shelf) }) { Text("重试") }
+                    }
+                } else {
+                    LoadingPane()
+                }
+            }
             state.shelfItems.isEmpty() -> EmptyState("这里还没有内容", "看过、收藏过或新添加的条目会出现在这里。")
             else -> Box(Modifier.fillMaxSize()) {
                 LazyVerticalGrid(

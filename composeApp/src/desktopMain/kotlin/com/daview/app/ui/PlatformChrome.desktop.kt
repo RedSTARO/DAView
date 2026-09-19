@@ -54,9 +54,11 @@ actual fun PlaybackPresentation(orientation: ScreenOrientation, fullscreen: Bool
         val wasFullscreen = window?.value
         if (fullscreen) window?.value = true
         onDispose {
-            // Only give the window back if nobody changed it meanwhile: the
-            // user may have left full screen by hand while the film ran.
-            if (fullscreen && wasFullscreen == false) window.value = false
+            // The window goes back to how it was before the film, whichever
+            // way it went full screen meanwhile — by the setting, by F or by a
+            // double click. Leaving the player used to keep full screen
+            // whenever the setting had not been what turned it on.
+            if (wasFullscreen == false) window.value = false
         }
     }
 }
