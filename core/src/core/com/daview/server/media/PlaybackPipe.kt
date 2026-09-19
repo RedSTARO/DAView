@@ -45,6 +45,10 @@ class PlaybackPipe(
     @Volatile
     private var socket: ServerSocket? = null
 
+    /** The thread blocked in accept() on [socket]; see [close] for why it is kept. */
+    @Volatile
+    private var acceptThread: Thread? = null
+
     /** Sessions currently pointed at this pipe. It closes when the set empties. */
     private val sessions = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
@@ -98,7 +102,10 @@ class PlaybackPipe(
         val server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
         socket = server
         running.set(true)
-        Thread({ accept(server) }, "daview-playback-pipe").apply { isDaemon = true }.start()
+        acceptThread = Thread({ accept(server) }, "daview-playback-pipe").apply {
+            isDaemon = true
+            start()
+        }
         log.info("播放管道已启动: 127.0.0.1:{}", server.localPort)
         return server.localPort
     }
@@ -254,16 +261,35 @@ class PlaybackPipe(
         output.write("HTTP/1.1 $code $reason\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
     }
 
+    /**
+     * Stops listening, and returns only once the port is really closed.
+     *
+     * Closing the socket is not enough on its own on Linux: while a thread is
+     * blocked in accept() on it, that call holds the listening socket open until
+     * the thread is woken and leaves it, and in that moment the port still takes
+     * connections — the accept even hands one back. The JDK wakes the thread,
+     * but asynchronously, so "released" could still be listening a moment
+     * later, which is how the CI runner saw it and Windows, where a close takes
+     * effect at once, never did. Waiting for the thread closes that gap.
+     */
     @Synchronized
     override fun close() {
         running.set(false)
         sessions.clear()
         runCatching { socket?.close() }
         socket = null
+        val thread = acceptThread
+        acceptThread = null
+        if (thread != null && thread !== Thread.currentThread()) {
+            runCatching { thread.join(ACCEPT_EXIT_WAIT_MS) }
+        }
     }
 
     private companion object {
         const val STREAM_BUFFER = 256 * 1024
         const val MAX_LINE = 8 * 1024
+
+        /** Long enough for a woken thread to leave accept(); it takes microseconds. */
+        const val ACCEPT_EXIT_WAIT_MS = 1_000L
     }
 }
