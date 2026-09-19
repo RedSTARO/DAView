@@ -49,6 +49,11 @@ actual fun PlaybackPresentation(orientation: ScreenOrientation, fullscreen: Bool
             controller.show(WindowInsetsCompat.Type.systemBars())
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             activity.requestedOrientation = previousOrientation
+            // The player's brightness gesture sets it on the window; the rest
+            // of the app goes back to the system's.
+            window.attributes = window.attributes.apply {
+                screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            }
         }
     }
 

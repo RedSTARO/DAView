@@ -91,7 +91,11 @@ fun PlayerScreen(state: AppState, playback: PlaybackController) {
                     // being closed: it is the one moment where going on to the
                     // next episode is what the viewer wants.
                     onEnded = { position -> playback.onEnded(info.sessionId, position) },
-                    onSkip = { itemId, position -> playback.skipTo(itemId, fromStart = true, positionMs = position) }
+                    onSkip = { itemId, position ->
+                        // Another episode starts at its beginning; trying this one
+                        // again carries on from where it stopped.
+                        playback.skipTo(itemId, fromStart = itemId != info.item.id, positionMs = position)
+                    }
                 )
             }
         }

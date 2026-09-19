@@ -153,6 +153,15 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         // the filter retags as PQ/BT.2020 get tone-mapped back down.
         option("target-colorspace-hint", "yes")
         option("msg-level", "all=v")
+        // What the viewer had last time, rather than full volume every file.
+        option("volume", config.volume.coerceIn(0, MAX_VOLUME).toString())
+        option("mute", if (config.muted) "yes" else "no")
+        option("speed", String.format(Locale.ROOT, "%.2f", config.speed))
+        option("sub-scale", String.format(Locale.ROOT, "%.2f", config.subtitleScale))
+        option("sub-delay", String.format(Locale.ROOT, "%.3f", config.subtitleDelayMs / 1000.0))
+        // A network stream can stall; mpv's own OSD then says so in its own
+        // words, which the app's bar repeats while it is on screen.
+        option("cache-pause", "yes")
 
         val rc = mpv.mpv_initialize(handle)
         check(rc >= 0) { "mpv_initialize 失败: ${mpv.mpv_error_string(rc)}" }
@@ -164,8 +173,16 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         val startPositionMs: Long = 0,
         val enhancement: VideoEnhancement = VideoEnhancement(),
         /** Prefix of the GPU description to render on; null lets the app decide. */
-        val adapter: String? = null
+        val adapter: String? = null,
+        val volume: Int = 100,
+        val muted: Boolean = false,
+        val speed: Float = 1f,
+        val subtitleScale: Float = 1f,
+        val subtitleDelayMs: Long = 0
     )
+
+    /** One chapter of the file, as mpv read it from the container. */
+    data class Chapter(val startMs: Long, val title: String)
 
     // ------------------------------------------------------------ commands
 
@@ -221,6 +238,24 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
      */
     fun bindKey(key: String, name: String): Boolean =
         commandResult("keybind", key, "script-message $name") >= 0
+
+    /**
+     * Points one of mpv's keys at one of mpv's own commands — the arrow keys
+     * at the volume, say, where mpv's default seeks a minute, so the key does
+     * the same thing whichever side of the window has the keyboard.
+     */
+    fun bindCommand(key: String, command: String): Boolean =
+        commandResult("keybind", key, command) >= 0
+
+    /** Attaches a subtitle file from this computer and switches to it. */
+    fun addSubtitleFile(path: String, title: String) = command("sub-add", path, "select", title)
+
+    fun seekChapter(delta: Int) = command("add", "chapter", delta.toString())
+
+    fun seekChapterTo(index: Int) = setProperty("chapter", index.toString())
+
+    /** mpv's own progress bar and time on the OSD, drawn over the picture. */
+    fun showProgress() = command("show-progress")
 
     /** What mpv's own controller shows as the title of what is playing. */
     fun setTitle(title: String) = setProperty("force-media-title", title)
@@ -299,6 +334,47 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
     var volume: Int
         get() = property("volume")?.toDoubleOrNull()?.toInt() ?: 100
         set(value) = setProperty("volume", value.coerceIn(0, MAX_VOLUME).toString())
+
+    var muted: Boolean
+        get() = property("mute") == "yes"
+        set(value) = setProperty("mute", if (value) "yes" else "no")
+
+    var speed: Float
+        get() = property("speed")?.toFloatOrNull() ?: 1f
+        set(value) = setProperty("speed", String.format(Locale.ROOT, "%.2f", value))
+
+    var subtitleDelayMs: Long
+        get() = property("sub-delay")?.toDoubleOrNull()?.let { (it * 1000).toLong() } ?: 0L
+        set(value) = setProperty("sub-delay", String.format(Locale.ROOT, "%.3f", value / 1000.0))
+
+    var subtitleScale: Float
+        get() = property("sub-scale")?.toFloatOrNull() ?: 1f
+        set(value) = setProperty("sub-scale", String.format(Locale.ROOT, "%.2f", value))
+
+    /**
+     * Waiting for data rather than playing: the cache ran dry, or a seek has
+     * not landed yet. Over the network this is the difference between "loading"
+     * and "frozen", and nothing on screen used to tell them apart.
+     */
+    val buffering: Boolean
+        get() = property("paused-for-cache") == "yes" || property("seeking") == "yes"
+
+    /** How full the cache is while [buffering], 0-100, when mpv knows. */
+    val bufferingPercent: Int?
+        get() = property("cache-buffering-state")?.toIntOrNull()
+
+    /** The file's chapters, or nothing when it has none. */
+    val chapters: List<Chapter>
+        get() {
+            val count = property("chapter-list/count")?.toIntOrNull() ?: return emptyList()
+            return (0 until count).mapNotNull { index ->
+                val start = property("chapter-list/$index/time")?.toDoubleOrNull() ?: return@mapNotNull null
+                Chapter((start * 1000).toLong(), property("chapter-list/$index/title").orEmpty())
+            }
+        }
+
+    /** Which chapter is playing, or null outside any. */
+    val chapter: Int? get() = property("chapter")?.toIntOrNull()?.takeIf { it >= 0 }
 
     private fun readPosition(): Long? =
         property("time-pos")?.toDoubleOrNull()?.let { (it * 1000).toLong() }

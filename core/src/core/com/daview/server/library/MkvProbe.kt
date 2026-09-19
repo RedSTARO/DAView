@@ -81,6 +81,15 @@ object MkvProbe {
     private const val ID_CUE_TIME = 0xB3L
     private const val ID_CUE_TRACK_POSITIONS = 0xB7L
     private const val ID_CUE_CLUSTER_POSITION = 0xF1L
+    private const val ID_CHAPTERS = 0x1043A770L
+    private const val ID_EDITION_ENTRY = 0x45B9L
+    private const val ID_EDITION_FLAG_HIDDEN = 0x45BDL
+    private const val ID_EDITION_FLAG_DEFAULT = 0x45DBL
+    private const val ID_CHAPTER_ATOM = 0xB6L
+    private const val ID_CHAPTER_TIME_START = 0x91L
+    private const val ID_CHAPTER_FLAG_HIDDEN = 0x98L
+    private const val ID_CHAPTER_DISPLAY = 0x80L
+    private const val ID_CHAP_STRING = 0x85L
 
     private const val HEAD_READ_SIZE = 512 * 1024
 
@@ -144,6 +153,70 @@ object MkvProbe {
         rawDuration?.let { durationMs = (it * timecodeScale / 1_000_000.0).toLong() }
         if (tracks.isEmpty() && durationMs == null) return null
         return MkvInfo(durationMs, tracks, title, segmentDataOffset, seekPositions)
+    }
+
+    /** One chapter, in milliseconds from the start of the file. */
+    data class Chapter(val startMs: Long, val title: String)
+
+    /**
+     * The file's chapters, found through the SeekHead like the cues are. Empty
+     * when there are none, which is most files; anime releases are the ones
+     * that carry them, often with the opening and ending marked.
+     */
+    fun probeChapters(reader: RangeReader, info: MkvInfo, fileSize: Long): List<Chapter> {
+        val relative = info.seekPositions[ID_CHAPTERS] ?: return emptyList()
+        val absolute = info.segmentDataOffset + relative
+        if (absolute <= 0 || absolute >= fileSize) return emptyList()
+        val header = reader.read(absolute, 16)
+        val element = Cursor(header, 0).readElementHeader() ?: return emptyList()
+        if (element.id != ID_CHAPTERS || element.size <= 0) return emptyList()
+        val payload = reader.read(absolute + element.dataStart, minOf(element.size, 1L * 1024 * 1024).toInt())
+        return parseChapters(payload)
+    }
+
+    /**
+     * The chapters of the default edition — or the first one, where none says it
+     * is the default — without the hidden ones, in order.
+     */
+    fun parseChapters(payload: ByteArray): List<Chapter> {
+        val editions = mutableListOf<Pair<Boolean, List<Chapter>>>()
+        forEachChild(payload, 0, payload.size.toLong()) { edition, editionData ->
+            if (edition.id != ID_EDITION_ENTRY) return@forEachChild
+            var isDefault = false
+            var hidden = false
+            val chapters = mutableListOf<Chapter>()
+            forEachChild(editionData, 0, editionData.size.toLong()) { child, data ->
+                when (child.id) {
+                    ID_EDITION_FLAG_DEFAULT -> isDefault = readUInt(data) == 1L
+                    ID_EDITION_FLAG_HIDDEN -> hidden = readUInt(data) == 1L
+                    ID_CHAPTER_ATOM -> parseChapterAtom(data)?.let { chapters += it }
+                }
+            }
+            if (!hidden && chapters.isNotEmpty()) editions += isDefault to chapters
+        }
+        val chosen = editions.firstOrNull { it.first } ?: editions.firstOrNull() ?: return emptyList()
+        return chosen.second.sortedBy { it.startMs }
+    }
+
+    private fun parseChapterAtom(data: ByteArray): Chapter? {
+        var start: Long? = null
+        var hidden = false
+        var title: String? = null
+        forEachChild(data, 0, data.size.toLong()) { child, childData ->
+            when (child.id) {
+                // Nanoseconds, whatever the segment's timecode scale.
+                ID_CHAPTER_TIME_START -> start = readUInt(childData) / 1_000_000
+                ID_CHAPTER_FLAG_HIDDEN -> hidden = readUInt(childData) == 1L
+                ID_CHAPTER_DISPLAY -> if (title == null) {
+                    forEachChild(childData, 0, childData.size.toLong()) { display, displayData ->
+                        if (display.id == ID_CHAP_STRING && title == null) title = readString(displayData)
+                    }
+                }
+            }
+        }
+        val at = start ?: return null
+        if (hidden) return null
+        return Chapter(at, title.orEmpty())
     }
 
     /**

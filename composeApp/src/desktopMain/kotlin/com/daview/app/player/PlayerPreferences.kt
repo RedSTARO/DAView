@@ -46,6 +46,15 @@ object PlayerPreferences {
             store.putString(KEY_SCALE, value.scale.toString())
         }
 
+    /** The volume the viewer left the player at, carried to the next file. */
+    var volume: Int
+        get() = store.getString(KEY_VOLUME)?.toIntOrNull()?.coerceIn(0, 100) ?: 100
+        set(value) = store.putString(KEY_VOLUME, value.coerceIn(0, 100).toString())
+
+    var muted: Boolean
+        get() = store.getString(KEY_MUTED) == "1"
+        set(value) = store.putString(KEY_MUTED, if (value) "1" else "0")
+
     /** Applies the stored override before anything asks whether libmpv loaded. */
     fun install() {
         libmpvPath?.let { MpvNative.overridePath = it }
@@ -57,4 +66,6 @@ object PlayerPreferences {
     private const val KEY_SCALE = "player.rtxScale"
     private const val KEY_ADAPTER = "player.adapter"
     private const val KEY_LAST_ADAPTER = "player.lastAdapterInUse"
+    private const val KEY_VOLUME = "player.volume"
+    private const val KEY_MUTED = "player.muted"
 }

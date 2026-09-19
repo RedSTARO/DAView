@@ -168,7 +168,9 @@ data class MediaItemDto(
      * them alone until they are handed back, so a correction survives both a
      * rescan and a re-scrape.
      */
-    val manualFields: List<String> = emptyList()
+    val manualFields: List<String> = emptyList(),
+    /** The file's chapters, read from the container when it is first played. */
+    val chapters: List<ChapterDto> = emptyList()
 ) {
     val isPlayable: Boolean get() = kind == ItemKind.MOVIE || kind == ItemKind.EPISODE
 
@@ -199,6 +201,20 @@ data class MediaItemDto(
 }
 
 enum class PlayedState { NONE, PARTIAL, PLAYED }
+
+/** One chapter of a file: where it starts and what the file calls it. */
+@Serializable
+data class ChapterDto(val startMs: Long, val title: String = "") {
+    /**
+     * Whether this chapter is an opening or an ending sequence, by the names
+     * release groups give them. That is what a "skip" button can act on.
+     */
+    val isIntro: Boolean get() = CHAPTER_INTRO_NAMES.any { title.trim().lowercase().let { t -> t == it || t.startsWith("$it ") } }
+    val isOutro: Boolean get() = CHAPTER_OUTRO_NAMES.any { title.trim().lowercase().let { t -> t == it || t.startsWith("$it ") } }
+}
+
+private val CHAPTER_INTRO_NAMES = listOf("op", "opening", "intro", "片头", "片頭", "オープニング")
+private val CHAPTER_OUTRO_NAMES = listOf("ed", "ending", "outro", "credits", "片尾", "エンディング")
 
 /** Names stored in [MediaItemDto.manualFields]. */
 object ManualField {

@@ -1,5 +1,6 @@
 package com.daview.server.db
 
+import com.daview.shared.model.ChapterDto
 import com.daview.shared.model.DownloadDto
 import com.daview.shared.model.DownloadState
 import com.daview.shared.model.ItemKind
@@ -24,6 +25,7 @@ private val personListSerializer = ListSerializer(PersonDto.serializer())
 private val streamListSerializer = ListSerializer(MediaStreamDto.serializer())
 private val stringMapSerializer = MapSerializer(String.serializer(), String.serializer())
 private val providerListSerializer = ListSerializer(MetadataProvider.serializer())
+private val chapterListSerializer = ListSerializer(ChapterDto.serializer())
 
 /** A watch-state row with the timestamp the API does not expose. */
 data class UserDataRow(val itemId: String, val data: UserDataDto, val updatedAt: Long)
@@ -327,6 +329,21 @@ class Repository(private val db: Database) {
             }
             st.setString(binds.size + 1, itemId)
             st.executeUpdate()
+        }
+    }
+
+    /** Whether a file's chapters have been read, as opposed to it having none. */
+    fun chaptersKnown(itemId: String): Boolean = db.read { connection ->
+        connection.statement("SELECT chapters IS NOT NULL FROM items WHERE id = ?")
+            .apply { setString(1, itemId) }
+            .useQuery { it.next() && it.getIntAt(1) == 1 }
+    }
+
+    fun setChapters(itemId: String, chapters: List<ChapterDto>) = db.transaction { connection ->
+        connection.statement("UPDATE items SET chapters = ? WHERE id = ?").use {
+            it.setString(1, json.encodeToString(chapterListSerializer, chapters))
+            it.setString(2, itemId)
+            it.executeUpdate()
         }
     }
 
@@ -1389,7 +1406,10 @@ class Repository(private val db: Database) {
         mediaStreams = runCatching { json.decodeFromString(streamListSerializer, rs.requireString("media_streams")) }
             .getOrDefault(emptyList()),
         userData = readUserData(rs, rs.getLongOrNull("runtime_ms")),
-        manualFields = runCatching { decodeList(rs.getString("manual_fields")) }.getOrDefault(emptyList())
+        manualFields = runCatching { decodeList(rs.getString("manual_fields")) }.getOrDefault(emptyList()),
+        chapters = runCatching {
+            rs.getString("chapters")?.let { json.decodeFromString(chapterListSerializer, it) }
+        }.getOrNull().orEmpty()
     )
 
     private fun readItemRecord(rs: SqlCursor) = ItemRecord(

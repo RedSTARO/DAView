@@ -281,6 +281,11 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
             listOf(
                 // Whose score community_rating is, so the page can say so.
                 "ALTER TABLE items ADD COLUMN rating_source TEXT"
+            ),
+            listOf(
+                // The container's chapters, as JSON. Null until someone plays
+                // the file and they are read; an empty list means "read, none".
+                "ALTER TABLE items ADD COLUMN chapters TEXT"
             )
         )
     }

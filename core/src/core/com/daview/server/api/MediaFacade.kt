@@ -515,7 +515,12 @@ class MediaFacade(private val context: ServerContext) {
             notFound("没有可播放的内容", requested?.let { "${it.name} 下没有分集" })
         }
 
-        val item = runCatching { context.streams.probeItem(stored) }.getOrDefault(stored)
+        val probed = runCatching { context.streams.probeItem(stored) }.getOrDefault(stored)
+        // Chapters travel with the session, for the chapter list and for a
+        // "skip opening" button where the release marks one.
+        val item = probed.copy(
+            chapters = runCatching { context.streams.chapters(probed) }.getOrDefault(probed.chapters)
+        )
         val mediaPath = item.path ?: storedPath
         val userData = item.userData
         // The episode watched before this one in the same series, whose track

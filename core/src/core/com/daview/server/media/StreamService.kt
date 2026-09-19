@@ -178,6 +178,31 @@ class StreamService(
         return updated
     }
 
+    /**
+     * The file's chapters, read once and kept. Only Matroska carries them in a
+     * form worth reading; anything else is recorded as having none. A read that
+     * fails on the network is not recorded, so it is tried again next time.
+     */
+    fun chapters(item: MediaItemDto): List<com.daview.shared.model.ChapterDto> {
+        if (repository.chaptersKnown(item.id)) return item.chapters
+        val path = item.path ?: return emptyList()
+        if (!MkvProbe.isMatroska(path)) {
+            repository.setChapters(item.id, emptyList())
+            return emptyList()
+        }
+        val found = runCatching {
+            val reader = rangeReader(path)
+            val info = MkvProbe.probe(reader) ?: return@runCatching emptyList()
+            MkvProbe.probeChapters(reader, info, item.sizeBytes ?: fileSize(path) ?: Long.MAX_VALUE)
+                .map { com.daview.shared.model.ChapterDto(it.startMs, it.title) }
+        }.getOrElse {
+            log.warn("读取章节 {} 失败: {}", path, it.message)
+            return emptyList()
+        }
+        repository.setChapters(item.id, found)
+        return found
+    }
+
     /** Byte offset to timestamp mapping, used to follow external players. */
     fun cueIndex(item: MediaItemDto): MkvProbe.CueIndex? {
         val path = item.path ?: return null
