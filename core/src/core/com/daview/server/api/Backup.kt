@@ -249,11 +249,7 @@ fun applyBackup(
         // The row writer leaves these two alone — the scanner and the scraper
         // share it and must not touch them — so a restore writes them itself.
         // They used to be lost, and every hand edit was open to the next scrape.
-        records.forEach { record ->
-            val dto = record.dto
-            if (dto.manualFields.isNotEmpty()) context.repository.setManualFields(dto.id, dto.manualFields)
-            dto.communityRatingSource?.let { context.repository.setRatingSource(dto.id, it) }
-        }
+        context.repository.restoreItemExtras(records.map { it.dto })
     }
     var mergedUserData = 0
     backup.userData.forEach { row ->

@@ -223,7 +223,11 @@ actual fun InternalPlayer(
         report(audio = index)
     }
 
+    // What `v` brings back after hiding the subtitles.
+    var lastShownSubtitle by remember { mutableStateOf(info.subtitleStreamIndex?.takeIf { it != SUBTITLE_OFF }) }
+
     fun chooseSubtitle(index: Int?) {
+        if (index != null) lastShownSubtitle = index
         selectedSubtitle = index
         mountedSubtitle = null
         if (index == null) player?.disableSubtitle()
@@ -374,6 +378,9 @@ actual fun InternalPlayer(
                         MSG_PREVIOUS -> skip(info.previousItemId)
                         MSG_NEXT -> skip(info.nextItemId)
                         MSG_SKIP -> skipIntroAction()
+                        // mpv's own `v` only hid them, so the panel and the
+                        // recorded choice still said they were on.
+                        MSG_SUBTITLE_VISIBILITY -> chooseSubtitle(if (selectedSubtitle != null) null else lastShownSubtitle)
                     }
                 }
             }).apply {
@@ -404,6 +411,7 @@ actual fun InternalPlayer(
             listOf("j") to MSG_SUBTITLE,
             listOf("f", "F11") to MSG_FULLSCREEN,
             listOf("ESC", "ESCAPE") to MSG_ESCAPE,
+            listOf("v") to MSG_SUBTITLE_VISIBILITY,
             listOf("<") to MSG_PREVIOUS,
             listOf(">") to MSG_NEXT
         ).filterNot { (names, message) -> names.any { created.bindKey(it, message) } }
@@ -1429,6 +1437,7 @@ private const val MSG_ESCAPE = "daview-escape"
 private const val MSG_PREVIOUS = "daview-previous"
 private const val MSG_NEXT = "daview-next"
 private const val MSG_SKIP = "daview-skip-intro"
+private const val MSG_SUBTITLE_VISIBILITY = "daview-subtitle-visibility"
 
 private val SPEEDS = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
 

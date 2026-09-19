@@ -379,12 +379,25 @@ class Repository(private val db: Database) {
     }
 
     /** Hands every hand-typed field back to the scraper. */
-    /** Writes the hand-typed field list as given — for a restore, which carries it. */
-    fun setManualFields(itemId: String, fields: List<String>) = db.transaction { connection ->
-        connection.statement("UPDATE items SET manual_fields = ? WHERE id = ?").use {
-            if (fields.isEmpty()) it.setNull(1) else it.setString(1, json.encodeToString(stringListSerializer, fields))
-            it.setString(2, itemId)
-            it.executeUpdate()
+    /**
+     * Writes the hand-typed field lists and rating sources a restore carries,
+     * for a page of items at once: one transaction per item made restoring a
+     * large library crawl on a phone.
+     */
+    fun restoreItemExtras(items: List<MediaItemDto>) = db.transaction { connection ->
+        // What the backup does not carry — a file from before these existed —
+        // leaves this device's value alone.
+        connection.statement(
+            "UPDATE items SET manual_fields = COALESCE(?, manual_fields), " +
+                "rating_source = COALESCE(?, rating_source) WHERE id = ?"
+        ).use { statement ->
+            items.forEach { item ->
+                if (item.manualFields.isEmpty()) statement.setNull(1)
+                else statement.setString(1, json.encodeToString(stringListSerializer, item.manualFields))
+                statement.setString(2, item.communityRatingSource?.name)
+                statement.setString(3, item.id)
+                statement.executeUpdate()
+            }
         }
     }
 
