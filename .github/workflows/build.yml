@@ -107,7 +107,14 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      # The action installs "tools platform-tools" unless told otherwise, and
+      # the legacy "tools" package is gone from the SDK repository: sdkmanager
+      # 16 answers "Failed to find package 'tools'" and the step fails before
+      # anything is built. platform-tools is all this build needs from it.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
 
       # compileSdk is 37, which the whole Compose 1.12 / Material3 1.5 stack
       # requires. Google publishes it as android-37.0, not android-37 — the bare
