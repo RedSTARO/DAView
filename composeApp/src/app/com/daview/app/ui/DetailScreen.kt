@@ -38,6 +38,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.Downloading
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.MoreVert
@@ -86,12 +88,14 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.daview.app.data.AppState
+import com.daview.app.data.Confirmation
 import com.daview.app.data.ModalMarker
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import com.daview.app.platform.openUrl
 import com.daview.app.platform.pickImageFile
 import com.daview.app.theme.favoriteColor
+import com.daview.shared.model.DownloadDto
 import com.daview.shared.model.DownloadState
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MediaItemDto
@@ -179,7 +183,7 @@ fun DetailScreen(state: AppState, playback: PlaybackController, itemId: String) 
                             episode,
                             basePath = selectedSeason?.path,
                             isNext = episode.id == state.detailNextUp?.id,
-                            downloaded = state.downloadOf(episode.id)?.state == DownloadState.DONE,
+                            download = state.downloadOf(episode.id),
                             onPlay = { playback.play(episode) },
                             onOpen = { state.navigate(Screen.Detail(episode.id)) },
                             menu = { dismiss -> ItemMenuItems(state, playback, episode, dismiss) }
@@ -254,7 +258,7 @@ private fun SeasonActions(state: AppState, season: MediaItemDto) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f)
         )
-        TextButton(onClick = { state.download(season) }) { Text("下载本季") }
+        SeasonDownloadButton(state, season)
         TextButton(onClick = { confirm = true }) {
             Text(if (played) "整季标记未看" else "整季标记已看")
         }
@@ -470,8 +474,22 @@ private fun ColumnScope.HeroTitle(state: AppState, item: MediaItemDto, openSerie
         }
         item.childCount?.takeIf { item.kind == ItemKind.SERIES }?.let { Chip("$it 季") }
         Chip(watchedLabel(item))
-        if (state.downloadOf(item.id)?.state == DownloadState.DONE) {
-            Chip("已下载到本机", color = MaterialTheme.colorScheme.tertiary)
+        // Where the copy on this device has got to. A series or a season says
+        // how many of its episodes are here.
+        val download = state.downloadOf(item.id)
+        when {
+            item.isPlayable && download?.state == DownloadState.DONE -> Chip(
+                if (download.subtitleCount > 0) "已下载到本机 · 含 ${download.subtitleCount} 条字幕" else "已下载到本机",
+                color = MaterialTheme.colorScheme.tertiary
+            )
+            item.isPlayable && download?.active == true -> Chip(
+                if (download.state == DownloadState.RUNNING) "正在下载 ${(download.fraction * 100).toInt()}%"
+                else download.note ?: "等待下载"
+            )
+            !item.isPlayable -> {
+                val done = state.downloadsUnder(item).count { it.state == DownloadState.DONE }
+                if (done > 0) Chip("已下载 $done/${item.episodeCount ?: done} 集", color = MaterialTheme.colorScheme.tertiary)
+            }
         }
     }
 }
@@ -605,24 +623,7 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
                     WatchedIcon(item.playedState, playedTip)
                 }
             }
-            if (item.isPlayable) {
-                val download = state.downloadOf(item.id)
-                TipIconButton(
-                    when (download?.state) {
-                        DownloadState.DONE -> "已下载到本机"
-                        DownloadState.RUNNING, DownloadState.QUEUED -> "正在下载 ${(download.fraction * 100).toInt()}%"
-                        else -> "下载到本机"
-                    },
-                    onClick = { if (download == null || download.state == DownloadState.FAILED) state.download(item) },
-                ) {
-                    Icon(
-                        if (download?.state == DownloadState.DONE) Icons.Filled.DownloadDone else Icons.Filled.Download,
-                        contentDescription = "下载",
-                        tint = if (download?.state == DownloadState.DONE) MaterialTheme.colorScheme.tertiary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+            DownloadAction(state, item)
             DetailMoreMenu(state, playback, item, target)
         }
 
@@ -652,6 +653,115 @@ private fun WatchedIcon(played: PlayedState, description: String) {
     }
 }
 
+/** One word on an episode row for where its copy has got to, or nothing. */
+private fun downloadLabel(download: DownloadDto?): String? = when (download?.state) {
+    DownloadState.DONE -> "已下载"
+    DownloadState.RUNNING -> "下载中 ${(download.fraction * 100).toInt()}%"
+    DownloadState.QUEUED -> download.note ?: "等待下载"
+    DownloadState.FAILED -> "下载失败"
+    null -> null
+}
+
+/**
+ * The download button. What it says and does follows where the copy has got
+ * to: a film or an episode is one file, fetched, cancelled or deleted; a series
+ * or a season is its episodes, which are queued, cancelled and deleted as one.
+ */
+@Composable
+private fun DownloadAction(state: AppState, item: MediaItemDto) {
+    if (item.isPlayable) {
+        val download = state.downloadOf(item.id)
+        val (tip, icon, tint) = when (download?.state) {
+            DownloadState.DONE -> Triple("删除本地文件…", Icons.Filled.DownloadDone, MaterialTheme.colorScheme.tertiary)
+            DownloadState.RUNNING -> Triple(
+                "取消下载（${(download.fraction * 100).toInt()}%）", Icons.Filled.Downloading, MaterialTheme.colorScheme.primary
+            )
+            DownloadState.QUEUED -> Triple(
+                "取消下载（${download.note ?: "排队中"}）", Icons.Filled.Downloading, MaterialTheme.colorScheme.primary
+            )
+            DownloadState.FAILED -> Triple(
+                "重新下载（上次失败：${download.error ?: "未知原因"}）", Icons.Filled.ErrorOutline, MaterialTheme.colorScheme.error
+            )
+            null -> Triple("下载到本机（连同外挂字幕）", Icons.Filled.Download, MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        TipIconButton(tip, onClick = {
+            when (download?.state) {
+                // Deleting a finished copy asks first: the bytes took minutes to arrive.
+                DownloadState.DONE -> state.confirm(
+                    Confirmation(
+                        title = "删除「${item.name}」的本地文件？",
+                        text = ("删除后要再联网播放或重新下载。" + formatSize(download.totalBytes)).trim(),
+                        confirmLabel = "删除",
+                        destructive = true,
+                        action = { state.removeDownload(item.id) }
+                    )
+                )
+                DownloadState.RUNNING, DownloadState.QUEUED -> state.cancelDownload(item)
+                else -> state.download(item)
+            }
+        }) {
+            Icon(icon, contentDescription = tip, tint = tint)
+        }
+        return
+    }
+
+    val total = item.episodeCount ?: 0
+    if (total == 0) return
+    val under = state.downloadsUnder(item)
+    val pending = under.count { it.active }
+    val done = under.count { it.state == DownloadState.DONE }
+    val scope = if (item.kind == ItemKind.SEASON) "本季" else "全部"
+    when {
+        pending > 0 -> TipIconButton("取消下载（$pending 集）", onClick = { state.cancelDownloadsUnder(item) }) {
+            Icon(Icons.Filled.Downloading, contentDescription = "取消下载", tint = MaterialTheme.colorScheme.primary)
+        }
+        done >= total -> TipIconButton("删除本地文件（$done 集）…", onClick = {
+            state.confirm(
+                Confirmation(
+                    title = "删除「${item.name}」的 $done 个本地文件？",
+                    text = ("删除后要再联网播放或重新下载。" +
+                        formatSize(under.filter { it.state == DownloadState.DONE }.sumOf { it.totalBytes })).trim(),
+                    confirmLabel = "删除",
+                    destructive = true,
+                    action = { state.removeDownloadsUnder(item) }
+                )
+            )
+        }) {
+            Icon(Icons.Filled.DownloadDone, contentDescription = "删除本地文件", tint = MaterialTheme.colorScheme.tertiary)
+        }
+        else -> TipIconButton("下载$scope（$total 集）…", onClick = { state.download(item) }) {
+            Icon(Icons.Filled.Download, contentDescription = "下载$scope", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** The season's own download control, beside its watched toggle. */
+@Composable
+private fun SeasonDownloadButton(state: AppState, season: MediaItemDto) {
+    val under = state.downloadsUnder(season)
+    val pending = under.count { it.active }
+    val done = under.count { it.state == DownloadState.DONE }
+    val total = season.episodeCount ?: 0
+    when {
+        pending > 0 -> TextButton(onClick = { state.cancelDownloadsUnder(season) }) { Text("取消下载（$pending 集）") }
+        total > 0 && done >= total -> TextButton(onClick = {
+            state.confirm(
+                Confirmation(
+                    title = "删除「${season.name}」的 $done 个本地文件？",
+                    text = ("删除后要再联网播放或重新下载。" +
+                        formatSize(under.filter { it.state == DownloadState.DONE }.sumOf { it.totalBytes })).trim(),
+                    confirmLabel = "删除",
+                    destructive = true,
+                    action = { state.removeDownloadsUnder(season) }
+                )
+            )
+        }) { Text("删除本季文件…") }
+        else -> TextButton(onClick = { state.download(season) }) {
+            Text(if (done > 0) "下载本季（还差 ${total - done} 集）…" else "下载本季…")
+        }
+    }
+}
+
 /**
  * The rarely needed things — fixing the metadata, merging a duplicate, keeping
  * a copy — kept in one menu. They sat as a row of look-alike pencil icons at
@@ -675,12 +785,6 @@ private fun DetailMoreMenu(state: AppState, playback: PlaybackController, item: 
             Icon(Icons.Filled.MoreVert, contentDescription = "更多操作")
         }
         AppMenu(expanded = open, onDismissRequest = { open = false }) {
-            if (!item.isPlayable && (item.episodeCount ?: 0) > 0) {
-                DropdownMenuItem(
-                    text = { Text(if (item.kind == ItemKind.SEASON) "下载本季（${item.episodeCount} 集）" else "下载全部（${item.episodeCount} 集）") },
-                    onClick = { open = false; state.download(item) }
-                )
-            }
             if (whole) {
                 DropdownMenuItem(text = { Text("编辑条目信息…") }, onClick = { open = false; editOpen = true })
                 DropdownMenuItem(
@@ -1004,7 +1108,7 @@ private fun EpisodeRow(
     episode: MediaItemDto,
     basePath: String?,
     isNext: Boolean,
-    downloaded: Boolean,
+    download: DownloadDto?,
     onPlay: () -> Unit,
     onOpen: () -> Unit,
     menu: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit,
@@ -1124,7 +1228,7 @@ private fun EpisodeRow(
                             formatSize(episode.sizeBytes).takeIf { it.isNotBlank() },
                             episode.mediaStreams.count { it.type == StreamType.SUBTITLE }
                                 .takeIf { it > 0 }?.let { "$it 条字幕" },
-                            "已下载".takeIf { downloaded }
+                            downloadLabel(download)
                         ).joinToString(" · "),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)

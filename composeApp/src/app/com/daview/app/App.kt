@@ -184,11 +184,11 @@ private fun Library(state: AppState) {
     }
 
     // A scan outlives the screen that started it, and may well have been
-    // running before this process was. So does a download.
+    // running before this process was. So does a download — and the queue it
+    // was on died with that process, so it is put back here.
     LaunchedEffect(Unit) {
         state.pollScanStatus()
-        state.refreshDownloads()
-        state.pollDownloads()
+        state.resumeDownloads()
     }
 
     // A host rather than a hand-placed Snackbar: it animates in and out, holds

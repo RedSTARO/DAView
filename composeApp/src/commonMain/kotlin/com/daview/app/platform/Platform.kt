@@ -106,6 +106,23 @@ class PickedFile(val name: String, val bytes: ByteArray) {
 expect suspend fun pickImageFile(): PickedFile?
 
 /**
+ * Opens the platform's folder chooser and returns the directory chosen, or
+ * null when the user backed out — or where there is no such chooser: Android
+ * keeps downloads in the app's own storage, the one place that needs no
+ * permission and is cleared with the app.
+ */
+expect suspend fun pickDirectory(title: String, initial: String?): String?
+
+/** Shows [path] in the platform's file manager, where there is one. */
+expect fun revealInFileManager(path: String)
+
+/**
+ * Whether the network in use is one a film-sized transfer is welcome on. A
+ * desktop is always on one; a phone says so only off mobile data.
+ */
+expect fun isUnmeteredNetwork(): Boolean
+
+/**
  * Asks for permission to post notifications, where the platform wants one and
  * it has not been given. Called at the moment a scan or a download starts —
  * the moment the notification is for — instead of on the very first launch,

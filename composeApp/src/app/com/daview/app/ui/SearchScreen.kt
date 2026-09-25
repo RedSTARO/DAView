@@ -53,7 +53,6 @@ import com.daview.app.data.AppState
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import com.daview.app.data.tracksTextInput
-import com.daview.shared.model.DownloadState
 import com.daview.shared.model.MediaItemDto
 import kotlinx.coroutines.delay
 
@@ -198,7 +197,7 @@ private fun LazyGridScope.results(
                 // the library name at the end of that line was always cut off.
                 subtitle = if (episodes) subtitleFor(item) else listOfNotNull(subtitleFor(item).takeIf { it.isNotBlank() }, libraryName)
                     .joinToString(" · "),
-                downloaded = state.downloadOf(item.id)?.state == DownloadState.DONE,
+                downloaded = state.isDownloaded(item),
                 menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) },
                 onPlay = { playback.play(item) }
             ) {

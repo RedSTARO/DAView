@@ -6,11 +6,16 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
+import com.daview.app.platform.PlatformInfo
 import com.daview.app.platform.SettingsStore
 import com.daview.app.platform.createCoreContext
 import com.daview.app.platform.createSettingsStore
+import com.daview.app.platform.isUnmeteredNetwork
 import com.daview.app.platform.onDownloadStarted
 import com.daview.app.platform.onScanStarted
+import com.daview.app.ui.formatSize
+import com.daview.shared.model.DownloadEstimateDto
+import com.daview.shared.model.OfflineSettingsDto
 import com.daview.server.ServerContext
 import com.daview.server.api.AssetLinks
 import com.daview.server.api.MediaFacade
@@ -273,6 +278,21 @@ class AppState(private val scope: CoroutineScope) {
     fun changePreferredSubtitleLanguage(value: String) {
         preferredSubtitleLanguage = value
         settings.putString(KEY_SUBTITLE_LANGUAGE, value.ifBlank { null })
+    }
+
+    /**
+     * Whether downloads wait for Wi-Fi. On by default on a phone, where a
+     * film over mobile data is a bill; a desktop has no metered network to
+     * speak of and never asks.
+     */
+    var downloadWifiOnly by mutableStateOf(
+        settings.getString(KEY_WIFI_ONLY)?.let { it == "true" } ?: PlatformInfo.isAndroid
+    )
+        private set
+
+    fun changeDownloadWifiOnly(value: Boolean) {
+        downloadWifiOnly = value
+        settings.putString(KEY_WIFI_ONLY, value.toString())
     }
 
     /** How large subtitles are drawn, as a factor of the player's own default. */
@@ -671,6 +691,11 @@ class AppState(private val scope: CoroutineScope) {
                     return@launch
                 }
             opened = Opened(context)
+            // The download queue asks this before every block. Off Wi-Fi a
+            // phone's transfers wait rather than run up a mobile bill; a
+            // desktop is never gated.
+            context.offline.transferGate = { !downloadWifiOnly || isUnmeteredNetwork() }
+            context.offline.transferGateReason = "等待 Wi-Fi"
             runCatching {
                 serverInfo = library.info()
                 libraries = library.libraries()
@@ -1245,12 +1270,34 @@ class AppState(private val scope: CoroutineScope) {
         }
     }
 
+    /** Everything selected, asked about once with the whole size in the question. */
     fun downloadMany(items: List<MediaItemDto>) = run {
-        var count = 0
-        items.forEach { count += library.downloadAll(it.id) }
-        onDownloadStarted()
-        notify("已加入下载：$count 个文件")
-        pollDownloads()
+        val estimates = items.map { library.downloadEstimate(it.id) }
+        val total = DownloadEstimateDto(
+            episodes = estimates.sumOf { it.episodes },
+            alreadyDone = estimates.sumOf { it.alreadyDone },
+            bytes = estimates.sumOf { it.bytes },
+            unknownSizes = estimates.sumOf { it.unknownSizes }
+        )
+        if (total.pending <= 0) {
+            notify("所选内容都已在本机")
+            return@run
+        }
+        confirm(
+            Confirmation(
+                title = "下载所选的 ${total.pending} 个文件？",
+                text = downloadEstimateText(total),
+                confirmLabel = "开始下载",
+                action = {
+                    run {
+                        var count = 0
+                        items.forEach { count += library.downloadAll(it.id) }
+                        notify("已加入下载：$count 个文件")
+                        downloadStarted()
+                    }
+                }
+            )
+        )
     }
 
     /** Folds [sources] into [target], the same as the merge dialog does. */
@@ -1289,7 +1336,10 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     /**
-     * Keeps a copy of an item here, and follows it while it arrives.
+     * Keeps a copy of an item here — the video and its subtitles — and follows
+     * it while it arrives. A film or an episode goes straight on the queue; a
+     * series or a season is tens of gigabytes, so that asks first, with the
+     * size in the question.
      *
      * The poll stops on its own once nothing is moving; a download outlives the
      * screen that started it, so this is also called on start-up.
@@ -1298,23 +1348,102 @@ class AppState(private val scope: CoroutineScope) {
         if (item.isPlayable) {
             library.downloadItem(item.id)
             notify("已加入下载：${item.name}")
-        } else {
-            val count = library.downloadAll(item.id)
-            notify("已加入下载：${item.name}（$count 集）")
+            downloadStarted()
+            return@run
         }
+        val estimate = library.downloadEstimate(item.id)
+        if (estimate.episodes == 0) {
+            notify("「${item.name}」下没有可下载的分集")
+            return@run
+        }
+        if (estimate.pending <= 0) {
+            notify("「${item.name}」的 ${estimate.episodes} 集都已在本机")
+            return@run
+        }
+        confirm(
+            Confirmation(
+                title = "下载「${item.name}」的 ${estimate.pending} 集？",
+                text = downloadEstimateText(estimate),
+                confirmLabel = "开始下载",
+                action = {
+                    run {
+                        val count = library.downloadAll(item.id)
+                        notify("已加入下载：${item.name}（$count 集）")
+                        downloadStarted()
+                    }
+                }
+            )
+        )
+    }
+
+    private fun downloadEstimateText(estimate: DownloadEstimateDto): String = buildString {
+        if (estimate.alreadyDone > 0) append("已有 ${estimate.alreadyDone} 集在本机，不会重复下载。")
+        append(if (estimate.bytes > 0) "约需 ${formatSize(estimate.bytes)}" else "大小未知")
+        if (estimate.bytes > 0 && estimate.unknownSizes > 0) append("（另有 ${estimate.unknownSizes} 集大小未知）")
+        append("，外挂字幕一并下载。")
+        if (PlatformInfo.isAndroid && downloadWifiOnly) append("只在 Wi-Fi 下传输。")
+    }
+
+    /** A failed download, tried again from where it got to. */
+    fun retryDownload(itemId: String) = run {
+        library.downloadItem(itemId)
+        downloadStarted()
+    }
+
+    private fun downloadStarted() {
         onDownloadStarted()
         pollDownloads()
     }
 
-    fun cancelDownload(item: MediaItemDto) = run {
-        library.cancelDownload(item.id)
+    /**
+     * Picks the queue up where the last run of the app left it, and tops up
+     * copies made before subtitles were kept. Called once, on start.
+     */
+    fun resumeDownloads() = run {
+        val resumed = library.resumeDownloads()
         refreshDownloadsNow()
+        if (resumed > 0) onDownloadStarted()
+        pollDownloads()
+    }
+
+    fun cancelDownload(item: MediaItemDto) = cancelDownload(item.id)
+
+    fun cancelDownload(itemId: String) = run {
+        library.cancelDownload(itemId)
+        refreshDownloadsNow()
+    }
+
+    /** The listed downloads of one show, deleted together from the settings page. */
+    fun removeDownloads(itemIds: List<String>) = run {
+        itemIds.forEach { library.removeDownload(it) }
+        refreshDownloadsNow()
+        notify("已删除 ${itemIds.size} 个本地文件")
+    }
+
+    fun cancelAllDownloads() = run {
+        val count = library.cancelAllDownloads()
+        refreshDownloadsNow()
+        notify("已取消 $count 个下载")
+    }
+
+    /** Stops every download under a series or a season. */
+    fun cancelDownloadsUnder(item: MediaItemDto) = run {
+        val count = library.cancelDownloadsUnder(item.id)
+        refreshDownloadsNow()
+        notify("已取消「${item.name}」的 $count 个下载")
     }
 
     fun removeDownload(itemId: String) = run {
         library.removeDownload(itemId)
         refreshDownloadsNow()
         notify("已删除本地文件")
+    }
+
+    /** Deletes every copy under a series or a season. */
+    fun removeDownloadsUnder(item: MediaItemDto) = run {
+        val count = library.removeDownloadsUnder(item.id)
+        refreshDownloadsNow()
+        notify("已删除「${item.name}」的 $count 个本地文件")
     }
 
     private suspend fun refreshDownloadsNow() {
@@ -1328,15 +1457,44 @@ class AppState(private val scope: CoroutineScope) {
             while (isActive) {
                 downloads = runCatching { library.downloads() }.getOrDefault(downloads)
                 downloadedBytes = runCatching { library.downloadedBytes() }.getOrDefault(downloadedBytes)
-                if (downloads.none { it.state == DownloadState.RUNNING || it.state == DownloadState.QUEUED }) {
-                    return@launch
-                }
-                delay(1500)
+                if (downloads.none { it.active }) return@launch
+                // Bytes move every second; a queue held for Wi-Fi does not.
+                delay(if (downloads.any { it.state == DownloadState.RUNNING }) 1500 else 5000)
             }
         }
     }
 
     fun downloadOf(itemId: String): DownloadDto? = downloads.firstOrNull { it.itemId == itemId }
+
+    /** The downloads of every episode under a series or a season, or of the item itself. */
+    fun downloadsUnder(item: MediaItemDto): List<DownloadDto> = when (item.kind) {
+        ItemKind.SERIES -> downloads.filter { it.seriesId == item.id }
+        ItemKind.SEASON -> downloads.filter { it.seasonId == item.id }
+        else -> listOfNotNull(downloadOf(item.id))
+    }
+
+    /**
+     * Whether the item is on this device: a film or an episode when its copy
+     * is finished, a series or a season when every episode's is.
+     */
+    fun isDownloaded(item: MediaItemDto): Boolean {
+        if (item.isPlayable) return downloadOf(item.id)?.state == DownloadState.DONE
+        val total = item.episodeCount ?: 0
+        return total > 0 && downloadsUnder(item).count { it.state == DownloadState.DONE } >= total
+    }
+
+    // ------------------------------------------------------------ offline settings
+
+    var offlineSettings by mutableStateOf<OfflineSettingsDto?>(null)
+        private set
+
+    fun loadOfflineSettings() = run { offlineSettings = library.offlineSettings() }
+
+    /** Where future downloads go; null puts it back under the data directory. */
+    fun changeOfflineDirectory(path: String?) = run {
+        offlineSettings = library.setOfflineDirectory(path)
+        notify(if (path.isNullOrBlank()) "下载位置已恢复默认，已有的文件留在原处" else "之后的下载会放到 $path，已有的文件留在原处")
+    }
 
     // ------------------------------------------------------------ metadata
 
@@ -1546,6 +1704,7 @@ class AppState(private val scope: CoroutineScope) {
         const val KEY_AUDIO_LANGUAGE = "player.audioLanguage"
         const val KEY_SUBTITLE_LANGUAGE = "player.subtitleLanguage"
         const val KEY_SUBTITLE_SCALE = "player.subtitleScale"
+        const val KEY_WIFI_ONLY = "offline.wifiOnly"
         const val KEY_PLAYER = "player.preferred"
         const val KEY_HOME_SECTIONS = "home.sections"
         const val KEY_LIBRARY_VIEW = "library.view."

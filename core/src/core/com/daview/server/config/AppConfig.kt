@@ -62,7 +62,14 @@ data class AppConfig(
      * minutes between reads — so this has to be generous.
      */
     val externalSessionIdleTimeoutSec: Int = 300,
-    val sync: SyncConfig = SyncConfig()
+    val sync: SyncConfig = SyncConfig(),
+    /**
+     * Where downloads are written. Blank means `offline/` under the data
+     * directory. Only the desktop offers to change it: on Android the app's
+     * own storage is the one place that needs no permission and is cleared
+     * with the app.
+     */
+    val offlineDirectory: String = ""
 )
 
 /**

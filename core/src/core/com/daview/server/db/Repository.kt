@@ -45,6 +45,10 @@ data class PinRow(
 )
 
 /** Row shape for [items], including bookkeeping columns the API never exposes. */
+/** What a `download_files` row is: the video itself, or a subtitle beside it. */
+const val DOWNLOAD_KIND_VIDEO = "video"
+const val DOWNLOAD_KIND_SUBTITLE = "subtitle"
+
 data class ItemRecord(
     val dto: MediaItemDto,
     val dateCreated: Long = 0,
@@ -523,29 +527,48 @@ class Repository(private val db: Database) {
 
     // ------------------------------------------------------------ downloads
 
+    /** One file of a download: the video, or one external subtitle beside it. */
+    data class DownloadFileRow(
+        val itemId: String,
+        val mediaPath: String,
+        /** Where the finished file lives; the transfer writes to it plus a `.part` suffix. */
+        val file: String,
+        val kind: String,
+        val state: DownloadState,
+        val totalBytes: Long = 0,
+        val downloadedBytes: Long = 0,
+        val error: String? = null
+    ) {
+        val isVideo: Boolean get() = kind == DOWNLOAD_KIND_VIDEO
+    }
+
     fun downloads(): List<DownloadDto> = db.read { connection ->
-        connection.statement("SELECT * FROM downloads ORDER BY updated_at DESC")
+        connection.statement("$SELECT_DOWNLOAD ORDER BY d.updated_at DESC")
             .useQuery { it.map(::readDownload) }
     }
 
     fun download(itemId: String): DownloadDto? = db.read { connection ->
-        connection.statement("SELECT * FROM downloads WHERE item_id = ?")
+        connection.statement("$SELECT_DOWNLOAD WHERE d.item_id = ?")
             .apply { setString(1, itemId) }
             .useQuery { if (it.next()) readDownload(it) else null }
     }
 
-    /** The row for a media path, which is how the byte reader finds a local copy. */
-    fun downloadForPath(mediaPath: String): DownloadRow? = db.read { connection ->
-        connection.statement("SELECT * FROM downloads WHERE media_path = ?")
+    /**
+     * Every finished copy of a media path, which is how the byte reader finds
+     * a file on disk. More than one only when two catalogue entries point at
+     * the same file on the share, in which case either copy will do.
+     */
+    fun downloadFilesForPath(mediaPath: String): List<DownloadRow> = db.read { connection ->
+        connection.statement("SELECT file, state FROM download_files WHERE media_path = ? AND state = 'DONE'")
             .apply { setString(1, mediaPath) }
-            .useQuery {
-                if (it.next()) {
+            .useQuery { rs ->
+                rs.map {
                     DownloadRow(
                         file = it.requireString("file"),
                         state = runCatching { DownloadState.valueOf(it.requireString("state")) }
                             .getOrDefault(DownloadState.FAILED)
                     )
-                } else null
+                }
             }
     }
 
@@ -554,12 +577,12 @@ class Repository(private val db: Database) {
     fun saveDownload(download: DownloadDto, file: String, mediaPath: String) = db.transaction { connection ->
         connection.statement(
             """
-            INSERT INTO downloads(item_id, media_path, file, name, state, total_bytes, downloaded_bytes, error, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            INSERT INTO downloads(item_id, media_path, file, name, state, total_bytes, downloaded_bytes, error, note, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
             ON CONFLICT(item_id) DO UPDATE SET
                 media_path = excluded.media_path, file = excluded.file, name = excluded.name,
                 state = excluded.state, total_bytes = excluded.total_bytes,
-                downloaded_bytes = excluded.downloaded_bytes, error = NULL,
+                downloaded_bytes = excluded.downloaded_bytes, error = NULL, note = NULL,
                 updated_at = excluded.updated_at
             """.trimIndent()
         ).use {
@@ -575,15 +598,16 @@ class Repository(private val db: Database) {
         }
     }
 
-    fun updateDownloadState(itemId: String, state: DownloadState, error: String?) =
+    fun updateDownloadState(itemId: String, state: DownloadState, error: String?, note: String? = null) =
         db.transaction { connection ->
             connection.statement(
-                "UPDATE downloads SET state = ?, error = ?, updated_at = ? WHERE item_id = ?"
+                "UPDATE downloads SET state = ?, error = ?, note = ?, updated_at = ? WHERE item_id = ?"
             ).use {
                 it.setString(1, state.name)
                 it.setString(2, error)
-                it.setLong(3, System.currentTimeMillis())
-                it.setString(4, itemId)
+                it.setString(3, note)
+                it.setLong(4, System.currentTimeMillis())
+                it.setString(5, itemId)
                 it.executeUpdate()
             }
         }
@@ -596,14 +620,88 @@ class Repository(private val db: Database) {
         }
     }
 
+    /** Makes the item's total the sum of its files', once their sizes are known. */
+    fun refreshDownloadTotal(itemId: String) = db.transaction { connection ->
+        connection.statement(
+            "UPDATE downloads SET total_bytes = " +
+                "(SELECT COALESCE(SUM(total_bytes), 0) FROM download_files WHERE item_id = ?) WHERE item_id = ?"
+        ).use {
+            it.setString(1, itemId)
+            it.setString(2, itemId)
+            it.executeUpdate()
+        }
+    }
+
     fun deleteDownload(itemId: String) = db.transaction { connection ->
+        connection.statement("DELETE FROM download_files WHERE item_id = ?")
+            .use { it.setString(1, itemId); it.executeUpdate() }
         connection.statement("DELETE FROM downloads WHERE item_id = ?")
             .use { it.setString(1, itemId); it.executeUpdate() }
+    }
+
+    fun downloadFiles(itemId: String): List<DownloadFileRow> = db.read { connection ->
+        connection.statement("SELECT * FROM download_files WHERE item_id = ? ORDER BY kind DESC, media_path")
+            .apply { setString(1, itemId) }
+            .useQuery { rs -> rs.map(::readDownloadFile) }
+    }
+
+    fun saveDownloadFile(row: DownloadFileRow) = db.transaction { connection ->
+        connection.statement(
+            """
+            INSERT INTO download_files(item_id, media_path, file, kind, state, total_bytes, downloaded_bytes, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(item_id, media_path) DO UPDATE SET
+                file = excluded.file, kind = excluded.kind, state = excluded.state,
+                total_bytes = excluded.total_bytes, downloaded_bytes = excluded.downloaded_bytes,
+                error = excluded.error
+            """.trimIndent()
+        ).use {
+            it.setString(1, row.itemId)
+            it.setString(2, row.mediaPath)
+            it.setString(3, row.file)
+            it.setString(4, row.kind)
+            it.setString(5, row.state.name)
+            it.setLong(6, row.totalBytes)
+            it.setLong(7, row.downloadedBytes)
+            it.setString(8, row.error)
+            it.executeUpdate()
+        }
+    }
+
+    /** The episodes under a series or a season, in order, with what the scan says they weigh. */
+    fun episodeSizesUnder(itemId: String): List<Pair<String, Long?>> = db.read { connection ->
+        connection.statement(
+            "SELECT id, size_bytes FROM items WHERE kind = 'EPISODE' AND (series_id = ? OR parent_id = ?) " +
+                "ORDER BY parent_index_number, index_number"
+        ).apply { setString(1, itemId); setString(2, itemId) }
+            .useQuery { rs -> rs.map { it.requireString("id") to it.getLongOrNull("size_bytes") } }
     }
 
     private fun readDownload(rs: SqlCursor) = DownloadDto(
         itemId = rs.requireString("item_id"),
         name = rs.requireString("name"),
+        state = runCatching { DownloadState.valueOf(rs.requireString("state")) }
+            .getOrDefault(DownloadState.FAILED),
+        totalBytes = rs.getLongOrNull("total_bytes") ?: 0L,
+        downloadedBytes = rs.getLongOrNull("downloaded_bytes") ?: 0L,
+        error = rs.getString("error"),
+        note = rs.getString("note"),
+        subtitleCount = rs.getIntOrNull("subtitle_count") ?: 0,
+        failedSubtitles = rs.getIntOrNull("failed_subtitles") ?: 0,
+        file = rs.getString("file"),
+        seriesId = rs.getString("series_id"),
+        seriesName = rs.getString("series_name"),
+        seasonId = rs.getString("season_id"),
+        seasonNumber = rs.getIntOrNull("season_number"),
+        episodeNumber = rs.getIntOrNull("episode_number"),
+        queuedAt = rs.getLongOrNull("updated_at") ?: 0L
+    )
+
+    private fun readDownloadFile(rs: SqlCursor) = DownloadFileRow(
+        itemId = rs.requireString("item_id"),
+        mediaPath = rs.requireString("media_path"),
+        file = rs.requireString("file"),
+        kind = rs.requireString("kind"),
         state = runCatching { DownloadState.valueOf(rs.requireString("state")) }
             .getOrDefault(DownloadState.FAILED),
         totalBytes = rs.getLongOrNull("total_bytes") ?: 0L,
@@ -1319,7 +1417,8 @@ class Repository(private val db: Database) {
 
     fun episodeIdsUnder(itemId: String): List<String> = db.read { connection ->
         connection.statement(
-            "SELECT id FROM items WHERE kind = 'EPISODE' AND (series_id = ? OR parent_id = ?)"
+            "SELECT id FROM items WHERE kind = 'EPISODE' AND (series_id = ? OR parent_id = ?) " +
+                "ORDER BY parent_index_number, index_number"
         ).apply { setString(1, itemId); setString(2, itemId) }
             .useQuery { rs -> rs.map { it.requireString("id") } }
     }
@@ -1541,6 +1640,24 @@ class Repository(private val db: Database) {
                    (SELECT s.poster_url FROM items s WHERE s.id = i.series_id) AS series_poster
             FROM items i
             LEFT JOIN user_data u ON u.item_id = i.id
+        """
+
+        /**
+         * A download with what the interface needs to file it: the show and
+         * season it belongs to, and how its subtitles fared. The subtitle
+         * counts come from `download_files`; the video's own row is not one.
+         */
+        const val SELECT_DOWNLOAD = """
+            SELECT d.*,
+                   i.series_id, i.parent_id AS season_id,
+                   i.parent_index_number AS season_number, i.index_number AS episode_number,
+                   (SELECT s.name FROM items s WHERE s.id = i.series_id) AS series_name,
+                   (SELECT COUNT(*) FROM download_files f
+                     WHERE f.item_id = d.item_id AND f.kind = 'subtitle') AS subtitle_count,
+                   (SELECT COUNT(*) FROM download_files f
+                     WHERE f.item_id = d.item_id AND f.kind = 'subtitle' AND f.state = 'FAILED') AS failed_subtitles
+            FROM downloads d
+            LEFT JOIN items i ON i.id = d.item_id
         """
 
         const val ITEM_COLUMNS = """

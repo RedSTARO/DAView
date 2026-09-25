@@ -44,7 +44,10 @@ class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
      * through it, and handed back to it so every reader — both players and the
      * local pipe — finds a local copy before reaching for the network.
      */
-    val offline = com.daview.server.media.OfflineLibrary(dataDir, repository, streams).also {
+    val offline = com.daview.server.media.OfflineLibrary(
+        dataDir, repository, streams, images,
+        configuredDirectory = { config.offlineDirectory }
+    ).also {
         streams.offlineFile = { path -> it.localFile(path) }
     }
 
@@ -73,6 +76,7 @@ class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
     override fun close() {
         pipe.close()
         sync.close()
+        offline.close()
         database.close()
     }
 }

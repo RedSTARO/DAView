@@ -21,7 +21,6 @@ import com.daview.app.data.AppState
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import com.daview.app.data.ShelfKind
-import com.daview.shared.model.DownloadState
 
 /**
  * Everything on one of the home shelves. The shelves stop at twenty or two
@@ -67,7 +66,7 @@ fun ShelfScreen(state: AppState, playback: PlaybackController, shelf: Screen.She
                                 item,
                                 width = maxWidth,
                                 shape = if (landscape) CardShape.LANDSCAPE else CardShape.PORTRAIT,
-                                downloaded = state.downloadOf(item.id)?.state == DownloadState.DONE,
+                                downloaded = state.isDownloaded(item),
                                 menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) },
                                 onPlay = { playback.play(item) }
                             ) { state.navigate(Screen.Detail(item.id)) }

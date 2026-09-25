@@ -292,14 +292,58 @@ fun ColumnScope.ItemMenuItems(
             }
         )
     } else if ((item.episodeCount ?: 0) > 0) {
-        DropdownMenuItem(
-            leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-            text = { Text(if (item.kind == ItemKind.SEASON) "下载本季（${item.episodeCount} 集）" else "下载全部（${item.episodeCount} 集）") },
-            onClick = {
-                dismiss()
-                state.download(item)
-            }
-        )
+        // The run as a whole: what is queued is cancelled together, what is
+        // here is deleted together, and what is not is fetched together.
+        val under = state.downloadsUnder(item)
+        val pending = under.count { it.active }
+        val done = under.count { it.state == DownloadState.DONE }
+        val total = item.episodeCount ?: 0
+        when {
+            pending > 0 -> DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                text = { Text("取消下载（$pending 集）") },
+                onClick = {
+                    dismiss()
+                    state.cancelDownloadsUnder(item)
+                }
+            )
+            done >= total -> DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Filled.DownloadDone, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                text = { Text("删除本地文件（$done 集）…") },
+                onClick = {
+                    dismiss()
+                    state.confirm(
+                        Confirmation(
+                            title = "删除「${item.name}」的 $done 个本地文件？",
+                            text = ("删除后要再联网播放或重新下载。" +
+                                formatSize(under.filter { it.state == DownloadState.DONE }.sumOf { it.totalBytes })).trim(),
+                            confirmLabel = "删除",
+                            destructive = true,
+                            action = { state.removeDownloadsUnder(item) }
+                        )
+                    )
+                }
+            )
+            else -> DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                text = {
+                    Column {
+                        Text(if (item.kind == ItemKind.SEASON) "下载本季（$total 集）…" else "下载全部（$total 集）…")
+                        if (done > 0) {
+                            Text(
+                                "已有 $done 集在本机",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                },
+                onClick = {
+                    dismiss()
+                    state.download(item)
+                }
+            )
+        }
     }
 
     // Only whole films and series carry scraped metadata.

@@ -41,7 +41,10 @@ class DownloadForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
-            intent.getStringExtra(EXTRA_ITEM_ID)?.let { createCoreContext().offline.cancel(it) }
+            // The whole queue, not the one on top: a series is two dozen
+            // entries, and cancelling them one notification at a time is not
+            // a way out anyone would take.
+            createCoreContext().offline.cancelAll()
             return START_NOT_STICKY
         }
 
@@ -63,20 +66,27 @@ class DownloadForegroundService : Service() {
                 it.state == DownloadState.RUNNING || it.state == DownloadState.QUEUED
             }
             if (active.isEmpty()) break
-            val first = active.first()
+            // The one moving, or the first in line while nothing is.
+            val first = active.firstOrNull { it.state == DownloadState.RUNNING } ?: active.first()
+            val waiting = first.state == DownloadState.QUEUED && first.note != null
             NotificationManagerCompat.from(this).notify(
                 NOTIFICATION_ID,
                 buildNotification(
-                    title = if (active.size == 1) "正在下载 ${first.name}" else "正在下载 ${active.size} 个条目",
-                    text = if (first.totalBytes > 0) {
-                        "${(first.fraction * 100).toInt()}% · ${formatSize(first.downloadedBytes)} / ${formatSize(first.totalBytes)}"
-                    } else {
-                        formatSize(first.downloadedBytes)
+                    title = when {
+                        waiting -> "${first.note}：${active.size} 个下载"
+                        active.size == 1 -> "正在下载 ${first.name}"
+                        else -> "正在下载 ${first.name} 等 ${active.size} 个"
                     },
-                    progress = first.totalBytes.takeIf { it > 0 }?.let {
+                    text = when {
+                        waiting -> "连上 Wi-Fi 后从中断处继续"
+                        first.totalBytes > 0 ->
+                            "${(first.fraction * 100).toInt()}% · ${formatSize(first.downloadedBytes)} / ${formatSize(first.totalBytes)}"
+                        else -> formatSize(first.downloadedBytes)
+                    },
+                    progress = first.totalBytes.takeIf { it > 0 && !waiting }?.let {
                         (first.fraction * 100).toInt() to 100
                     },
-                    cancelItemId = first.itemId
+                    cancelAll = true
                 )
             )
             delay(1500)
@@ -89,7 +99,7 @@ class DownloadForegroundService : Service() {
         title: String,
         text: String,
         progress: Pair<Int, Int>?,
-        cancelItemId: String? = null
+        cancelAll: Boolean = false
     ): Notification {
         val open = PendingIntent.getActivity(
             this,
@@ -111,16 +121,14 @@ class DownloadForegroundService : Service() {
         progress?.let { (current, total) -> builder.setProgress(total, current, false) }
             ?: builder.setProgress(0, 0, true)
 
-        cancelItemId?.let { id ->
+        if (cancelAll) {
             val cancel = PendingIntent.getService(
                 this,
                 1,
-                Intent(this, DownloadForegroundService::class.java)
-                    .setAction(ACTION_CANCEL)
-                    .putExtra(EXTRA_ITEM_ID, id),
+                Intent(this, DownloadForegroundService::class.java).setAction(ACTION_CANCEL),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
-            builder.addAction(0, "取消", cancel)
+            builder.addAction(0, "全部取消", cancel)
         }
         return builder.build()
     }
@@ -164,7 +172,6 @@ class DownloadForegroundService : Service() {
         private const val CHANNEL_ID = "daview-download"
         private const val NOTIFICATION_ID = 1002
         private const val ACTION_CANCEL = "com.daview.app.CANCEL_DOWNLOAD"
-        private const val EXTRA_ITEM_ID = "itemId"
 
         /** The app's primary violet, so the notification is recognisably ours. */
         private const val BRAND_COLOUR = 0xFF4B2CD6.toInt()

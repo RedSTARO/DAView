@@ -112,6 +112,27 @@ actual fun onDownloadStarted() {
 
 actual suspend fun pickImageFile(): PickedFile? = AndroidFilePicker.pickBytes(arrayOf("image/*"))
 
+/** Downloads live in the app's own storage on a phone; there is nothing to choose. */
+actual suspend fun pickDirectory(title: String, initial: String?): String? = null
+
+/** No file manager to show it in: the files are private to the app. */
+actual fun revealInFileManager(path: String) = Unit
+
+/**
+ * Wi-Fi, ethernet, or a hotspot the system knows is not metered. Mobile data
+ * says no, and so does having no network at all — a download then waits
+ * instead of failing.
+ */
+actual fun isUnmeteredNetwork(): Boolean {
+    if (!AndroidContextHolder.isInitialised) return true
+    val manager = AndroidContextHolder.context.getSystemService(android.net.ConnectivityManager::class.java)
+        ?: return true
+    val network = manager.activeNetwork ?: return false
+    val capabilities = manager.getNetworkCapabilities(network) ?: return false
+    return capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+}
+
 actual fun requestNotificationPermission() = NotificationPermission.request()
 
 actual fun createSettingsStore(): SettingsStore = object : SettingsStore {

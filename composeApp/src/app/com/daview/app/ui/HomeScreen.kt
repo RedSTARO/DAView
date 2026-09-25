@@ -65,7 +65,6 @@ import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import com.daview.app.data.ShelfKind
 import com.daview.app.libraryIcon
-import com.daview.shared.model.DownloadState
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.ScanProgressDto
@@ -79,7 +78,7 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
         home.resume.firstOrNull() ?: home.nextUp.firstOrNull() ?: home.latest.firstOrNull()
     } else null
     val itemMenu = cardMenu(state, playback)
-    val downloaded = { item: MediaItemDto -> state.downloadOf(item.id)?.state == DownloadState.DONE }
+    val downloaded = { item: MediaItemDto -> state.isDownloaded(item) }
 
     // The play button the tiles draw over their artwork. A series has no bytes
     // of its own; pressing it plays the episode it is up to.

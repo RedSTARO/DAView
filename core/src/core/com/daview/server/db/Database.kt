@@ -291,6 +291,37 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                 // The cast's names alone, one per line, for search. Matching
                 // the people JSON itself found every film with an "Actor" in it.
                 "ALTER TABLE items ADD COLUMN people_names TEXT"
+            ),
+            listOf(
+                // One row per file a download is made of: the video, and every
+                // external subtitle beside it on the share. `downloads` stays
+                // the per-item summary the interface lists; this is what the
+                // byte reader consults, so a subtitle is found on disk as soon
+                // as it is there, whether or not the video has finished.
+                """
+                CREATE TABLE IF NOT EXISTS download_files (
+                    item_id TEXT NOT NULL,
+                    media_path TEXT NOT NULL,
+                    file TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    total_bytes INTEGER NOT NULL DEFAULT 0,
+                    downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+                    error TEXT,
+                    PRIMARY KEY (item_id, media_path)
+                )
+                """.trimIndent(),
+                "CREATE INDEX IF NOT EXISTS idx_download_files_path ON download_files(media_path)",
+                // What a finished download still has to say — a subtitle that
+                // could not be fetched, what a queued one is waiting for.
+                "ALTER TABLE downloads ADD COLUMN note TEXT",
+                // Downloads made before this table existed know only their
+                // video. Carried over as that one file, so they keep playing
+                // from disk; their subtitles are fetched on the next start.
+                """
+                INSERT OR IGNORE INTO download_files(item_id, media_path, file, kind, state, total_bytes, downloaded_bytes)
+                SELECT item_id, media_path, file, 'video', state, total_bytes, downloaded_bytes FROM downloads
+                """.trimIndent()
             )
         )
     }

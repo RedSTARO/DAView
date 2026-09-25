@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
@@ -82,12 +83,15 @@ import com.daview.app.data.ThemeMode
 import com.daview.app.data.tracksTextInput
 import com.daview.app.platform.PlatformInfo
 import com.daview.app.platform.availableExternalPlayers
+import com.daview.app.platform.pickDirectory
 import com.daview.app.platform.pickTextFile
+import com.daview.app.platform.revealInFileManager
 import com.daview.app.platform.saveTextFile
 import com.daview.server.api.BackupOptions
 import com.daview.server.api.backupFileName
 import com.daview.shared.api.DaViewJson
 import com.daview.shared.model.BackupFileDto
+import com.daview.shared.model.DownloadDto
 import com.daview.shared.model.DownloadState
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.PREFERRED_LANGUAGES
@@ -1141,97 +1145,216 @@ private fun CheckboxRow(label: String, checked: Boolean, onCheckedChange: (Boole
  * What is kept on this device.
  *
  * Everything else in the app streams from the share, so this is the only place
- * storage on the device itself is spent, and the only place to get it back. It
- * used to appear only once something had been downloaded.
+ * storage on the device itself is spent, and the only place to get it back. A
+ * show's episodes are listed under the show, with one way to be rid of all of
+ * them; films stand on their own.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun DownloadsSection(state: AppState) {
     val downloads = state.downloads
-    LaunchedEffect(Unit) { state.refreshDownloads() }
+    LaunchedEffect(Unit) {
+        state.refreshDownloads()
+        state.loadOfflineSettings()
+    }
 
     Column(Modifier.padding(horizontal = 20.dp)) {
         SectionTitle("离线内容")
-        Hint("下载的文件只留在这台设备上，不会同步到别的设备。播放时直接读本地文件，不走网络。")
+        Hint("下载的是视频连同它的外挂字幕，只留在这台设备上，不会同步到别的设备。播放时直接读本地文件，不走网络。")
+        Spacer(Modifier.height(8.dp))
+        OfflineLocationRow(state)
+        if (PlatformInfo.isAndroid) {
+            SwitchRow(
+                "仅在 Wi-Fi 下下载",
+                state.downloadWifiOnly,
+                detail = "用移动数据时先排队等着，连上 Wi-Fi 后从中断处继续"
+            ) { state.changeDownloadWifiOnly(it) }
+        }
         Spacer(Modifier.height(6.dp))
-        Text(
-            "已占用 ${formatSize(state.downloadedBytes).ifBlank { "0 B" }} · ${downloads.count { it.state == DownloadState.DONE }} 个文件",
-            style = MaterialTheme.typography.titleSmall
-        )
+
+        val active = downloads.filter { it.active }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                listOfNotNull(
+                    "已占用 ${formatSize(state.downloadedBytes).ifBlank { "0 B" }}",
+                    "${downloads.count { it.state == DownloadState.DONE }} 个文件",
+                    "${active.size} 个在排队或下载".takeIf { active.isNotEmpty() }
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f)
+            )
+            if (active.isNotEmpty()) {
+                TextButton(onClick = { state.cancelAllDownloads() }) { Text("全部取消") }
+            }
+        }
         if (downloads.isEmpty()) {
             Spacer(Modifier.height(8.dp))
-            Hint("还没有下载。在任意影片或分集的菜单里选「下载到本机」，或在剧集页下载整季。")
+            Hint("还没有下载。在任意影片或分集的菜单里选「下载到本机」，或在剧集页下载整部、整季。")
         }
         Spacer(Modifier.height(8.dp))
 
-        downloads.forEach { download ->
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(download.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        when (download.state) {
-                            DownloadState.DONE -> formatSize(download.totalBytes)
-                            DownloadState.FAILED -> "下载失败：" + (download.error ?: "未知原因")
-                            DownloadState.QUEUED -> "排队中"
-                            DownloadState.RUNNING ->
-                                "${(download.fraction * 100).toInt()}% · " +
-                                    "${formatSize(download.downloadedBytes)} / ${formatSize(download.totalBytes)}"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (download.state == DownloadState.FAILED) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (download.state == DownloadState.RUNNING || download.state == DownloadState.QUEUED) {
-                        Spacer(Modifier.height(4.dp))
-                        // Indeterminate until the size is known, rather than a
-                        // bar sitting at zero while a queued item waits.
-                        if (download.totalBytes > 0) {
-                            LinearWavyProgressIndicator(
-                                progress = { download.fraction },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        } else {
-                            LinearWavyProgressIndicator(Modifier.fillMaxWidth())
-                        }
-                    }
-                }
-                if (download.state == DownloadState.FAILED) {
-                    TextButton(onClick = {
-                        state.download(
-                            com.daview.shared.model.MediaItemDto(
-                                id = download.itemId, libraryId = "", kind = com.daview.shared.model.ItemKind.EPISODE, name = download.name
-                            )
-                        )
-                    }) { Text("重试") }
-                }
-                TextButton(onClick = {
-                    if (download.state == DownloadState.DONE) {
-                        state.confirm(
-                            com.daview.app.data.Confirmation(
-                                title = "删除「${download.name}」的本地文件？",
-                                text = "删除后要再联网播放或重新下载。${formatSize(download.totalBytes)}".trim(),
-                                confirmLabel = "删除",
-                                destructive = true,
-                                action = { state.removeDownload(download.itemId) }
-                            )
-                        )
-                    } else {
-                        state.removeDownload(download.itemId)
-                    }
-                }) {
-                    Text(if (download.state == DownloadState.DONE) "删除" else "取消")
-                }
+        downloads.groupBy { it.seriesId ?: it.itemId }.forEach { (_, rows) ->
+            val first = rows.first()
+            if (first.seriesId == null) {
+                DownloadRow(state, first, indent = false)
+            } else {
+                SeriesDownloadHeader(state, first, rows)
+                rows.sortedWith(compareBy({ it.seasonNumber ?: Int.MAX_VALUE }, { it.episodeNumber ?: Int.MAX_VALUE }))
+                    .forEach { DownloadRow(state, it, indent = true) }
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** Where downloads go, how much room is left, and — on a desktop — a way to change it. */
+@Composable
+private fun OfflineLocationRow(state: AppState) {
+    val settings = state.offlineSettings
+    val scope = rememberCoroutineScope()
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("存储位置")
+            Hint(
+                settings?.let { current ->
+                    listOfNotNull(
+                        current.effectiveDirectory,
+                        current.freeBytes?.let { "剩余 ${formatSize(it)}" }
+                    ).joinToString(" · ")
+                } ?: "统计中…"
+            )
+            if (PlatformInfo.isAndroid) {
+                Hint("在应用自己的存储空间里，卸载应用时一并清除")
+            } else {
+                Hint("改了位置后，之后的下载放到新目录；已有的文件留在原处，照常播放")
+            }
+        }
+        if (PlatformInfo.isDesktop) {
+            TextButton(onClick = {
+                scope.launch {
+                    pickDirectory("选择下载目录", settings?.effectiveDirectory)?.let { state.changeOfflineDirectory(it) }
+                }
+            }) { Text("更改…") }
+            if (settings?.directory?.isNotBlank() == true) {
+                TextButton(onClick = { state.changeOfflineDirectory(null) }) { Text("恢复默认") }
+            }
+            TextButton(
+                enabled = settings != null,
+                onClick = { settings?.effectiveDirectory?.let { revealInFileManager(it) } }
+            ) { Text("打开") }
+        }
+    }
+}
+
+/** A show with downloads under it: how much of it is here, and one delete for all of it. */
+@Composable
+private fun SeriesDownloadHeader(state: AppState, first: DownloadDto, rows: List<DownloadDto>) {
+    val done = rows.filter { it.state == DownloadState.DONE }
+    Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(first.seriesName ?: "剧集", style = MaterialTheme.typography.titleSmall)
+            Hint(
+                listOfNotNull(
+                    "${done.size} 集在本机",
+                    formatSize(done.sumOf { it.totalBytes }).takeIf { it.isNotBlank() && done.isNotEmpty() },
+                    "${rows.size - done.size} 集在排队或下载".takeIf { rows.size > done.size }
+                ).joinToString(" · ")
+            )
+        }
+        if (done.isNotEmpty()) {
+            TextButton(onClick = {
+                state.confirm(
+                    com.daview.app.data.Confirmation(
+                        title = "删除「${first.seriesName ?: "这部剧"}」的 ${done.size} 个本地文件？",
+                        text = "删除后要再联网播放或重新下载。${formatSize(done.sumOf { it.totalBytes })}".trim(),
+                        confirmLabel = "删除",
+                        destructive = true,
+                        action = { state.removeDownloads(done.map { it.itemId }) }
+                    )
+                )
+            }) { Text("删除整部…") }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun DownloadRow(state: AppState, download: DownloadDto, indent: Boolean) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = if (indent) 16.dp else 0.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            // Under its show's header the show's name is said already.
+            val title = download.seriesName
+                ?.takeIf { indent }
+                ?.let { download.name.removePrefix("$it · ") }
+                ?: download.name
+            Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                when (download.state) {
+                    DownloadState.DONE -> listOfNotNull(
+                        formatSize(download.totalBytes).takeIf { it.isNotBlank() },
+                        "含 ${download.subtitleCount} 条字幕".takeIf { download.subtitleCount > 0 },
+                        download.note
+                    ).joinToString(" · ")
+                    DownloadState.FAILED -> "下载失败：" + (download.error ?: "未知原因")
+                    DownloadState.QUEUED -> download.note ?: "排队中"
+                    DownloadState.RUNNING ->
+                        "${(download.fraction * 100).toInt()}% · " +
+                            "${formatSize(download.downloadedBytes)} / ${formatSize(download.totalBytes)}"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = when {
+                    download.state == DownloadState.FAILED -> MaterialTheme.colorScheme.error
+                    download.note != null -> MaterialTheme.colorScheme.tertiary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (download.active) {
+                Spacer(Modifier.height(4.dp))
+                // Indeterminate until the size is known, rather than a bar
+                // sitting at zero while a queued item waits.
+                if (download.totalBytes > 0 && download.state == DownloadState.RUNNING) {
+                    LinearWavyProgressIndicator(
+                        progress = { download.fraction },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+                }
+            }
+        }
+        if (download.state == DownloadState.FAILED) {
+            TextButton(onClick = { state.retryDownload(download.itemId) }) { Text("重试") }
+        }
+        val file = download.file
+        if (download.state == DownloadState.DONE && PlatformInfo.isDesktop && file != null) {
+            TipIconButton("在文件夹中显示", onClick = { revealInFileManager(file) }) {
+                Icon(Icons.Filled.FolderOpen, contentDescription = "在文件夹中显示")
+            }
+        }
+        TextButton(onClick = {
+            if (download.state == DownloadState.DONE) {
+                state.confirm(
+                    com.daview.app.data.Confirmation(
+                        title = "删除「${download.name}」的本地文件？",
+                        text = "删除后要再联网播放或重新下载。${formatSize(download.totalBytes)}".trim(),
+                        confirmLabel = "删除",
+                        destructive = true,
+                        action = { state.removeDownload(download.itemId) }
+                    )
+                )
+            } else if (download.active) {
+                state.cancelDownload(download.itemId)
+            } else {
+                state.removeDownload(download.itemId)
+            }
+        }) {
+            Text(if (download.active) "取消" else "删除")
+        }
     }
 }
 

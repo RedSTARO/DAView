@@ -185,6 +185,68 @@ actual suspend fun pickImageFile(): PickedFile? = withContext(Dispatchers.Main) 
 actual fun requestNotificationPermission() = Unit
 
 /**
+ * A folder, through Swing's chooser: AWT's dialog only picks folders on macOS,
+ * where it is used, since that is the platform's own sheet.
+ */
+actual suspend fun pickDirectory(title: String, initial: String?): String? = withContext(Dispatchers.Main) {
+    val start = initial?.takeIf { File(it).isDirectory } ?: lastDirectory ?: System.getProperty("user.home")
+    val mac = System.getProperty("os.name").orEmpty().startsWith("Mac", ignoreCase = true)
+    val chosen: File? = if (mac) {
+        System.setProperty("apple.awt.fileDialogForDirectories", "true")
+        try {
+            val dialog = FileDialog(null as Frame?, title, FileDialog.LOAD).apply {
+                directory = start
+                isVisible = true
+            }
+            val directory = dialog.directory
+            val file = dialog.file
+            if (directory != null && file != null) File(directory, file) else null
+        } finally {
+            System.setProperty("apple.awt.fileDialogForDirectories", "false")
+        }
+    } else {
+        val chooser = javax.swing.JFileChooser(start).apply {
+            dialogTitle = title
+            fileSelectionMode = javax.swing.JFileChooser.DIRECTORIES_ONLY
+            isAcceptAllFileFilterUsed = false
+        }
+        if (chooser.showOpenDialog(null) == javax.swing.JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+    }
+    chosen?.also { lastDirectory = it.parent ?: it.absolutePath }?.absolutePath
+}
+
+/**
+ * The file, selected in Explorer or Finder; a folder, opened. The JDK's own
+ * call covers the platforms it knows; the rest get the command each one has.
+ */
+actual fun revealInFileManager(path: String) {
+    val file = File(path)
+    if (!file.exists()) return
+    runCatching {
+        val desktop = if (Desktop.isDesktopSupported()) Desktop.getDesktop() else null
+        val os = System.getProperty("os.name").orEmpty()
+        when {
+            file.isFile && desktop?.isSupported(Desktop.Action.BROWSE_FILE_DIR) == true ->
+                desktop.browseFileDirectory(file)
+            file.isFile && os.startsWith("Windows", ignoreCase = true) ->
+                // One string on purpose: exec's tokenizer and re-quoting leave
+                // `/select,"<path>"` exactly as Explorer wants it, where the
+                // array form quotes the whole argument and Explorer ignores it.
+                @Suppress("DEPRECATION")
+                Runtime.getRuntime().exec("explorer.exe /select,\"${file.absolutePath}\"")
+            file.isFile && os.startsWith("Mac", ignoreCase = true) ->
+                ProcessBuilder("open", "-R", file.absolutePath).start()
+            desktop?.isSupported(Desktop.Action.OPEN) == true ->
+                desktop.open(if (file.isFile) file.parentFile ?: file else file)
+            else -> ProcessBuilder("xdg-open", (if (file.isFile) file.parentFile ?: file else file).absolutePath).start()
+        }
+    }
+}
+
+/** A desktop is on whatever it is plugged into; there is no allowance to spare. */
+actual fun isUnmeteredNetwork(): Boolean = true
+
+/**
  * The platform's open dialog, limited to [extensions] and starting where the
  * last one was left.
  *

@@ -317,7 +317,8 @@ enum class PlayerKind {
 enum class DownloadState { QUEUED, RUNNING, DONE, FAILED }
 
 /**
- * One item kept on this device.
+ * One item kept on this device: the video and every external subtitle that
+ * sits beside it on the share.
  *
  * Downloads are per device on purpose and never travel in the sync file: what
  * one phone has room for says nothing about what another one wants.
@@ -327,13 +328,63 @@ data class DownloadDto(
     val itemId: String,
     val name: String,
     val state: DownloadState,
+    /** Bytes of every file in the download, as far as their sizes are known. */
     val totalBytes: Long = 0,
     val downloadedBytes: Long = 0,
-    val error: String? = null
+    val error: String? = null,
+    /**
+     * Something worth knowing that did not stop the download: a subtitle that
+     * could not be fetched, or what a queued item is waiting for.
+     */
+    val note: String? = null,
+    /** How many subtitle files travel with the video, and how many of those failed. */
+    val subtitleCount: Int = 0,
+    val failedSubtitles: Int = 0,
+    /** Where the video is on this device once it has arrived. */
+    val file: String? = null,
+    /** The show and the season this belongs to, so a run of episodes reads as one. */
+    val seriesId: String? = null,
+    val seriesName: String? = null,
+    val seasonId: String? = null,
+    val seasonNumber: Int? = null,
+    val episodeNumber: Int? = null,
+    val queuedAt: Long = 0
 ) {
     val fraction: Float
         get() = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
+
+    /** Queued or in flight — something the interface should keep watching. */
+    val active: Boolean get() = state == DownloadState.QUEUED || state == DownloadState.RUNNING
 }
+
+/**
+ * What downloading everything under a series or a season would amount to,
+ * so the question can be asked with a number in it.
+ */
+@Serializable
+data class DownloadEstimateDto(
+    val episodes: Int,
+    /** Episodes already on this device, which will not be fetched again. */
+    val alreadyDone: Int,
+    /** Bytes still to fetch. Short by whatever [unknownSizes] episodes weigh. */
+    val bytes: Long,
+    /** Episodes whose size the scan never recorded. */
+    val unknownSizes: Int = 0
+) {
+    val pending: Int get() = episodes - alreadyDone
+}
+
+/** Where downloads go on this device, and how much room there is. */
+@Serializable
+data class OfflineSettingsDto(
+    /** The directory the user chose, or blank for the default. */
+    val directory: String = "",
+    val defaultDirectory: String = "",
+    /** Where downloads are actually written right now. */
+    val effectiveDirectory: String = "",
+    val usedBytes: Long = 0,
+    val freeBytes: Long? = null
+)
 
 @Serializable
 data class PlaybackStartRequest(

@@ -80,7 +80,6 @@ import com.daview.app.data.OnEscape
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import com.daview.app.data.tracksTextInput
-import com.daview.shared.model.DownloadState
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MediaItemDto
 import kotlinx.coroutines.FlowPreview
@@ -349,7 +348,7 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
                                 item,
                                 width = maxWidth,
                                 shape = CardShape.PORTRAIT,
-                                downloaded = state.downloadOf(item.id)?.state == DownloadState.DONE,
+                                downloaded = state.isDownloaded(item),
                                 selected = selected?.let { item.id in it },
                                 menu = if (selected == null) ({ dismiss -> ItemMenuItems(state, playback, item, dismiss) }) else null,
                                 // A series plays the episode it is up to.
@@ -585,7 +584,7 @@ private fun LibraryList(
                 ListEntry(
                     item = item,
                     selected = selection?.let { item.id in it },
-                    downloaded = state.downloadOf(item.id)?.state == DownloadState.DONE,
+                    downloaded = state.isDownloaded(item),
                     menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) },
                     onClick = {
                         if (selection != null) onToggle(item.id) else state.navigate(Screen.Detail(item.id))

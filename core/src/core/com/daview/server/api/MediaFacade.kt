@@ -374,11 +374,50 @@ class MediaFacade(private val context: ServerContext) {
         snapshot.forEach { (itemId, data) -> context.repository.restoreUserData(itemId, data) }
     }
 
-    /** Every episode under a series or a season, for downloading a run at once. */
+    /**
+     * Every episode under a series or a season, for downloading a run at once.
+     * Queued in running order, so the first episode is watchable first.
+     * Returns how many were not already here.
+     */
     suspend fun downloadAll(id: String): Int = io {
         val ids = context.repository.episodeIdsUnder(id).ifEmpty { listOf(id) }
-        ids.forEach { context.offline.start(it) }
-        ids.size
+        val pending = ids.filterNot { context.offline.isComplete(it) }
+        pending.forEach { context.offline.start(it) }
+        pending.size
+    }
+
+    /**
+     * What downloading everything under [id] amounts to, before it is asked
+     * for: two dozen episodes are tens of gigabytes, and a tap should not
+     * commit to that without saying so.
+     */
+    suspend fun downloadEstimate(id: String): DownloadEstimateDto = io {
+        val episodes = context.repository.episodeSizesUnder(id).ifEmpty {
+            context.repository.item(id)?.takeIf { it.isPlayable }?.let { listOf(it.id to it.sizeBytes) } ?: emptyList()
+        }
+        val pending = episodes.filterNot { (episodeId, _) -> context.offline.isComplete(episodeId) }
+        DownloadEstimateDto(
+            episodes = episodes.size,
+            alreadyDone = episodes.size - pending.size,
+            bytes = pending.sumOf { (_, size) -> size ?: 0L },
+            unknownSizes = pending.count { (_, size) -> size == null }
+        )
+    }
+
+    /** Stops every queued or running download under [id], or [id] itself. */
+    suspend fun cancelDownloadsUnder(id: String): Int = io {
+        val ids = context.repository.episodeIdsUnder(id).ifEmpty { listOf(id) }
+        val active = ids.filter { context.repository.download(it)?.active == true }
+        active.forEach { context.offline.cancel(it) }
+        active.size
+    }
+
+    /** Deletes every copy under [id], or of [id] itself. */
+    suspend fun removeDownloadsUnder(id: String): Int = io {
+        val ids = context.repository.episodeIdsUnder(id).ifEmpty { listOf(id) }
+        val kept = ids.filter { context.repository.download(it) != null }
+        kept.forEach { context.offline.remove(it) }
+        kept.size
     }
 
     /**
@@ -730,15 +769,52 @@ class MediaFacade(private val context: ServerContext) {
         context.offline.start(id)
     }
 
-    /** Stops a download in flight. What arrived stays, ready to resume. */
+    /** Stops a download in flight and drops what arrived. */
     suspend fun cancelDownload(id: String) = io { context.offline.cancel(id) }
+
+    /** Stops everything queued or in flight. Returns how many that was. */
+    suspend fun cancelAllDownloads(): Int = io { context.offline.cancelAll() }
 
     /** Forgets a copy and deletes its bytes. */
     suspend fun removeDownload(id: String) = io { context.offline.remove(id) }
 
+    /**
+     * Puts back on the queue whatever a previous run of this process left
+     * there. The queue lives in memory; the rows do not, so without this a
+     * download interrupted by the app closing showed as running forever and
+     * never moved again. Returns how many were resumed.
+     */
+    suspend fun resumeDownloads(): Int = io { context.offline.resumePending() }
+
     suspend fun downloads(): List<DownloadDto> = io { context.offline.all() }
 
     suspend fun downloadedBytes(): Long = io { context.offline.usedBytes() }
+
+    suspend fun offlineSettings(): OfflineSettingsDto = io { offlineSettingsNow() }
+
+    /**
+     * Moves future downloads to [path], or back to the default for null. The
+     * directory is written to before it is accepted. Copies already made stay
+     * where they are — every row remembers its own file — so nothing has to
+     * be moved and nothing stops playing.
+     */
+    suspend fun setOfflineDirectory(path: String?): OfflineSettingsDto = io {
+        val chosen = path?.trim().orEmpty()
+        if (chosen.isNotEmpty()) {
+            runCatching { context.offline.checkWritable(java.nio.file.Path.of(chosen)) }
+                .getOrElse { invalid("这个目录不能写入", it.message) }
+        }
+        context.updateConfig { it.copy(offlineDirectory = chosen) }
+        offlineSettingsNow()
+    }
+
+    private fun offlineSettingsNow() = OfflineSettingsDto(
+        directory = context.config.offlineDirectory,
+        defaultDirectory = context.offline.defaultDirectory().toString(),
+        effectiveDirectory = context.offline.directory().toString(),
+        usedBytes = context.offline.usedBytes(),
+        freeBytes = context.offline.freeBytes()
+    )
 
     // ------------------------------------------------------------ artwork
 

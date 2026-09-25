@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap
 class StreamService(
     private val davProvider: () -> WebDavClient?,
     private val repository: Repository
-) {
+) : RangeSource {
     /**
      * Where to look for a copy already on this device, set once the offline
      * library exists. It is a lambda rather than a constructor argument because
@@ -64,7 +64,7 @@ class StreamService(
      * Opens a byte range, reusing the cached CDN link so a seek costs one
      * request instead of two (redirect + fetch).
      */
-    fun openRange(path: String, start: Long, end: Long?): WebDavClient.RangeStream {
+    override fun openRange(path: String, start: Long, end: Long?): WebDavClient.RangeStream {
         // The whole point of downloading something is that this read stops
         // going to the network. Both players and the local pipe come through
         // here, so one check covers all of them — and progress tracking for an
@@ -83,7 +83,7 @@ class StreamService(
         }
     }
 
-    fun fileSize(path: String): Long? =
+    override fun fileSize(path: String): Long? =
         offlineFile?.invoke(path)?.let { runCatching { java.nio.file.Files.size(it) }.getOrNull() }
             ?: dav().size(path)
 
@@ -124,6 +124,22 @@ class StreamService(
      * re-following the redirect for each one dominated the scan time.
      */
     private fun rangeReader(path: String): MkvProbe.RangeReader {
+        // A file already here is probed here: chapters, cues and the track list
+        // of a downloaded film used to go to the share for their few kilobytes,
+        // and offline that is a failed read for something sitting on disk.
+        offlineFile?.invoke(path)?.let { local ->
+            return MkvProbe.RangeReader { start, length ->
+                java.io.RandomAccessFile(local.toFile(), "r").use { file ->
+                    val available = (file.length() - start).coerceIn(0L, length.toLong()).toInt()
+                    val bytes = ByteArray(available)
+                    if (available > 0) {
+                        file.seek(start)
+                        file.readFully(bytes)
+                    }
+                    bytes
+                }
+            }
+        }
         val direct = directUrl(path)
         return MkvProbe.RangeReader { start, length ->
             val stream = if (direct != null) {
