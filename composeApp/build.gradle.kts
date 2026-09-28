@@ -83,7 +83,7 @@ val daviewVersionLabel: String = (findProperty("daviewVersion") as String?)
     ?: defaultVersionLabel()
 
 fun defaultVersionLabel(): String = runCatching {
-    ProcessBuilder("git", "describe", "--tags", "--always")
+    ProcessBuilder("git", "describe", "--tags", "--always", "--match", "v*")
         .directory(rootDir)
         .redirectErrorStream(true)
         .start()

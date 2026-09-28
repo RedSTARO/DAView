@@ -216,11 +216,14 @@ curl -X POST -H "Content-Type: application/json" --data-binary @backup.json "htt
   `-PdaviewPackageVersion=<MAJOR.MINOR.提交数>`，Gradle 据此生成 `BuildInfo.kt`
   （`composeApp/build/generated/daview/`，不进 git）。以前版本是个常量，每个包都说自己是 1.0.0，没法比。
   Android 的 `versionCode` 也取提交数，所以新包一定装得上旧包。
-- **更新清单**：打 `v*` 标签发布时，`release` job 用 `scripts/update-manifest.py` 生成 `update.json`
-  （版本、安装包版本、发布页、更新日志、每个平台的下载地址 / SHA-256 / 大小），附到 Release 上，
-  并推到仓库的 **`updates` 孤儿分支**。应用默认从
-  `https://raw.githubusercontent.com/RedSTARO/DAView/updates/update.json` 读它——放在单独的分支而不是
-  master，是因为往 master 提交会再触发一次整个 workflow。安装包本身从 GitHub Release 的附件下载。
+- **更新目标是 CI 出的包**：每次推送 master，`publish-ci` job 把签名 APK 和三个桌面包放到一个固定标签
+  `ci` 的滚动预发布上（每次删掉重建，只留最新一次的包；workflow artifacts 要 token 才能下载，应用没有），
+  并用 `scripts/update-manifest.py` 生成 `update.json`（版本、安装包版本、发布页、最近几条提交、
+  每个平台的下载地址 / SHA-256 / 大小），推到仓库的 **`updates` 孤儿分支**。打 `v*` 标签的正式发布走同一套，
+  只是包挂在那个标签自己的 Release 上。应用默认从
+  `https://raw.githubusercontent.com/RedSTARO/DAView/updates/update.json` 读清单——放单独的分支而不是
+  master，是因为往 master 提交会再触发一次整个 workflow；推 `ci` 标签和 `updates` 分支都不会触发。
+  解析版本时只看 `v*` 标签，`ci` 标签不算。
 - **比较的是安装包版本**（`MAJOR.MINOR.PATCH`，逐段比），不是标签；任一边解析不出来就不算有更新，
   宁可不提示也不把新版本换成旧的。下载完先核对 SHA-256，不符的文件不会交给安装程序。
 - **各平台怎么装**：Windows 校验完 MSI 后写一个 `install-update.cmd`（等 2 秒 → `msiexec /passive` →

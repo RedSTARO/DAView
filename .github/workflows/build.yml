@@ -48,10 +48,12 @@ jobs:
         id: meta
         run: |
           git fetch --force --tags >/dev/null 2>&1 || true
+          # Only v* tags are versions. The `ci` tag moves with every master
+          # build (see publish-ci) and would otherwise be the nearest tag.
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             version="$GITHUB_REF_NAME"
           else
-            version="$(git describe --tags --always 2>/dev/null || git rev-parse --short HEAD)"
+            version="$(git describe --tags --always --match 'v*' 2>/dev/null || git rev-parse --short HEAD)"
           fi
           # What the installers carry, which is not the label above. Windows
           # compares MAJOR.MINOR.PATCH and refuses a package whose version
@@ -65,14 +67,14 @@ jobs:
           # below that would be rejected as a downgrade instead.
           package_major=1
           package_minor=0
-          newest_tag="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+          newest_tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo '')"
           if [[ "$newest_tag" =~ ^v?([0-9]+)\.([0-9]+) ]]; then
             package_major="${BASH_REMATCH[1]}"
             package_minor="${BASH_REMATCH[2]}"
           fi
           package_patch="$(git rev-list --count HEAD)"
 
-          latest_tag="$(git tag --sort=-creatordate | head -n1)"
+          latest_tag="$(git tag --list 'v*' --sort=-creatordate | head -n1)"
           if [ -z "$latest_tag" ]; then
             count="$(git rev-list --count HEAD)"
           else
@@ -314,6 +316,91 @@ jobs:
           name: DAView-dmg
           path: composeApp/build/compose/binaries/main/dmg/DAView-${{ needs.test.outputs.version }}.dmg
           if-no-files-found: error
+
+  # ─── CI 版本（每次 master 推送）─────────────────────────────────────────────
+  # Every build of master is an update the app can install. Workflow artifacts
+  # need a token to download, which the app has not got, so the packages go on
+  # a rolling pre-release under the fixed tag `ci`, and the manifest that names
+  # them goes to the `updates` branch, where the app reads it. Tagged releases
+  # publish the same way; the app takes whichever manifest was written last,
+  # and its package version only ever rises with the commit count.
+  publish-ci:
+    name: 发布 CI 版本
+    needs:
+      - test
+      - sign-android
+      - build-desktop-windows
+      - build-desktop-linux
+      - build-desktop-macos
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+      PACKAGE_VERSION: ${{ needs.test.outputs.package_version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The test report lands in dist/ too, and the unsigned APK is the input
+      # to signing, not something anyone installs.
+      - name: 只留安装包
+        run: |
+          rm -f dist/*unsigned*.apk
+          find dist -type f ! -name 'DAView-*' -delete
+          ls -l dist
+
+      - name: 生成更新清单
+        run: |
+          {
+            echo "CI 构建 $VERSION（${{ github.sha }}）"
+            echo
+            git log -8 --pretty='- %s'
+          } > /tmp/notes.txt
+          python3 scripts/update-manifest.py dist dist/update.json \
+            --repo "${{ github.repository }}" \
+            --tag ci \
+            --version "$VERSION" \
+            --package-version "$PACKAGE_VERSION" \
+            --notes-file /tmp/notes.txt
+          cat dist/update.json
+
+      # Recreated rather than edited: one release holding the newest build's
+      # packages and nothing else, whatever the earlier ones were called. The
+      # tag goes with it, so the new one points at this commit. Neither the tag
+      # nor the branch below sets this workflow off again: it runs on v* tags
+      # and on master only.
+      - name: 更新 ci 预发布
+        run: |
+          gh release delete ci --yes --cleanup-tag || true
+          git push --delete origin refs/tags/ci || true
+          gh release create ci dist/DAView-* dist/update.json \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            --title "CI 构建 $VERSION" \
+            --notes-file /tmp/notes.txt
+
+      - name: 发布更新清单到 updates 分支
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp dist/update.json /tmp/update.json
+          git checkout --orphan updates
+          git rm -rf --quiet .
+          cp /tmp/update.json update.json
+          git add update.json
+          git commit -m "update manifest for $VERSION"
+          git push --force origin updates
 
   # ─── Telegram 通知（每次 master/tag 推送，汇总所有产物状态）──────────────────
   notify-telegram:
