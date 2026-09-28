@@ -74,7 +74,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.daview.app.BuildInfo
 import com.daview.app.data.AppState
+import com.daview.app.data.DEFAULT_UPDATE_SOURCE
+import com.daview.app.data.UpdateState
 import com.daview.app.data.DesktopShortcuts
 import com.daview.app.data.ModalMarker
 import com.daview.app.data.ResumeBehavior
@@ -82,6 +85,8 @@ import com.daview.app.data.Screen
 import com.daview.app.data.ThemeMode
 import com.daview.app.data.tracksTextInput
 import com.daview.app.platform.PlatformInfo
+import com.daview.app.platform.canSelfUpdate
+import com.daview.app.platform.openUrl
 import com.daview.app.platform.availableExternalPlayers
 import com.daview.app.platform.pickDirectory
 import com.daview.app.platform.pickTextFile
@@ -145,6 +150,7 @@ fun SettingsScreen(state: AppState) {
 
     Column(Modifier.fillMaxSize()) {
         ScreenTopBar(title = "设置", onBack = if (state.canGoBack) ({ state.back() }) else null)
+        UpdateBanner(state)
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1418,10 +1424,14 @@ private fun GeneralSection(state: AppState) {
         }
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
+        UpdateSection(state)
+
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
         SectionTitle("关于")
-        state.serverInfo?.let {
-            Hint("DAView ${it.version} · ${PlatformInfo.name} · 共 ${it.itemCount} 个条目")
-        }
+        Hint(
+            "DAView ${BuildInfo.VERSION}（安装包版本 ${BuildInfo.PACKAGE_VERSION}）· ${PlatformInfo.name}" +
+                (state.serverInfo?.let { " · 共 ${it.itemCount} 个条目" } ?: "")
+        )
         Hint("媒体库保存在这台设备上，不依赖任何服务器；设备之间通过 WebDAV 上的同步文件对齐。")
         Spacer(Modifier.height(24.dp))
     }
@@ -1454,4 +1464,140 @@ private fun ImageCacheRow(state: AppState) {
             }
         ) { Text("清除") }
     }
+}
+
+// ---------------------------------------------------------------- updates
+
+/**
+ * A newer build, above the tabs, so it is seen whichever group is open: the
+ * check runs on start-up, and its answer should not hide at the foot of one.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun UpdateBanner(state: AppState) {
+    val update = state.update
+    val manifest = when (update) {
+        is UpdateState.Available -> update.manifest
+        is UpdateState.Downloading -> update.manifest
+        is UpdateState.Downloaded -> update.manifest
+        is UpdateState.Installing -> update.manifest
+        is UpdateState.Failed -> update.manifest ?: return
+        else -> return
+    }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text("有新版本 ${manifest.version}", style = MaterialTheme.typography.titleSmall)
+            Hint(
+                "当前 ${BuildInfo.VERSION}" +
+                    (manifest.publishedAt?.take(10)?.let { " · 发布于 $it" } ?: "")
+            )
+            manifest.notes?.takeIf { it.isNotBlank() }?.let { notes ->
+                Spacer(Modifier.height(6.dp))
+                Text(notes, style = MaterialTheme.typography.bodySmall, maxLines = 8, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.height(10.dp))
+            when (update) {
+                is UpdateState.Available -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    val asset = update.asset
+                    if (asset != null) {
+                        Button(onClick = { state.downloadUpdate() }) {
+                            Text("下载并安装" + formatSize(asset.size).takeIf { it.isNotBlank() }?.let { "（$it）" }.orEmpty())
+                        }
+                    } else {
+                        Hint("这个版本没有给 ${PlatformInfo.name} 的安装包")
+                    }
+                    manifest.pageUrl?.let { url ->
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { openUrl(url) }) { Text("发布页") }
+                    }
+                }
+                is UpdateState.Downloading -> {
+                    val total = update.total
+                    val received = formatSize(update.received).ifBlank { "0 B" }
+                    Hint(if (total != null && total > 0) "正在下载 $received / ${formatSize(total)}" else "正在下载 $received")
+                    Spacer(Modifier.height(6.dp))
+                    if (total != null && total > 0) {
+                        LinearWavyProgressIndicator(
+                            progress = { (update.received.toFloat() / total).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                }
+                is UpdateState.Downloaded -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(onClick = { state.installUpdate() }) { Text(installLabel()) }
+                    if (PlatformInfo.isDesktop) {
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { revealInFileManager(update.file) }) { Text("定位文件") }
+                    }
+                }
+                is UpdateState.Installing -> Hint("正在退出并启动安装程序…")
+                is UpdateState.Failed -> {
+                    Hint(update.message, error = true)
+                    if (update.asset != null) {
+                        TextButton(onClick = { state.downloadUpdate() }) { Text("重试") }
+                    }
+                }
+                else -> Unit
+            }
+        }
+    }
+}
+
+/** What pressing the button does on this platform, said plainly. */
+private fun installLabel(): String = when {
+    PlatformInfo.isAndroid -> "安装"
+    PlatformInfo.name.startsWith("Windows") -> "安装并重启"
+    else -> "打开安装包"
+}
+
+@Composable
+private fun UpdateSection(state: AppState) {
+    SectionTitle("更新")
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        val busy = state.update is UpdateState.Checking || state.update is UpdateState.Downloading ||
+            state.update is UpdateState.Installing
+        FilledTonalButton(onClick = { state.checkForUpdates() }, enabled = !busy) { Text("检查更新") }
+        Spacer(Modifier.width(12.dp))
+        when (val update = state.update) {
+            UpdateState.Idle -> Unit
+            UpdateState.Checking -> Hint("正在检查…")
+            is UpdateState.UpToDate -> Hint("已是最新版本（${update.version}）")
+            is UpdateState.Failed ->
+                if (update.manifest == null) Hint(update.message, error = true) else Hint("有新版本，见页面顶部")
+            else -> Hint("有新版本，见页面顶部")
+        }
+    }
+    if (!canSelfUpdate()) {
+        Hint("这是调试版本：不会自动检查更新，发布版的安装包也装不到它上面")
+    }
+    SwitchRow(
+        "启动时自动检查更新",
+        state.checkUpdatesOnStartup,
+        detail = "只在有新版本时提示一句"
+    ) { state.changeCheckUpdatesOnStartup(it) }
+    Spacer(Modifier.height(6.dp))
+    OutlinedTextField(
+        state.updateSource,
+        { state.changeUpdateSource(it) },
+        label = { Text("更新清单地址") },
+        placeholder = { Text(DEFAULT_UPDATE_SOURCE) },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth().tracksTextInput()
+    )
+    Hint("留空用默认地址：仓库 updates 分支上的 update.json，每次发布由 CI 写入")
+    Spacer(Modifier.height(6.dp))
+    OutlinedTextField(
+        state.updateMirror,
+        { state.changeUpdateMirror(it) },
+        label = { Text("GitHub 镜像前缀（可选）") },
+        placeholder = { Text("https://ghproxy.net/") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth().tracksTextInput()
+    )
+    Hint("填了会加在清单和安装包地址前面，给直连 GitHub 困难的网络用")
 }

@@ -130,3 +130,29 @@ expect fun isUnmeteredNetwork(): Boolean
  */
 expect fun requestNotificationPermission()
 
+
+/** What the platform did with a downloaded package. */
+enum class InstallOutcome {
+    /** The installer has been started and the app is about to leave so it can replace the files. */
+    EXITING,
+
+    /**
+     * The package was handed to the system — Android's installer, a mounted
+     * .dmg, a .deb opened for install — and the app stays.
+     */
+    HANDED_OVER,
+    FAILED
+}
+
+/** Which entry of the update manifest this build installs from: `android`, `windows`, `linux` or `macos`. */
+expect fun updateAssetKey(): String
+
+/**
+ * Whether the published package can replace this build at all. A debug APK is
+ * signed with a different key from the release, and Android refuses to install
+ * one over the other, so such a build neither checks nor offers.
+ */
+expect fun canSelfUpdate(): Boolean
+
+/** Hands a downloaded package to the platform to install. */
+expect fun installUpdate(file: String): InstallOutcome

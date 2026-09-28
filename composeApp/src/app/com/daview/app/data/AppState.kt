@@ -13,6 +13,14 @@ import com.daview.app.platform.createSettingsStore
 import com.daview.app.platform.isUnmeteredNetwork
 import com.daview.app.platform.onDownloadStarted
 import com.daview.app.platform.onScanStarted
+import com.daview.app.BuildInfo
+import com.daview.app.platform.InstallOutcome
+import com.daview.app.platform.canSelfUpdate
+import com.daview.app.platform.installUpdate as launchInstaller
+import com.daview.app.platform.updateAssetKey
+import com.daview.server.update.UpdateAsset
+import com.daview.server.update.UpdateManifest
+import com.daview.server.update.UpdateService
 import com.daview.app.ui.formatSize
 import com.daview.shared.model.DownloadEstimateDto
 import com.daview.shared.model.OfflineSettingsDto
@@ -129,6 +137,28 @@ data class HomeData(
 
 /** One line put in front of the user, optionally with a way to take it back. */
 data class Toast(val message: String, val actionLabel: String? = null, val action: (() -> Unit)? = null)
+
+/**
+ * Where the app looks for a newer build unless told otherwise: the manifest
+ * the release workflow keeps on the repository's `updates` branch.
+ */
+const val DEFAULT_UPDATE_SOURCE = "https://raw.githubusercontent.com/RedSTARO/DAView/updates/update.json"
+
+/** Where the app is with finding and fetching a newer build. */
+sealed interface UpdateState {
+    data object Idle : UpdateState
+    data object Checking : UpdateState
+    data class UpToDate(val version: String) : UpdateState
+
+    /** A newer build exists; [asset] is its package for this platform, or null when the release has none. */
+    data class Available(val manifest: UpdateManifest, val asset: UpdateAsset?) : UpdateState
+    data class Downloading(val manifest: UpdateManifest, val asset: UpdateAsset, val received: Long, val total: Long?) : UpdateState
+    data class Downloaded(val manifest: UpdateManifest, val file: String) : UpdateState
+    data class Installing(val manifest: UpdateManifest) : UpdateState
+
+    /** What went wrong — with the [manifest] when it went wrong after one was found, so the offer stays on the page. */
+    data class Failed(val message: String, val manifest: UpdateManifest? = null, val asset: UpdateAsset? = null) : UpdateState
+}
 
 /**
  * A question asked before something that cannot be taken back. The app hosts
@@ -309,6 +339,37 @@ class AppState(private val scope: CoroutineScope) {
         scanOnStartup = value
         settings.putString(KEY_SCAN_ON_STARTUP, if (value) "1" else "0")
     }
+
+    // ------------------------------------------------------------ updates
+
+    /** Where the update manifest is read from; blank means [DEFAULT_UPDATE_SOURCE]. */
+    var updateSource by mutableStateOf(settings.getString(KEY_UPDATE_SOURCE).orEmpty())
+        private set
+
+    fun changeUpdateSource(value: String) {
+        updateSource = value
+        settings.putString(KEY_UPDATE_SOURCE, value.trim().ifBlank { null })
+    }
+
+    /** Put in front of every GitHub address, for networks that cannot reach GitHub directly. */
+    var updateMirror by mutableStateOf(settings.getString(KEY_UPDATE_MIRROR).orEmpty())
+        private set
+
+    fun changeUpdateMirror(value: String) {
+        updateMirror = value
+        settings.putString(KEY_UPDATE_MIRROR, value.trim().ifBlank { null })
+    }
+
+    var checkUpdatesOnStartup by mutableStateOf(settings.getString(KEY_UPDATE_ON_STARTUP) != "0")
+        private set
+
+    fun changeCheckUpdatesOnStartup(value: Boolean) {
+        checkUpdatesOnStartup = value
+        settings.putString(KEY_UPDATE_ON_STARTUP, if (value) "1" else "0")
+    }
+
+    var update by mutableStateOf<UpdateState>(UpdateState.Idle)
+        private set
 
     /** How large subtitles are drawn, as a factor of the player's own default. */
     var subtitleScale by mutableStateOf(settings.getString(KEY_SUBTITLE_SCALE)?.toFloatOrNull() ?: 1f)
@@ -718,6 +779,7 @@ class AppState(private val scope: CoroutineScope) {
             initialLoaded = true
             refreshHome()
             if (scanOnStartup) startupScan()
+            if (checkUpdatesOnStartup && canSelfUpdate()) startupUpdateCheck()
         }
     }
 
@@ -1693,6 +1755,85 @@ class AppState(private val scope: CoroutineScope) {
         notify("正在停止扫描")
     }
 
+    // ------------------------------------------------------------ updates
+
+    private fun updateUrl(url: String) = UpdateService.mirrored(url, updateMirror)
+
+    /**
+     * Reads the manifest and says whether it names a newer build.
+     *
+     * [manual] is a person pressing the button: a failure is then shown next
+     * to it. The check at start-up says nothing unless there is an update,
+     * and then one line with a way to the page.
+     */
+    fun checkForUpdates(manual: Boolean = true) {
+        val busy = update is UpdateState.Checking || update is UpdateState.Downloading ||
+            update is UpdateState.Installing
+        if (busy) return
+        scope.launch {
+            update = UpdateState.Checking
+            val service = core.updates
+            val source = updateUrl(updateSource.trim().ifBlank { DEFAULT_UPDATE_SOURCE })
+            val manifest = runCatching { withContext(Dispatchers.IO) { service.fetchManifest(source) } }
+                .getOrElse { e ->
+                    update = if (manual) UpdateState.Failed(e.message ?: "检查更新失败") else UpdateState.Idle
+                    return@launch
+                }
+            if (!service.isNewer(manifest, BuildInfo.PACKAGE_VERSION)) {
+                update = UpdateState.UpToDate(manifest.version)
+                // Whatever an earlier update left on disk is not wanted any more.
+                withContext(Dispatchers.IO) { service.clean() }
+                return@launch
+            }
+            update = UpdateState.Available(manifest, manifest.assets[updateAssetKey()])
+            if (!manual) notify("有新版本 ${manifest.version}", "查看") { switchTo(Screen.Settings) }
+        }
+    }
+
+    /** Fetches this platform's package; the page shows how far it has got. */
+    fun downloadUpdate() {
+        val (manifest, asset) = when (val current = update) {
+            is UpdateState.Available -> current.manifest to (current.asset ?: return)
+            is UpdateState.Failed -> (current.manifest ?: return) to (current.asset ?: return)
+            else -> return
+        }
+        scope.launch {
+            update = UpdateState.Downloading(manifest, asset, received = 0, total = asset.size)
+            val name = asset.name
+                ?: asset.url.substringAfterLast('/').substringBefore('?').ifBlank { "DAView-${manifest.version}" }
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    core.updates.download(asset.copy(url = updateUrl(asset.url)), name) { received, total ->
+                        update = UpdateState.Downloading(manifest, asset, received, total)
+                    }
+                }
+            }
+            update = result.fold(
+                onSuccess = { UpdateState.Downloaded(manifest, it.toString()) },
+                onFailure = { UpdateState.Failed(it.message ?: "下载失败", manifest, asset) }
+            )
+        }
+    }
+
+    /** Hands the downloaded package to the platform. On Windows the app leaves so the installer can replace it. */
+    fun installUpdate() {
+        val downloaded = update as? UpdateState.Downloaded ?: return
+        update = when (launchInstaller(downloaded.file)) {
+            InstallOutcome.EXITING -> UpdateState.Installing(downloaded.manifest)
+            // The system's installer has it and the app stays — with the
+            // button, in case the person backs out of the system's dialog.
+            InstallOutcome.HANDED_OVER -> downloaded
+            InstallOutcome.FAILED ->
+                UpdateState.Failed("无法启动安装程序，请手动打开：${downloaded.file}", downloaded.manifest)
+        }
+    }
+
+    private fun startupUpdateCheck() = scope.launch {
+        // After the first screen and the start-up scan have had their turn.
+        delay(UPDATE_CHECK_DELAY_MS)
+        checkForUpdates(manual = false)
+    }
+
     // ------------------------------------------------------------ settings
 
     fun saveServerSettings(updated: ServerSettingsDto, onDone: (Boolean) -> Unit = {}) = run {
@@ -1766,6 +1907,12 @@ class AppState(private val scope: CoroutineScope) {
 
         /** How long after opening the start-up check waits, so the first screen is read first. */
         const val STARTUP_SCAN_DELAY_MS = 3_000L
+        const val KEY_UPDATE_SOURCE = "update.source"
+        const val KEY_UPDATE_MIRROR = "update.mirror"
+        const val KEY_UPDATE_ON_STARTUP = "update.checkOnStartup"
+
+        /** The start-up check for a newer build waits this long: after the first screen and the scan. */
+        const val UPDATE_CHECK_DELAY_MS = 8_000L
         const val KEY_PLAYER = "player.preferred"
         const val KEY_HOME_SECTIONS = "home.sections"
         const val KEY_LIBRARY_VIEW = "library.view."

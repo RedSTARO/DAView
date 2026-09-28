@@ -55,6 +55,7 @@ class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
     val pipe = com.daview.server.media.PlaybackPipe(repository, streams, playback)
     val scans = ScanService(repository, metadata, streams, { dav }, { config })
     val sync = com.daview.server.sync.SyncService(this) { dav }
+    val updates = com.daview.server.update.UpdateService(dataDir)
 
     /** The one entry point into everything above; see [com.daview.server.api.MediaFacade]. */
     val media = com.daview.server.api.MediaFacade(this)

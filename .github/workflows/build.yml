@@ -129,7 +129,10 @@ jobs:
       # relies on kotlinx.serialization reflection, and R8 without a curated set
       # of keep rules strips those at runtime. Signing is done as a separate step
       # below, so this artifact is the input to signing, not a shippable APK.
-      - run: ./gradlew :composeApp:assembleRelease
+      - run: >-
+          ./gradlew :composeApp:assembleRelease
+          "-PdaviewVersion=${{ needs.test.outputs.version }}"
+          "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -236,7 +239,7 @@ jobs:
       # Gradle `-PdaviewPackageVersion=1` plus `.0.85` as a second argument it
       # reads as a task name. Git Bash passes the same string through untouched,
       # so this is invisible everywhere except the one job that needs it.
-      - run: ./gradlew :composeApp:packageMsi "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
+      - run: ./gradlew :composeApp:packageMsi "-PdaviewVersion=${{ needs.test.outputs.version }}" "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
       - name: 重命名 MSI
         run: |
@@ -267,7 +270,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew :composeApp:packageDeb "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
+      - run: ./gradlew :composeApp:packageDeb "-PdaviewVersion=${{ needs.test.outputs.version }}" "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
       - name: 重命名 deb
         run: |
@@ -298,7 +301,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew :composeApp:packageDmg "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
+      - run: ./gradlew :composeApp:packageDmg "-PdaviewVersion=${{ needs.test.outputs.version }}" "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
       - name: 重命名 dmg
         run: |
@@ -431,6 +434,22 @@ jobs:
       - name: 移除未签名 APK
         run: rm -f dist/*unsigned*.apk
 
+      # What the app checks against: version, package version, and each
+      # package's download address with its SHA-256. Attached to the release
+      # and pushed to the `updates` branch below, where the app reads it.
+      - name: 生成更新清单
+        env:
+          NOTES: ${{ steps.changelog.outputs.log }}
+        run: |
+          printf '%s\n' "$NOTES" > /tmp/notes.txt
+          python3 scripts/update-manifest.py dist dist/update.json \
+            --repo "${{ github.repository }}" \
+            --tag "${{ github.ref_name }}" \
+            --version "${{ needs.test.outputs.version }}" \
+            --package-version "${{ needs.test.outputs.package_version }}" \
+            --notes-file /tmp/notes.txt
+          cat dist/update.json
+
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -444,6 +463,7 @@ jobs:
             dist/DAView-*.deb
             dist/DAView-*.msi
             dist/DAView-*.dmg
+            dist/update.json
           body: |
             🎉 **DAView ${{ needs.test.outputs.version }}**
 
@@ -462,3 +482,19 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The app reads the manifest off raw.githubusercontent.com, so it has to
+      # be in the repository. On a branch of its own, holding nothing else: a
+      # commit to master for every release would set this whole workflow off
+      # again. After the release step, so the addresses it carries exist.
+      - name: 发布更新清单到 updates 分支
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp dist/update.json /tmp/update.json
+          git checkout --orphan updates
+          git rm -rf --quiet .
+          cp /tmp/update.json update.json
+          git add update.json
+          git commit -m "update manifest for ${{ needs.test.outputs.version }}"
+          git push --force origin updates

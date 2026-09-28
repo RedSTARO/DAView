@@ -1,3 +1,9 @@
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.TaskAction
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -7,136 +13,6 @@ plugins {
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.compose.multiplatform)
     alias(libs.plugins.android.application)
-}
-
-kotlin {
-    compilerOptions {
-        freeCompilerArgs.add("-Xexpect-actual-classes")
-    }
-
-    androidTarget {
-        compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
-    }
-
-    jvm("desktop") {
-        compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
-    }
-
-
-    sourceSets {
-        // The UI talks to :core directly, and :core is a JVM library — its
-        // sources are compiled per target, so there is no common metadata for
-        // commonMain to see. Registering one directory in both JVM targets
-        // gives the whole client access to it without inventing an interface
-        // whose only job would be to have two identical implementations.
-        // commonMain keeps just the expect declarations.
-        val app = "src/app"
-
-        commonMain.dependencies {
-            implementation(compose.runtime)
-            implementation(compose.foundation)
-            implementation(libs.compose.material3)
-            implementation(compose.ui)
-            implementation(libs.kotlinx.coroutines.core)
-            implementation(project(":shared"))
-        }
-
-        androidMain {
-            kotlin.srcDir(app)
-            dependencies {
-                implementation(project(":core"))
-                implementation(compose.preview)
-                implementation(libs.androidx.activity.compose)
-                implementation(libs.androidx.media3.exoplayer)
-                implementation(libs.androidx.media3.session)
-                implementation(libs.androidx.media3.ui)
-            }
-        }
-
-        val desktopMain by getting
-        desktopMain.apply {
-            kotlin.srcDir(app)
-            dependencies {
-                implementation(compose.desktop.currentOs)
-                implementation(libs.kotlinx.coroutines.swing)
-                implementation(project(":core"))
-                // The in-app player is libmpv, reached through JNA. Not FFM:
-                // both JVM targets compile at language level 17, and the panama
-                // API only became final in 22.
-                implementation(libs.jna)
-            }
-        }
-
-        val desktopTest by getting
-        desktopTest.dependencies {
-            implementation(kotlin("test"))
-        }
-
-        // The ASS renderer draws with android.graphics, so the only place its
-        // output can be checked is on a device. These need one attached and are
-        // not part of CI: `./gradlew :composeApp:connectedDebugAndroidTest`.
-        val androidInstrumentedTest by getting
-        androidInstrumentedTest.dependencies {
-            implementation(libs.androidx.test.runner)
-            implementation(libs.androidx.test.junit)
-        }
-
-        // Needed by the shared source directory, which is compiled into both
-        // JVM targets rather than into commonMain.
-        listOf(androidMain.get(), desktopMain).forEach { sourceSet ->
-            sourceSet.dependencies {
-                implementation(compose.materialIconsExtended)
-                implementation(compose.components.resources)
-                implementation(libs.kotlinx.serialization.json)
-                implementation(libs.jetbrains.lifecycle.viewmodel.compose)
-                implementation(libs.coil.compose)
-            }
-        }
-    }
-}
-
-android {
-    namespace = "com.daview.app"
-    compileSdk = libs.versions.androidCompileSdk.get().toInt()
-
-    defaultConfig {
-        applicationId = "com.daview.app"
-        minSdk = libs.versions.androidMinSdk.get().toInt()
-        targetSdk = libs.versions.androidTargetSdk.get().toInt()
-        versionCode = 1
-        versionName = "1.0.0"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-    packaging {
-        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
-    }
-    buildTypes {
-        getByName("release") { isMinifyEnabled = false }
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-}
-
-// The packaging tasks treat `appResourcesRootDir` as an internal property, not
-// an input, so dropping libmpv into it after a build leaves them up to date and
-// they happily re-emit a package with an empty `app/resources`. Verified: fetch
-// the DLL, build again, and it is in the staging directory but not in the
-// package. Declaring the directory as an input is what makes the second build
-// notice.
-//
-// A file tree rather than `inputs.dir`, because the directory is often not
-// there at all: its contents are fetched, not committed, and git cannot carry
-// an empty directory. `optional(true)` does not cover that — it says the
-// property may have no value, not that a named directory may be missing, so
-// `inputs.dir` failed the Linux and macOS builds at configuration time while
-// Windows passed only because the fetch step had just created it. A tree of a
-// missing directory is simply empty.
-tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask>().configureEach {
-    inputs.files(project.fileTree("nativeResources"))
-        .withPropertyName("daviewAppResources")
-        .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 /**
@@ -195,6 +71,209 @@ fun defaultPackageVersion(): String {
             .inputStream.bufferedReader().readText().trim().toIntOrNull()
     }.getOrNull()
     return "1.0.${commits ?: 0}"
+}
+
+/**
+ * The human label CI puts in file names and release titles: the tag on a tag
+ * build, `git describe` otherwise. Shown in 设置 → 通用; the updater compares
+ * [daviewPackageVersion], not this.
+ */
+val daviewVersionLabel: String = (findProperty("daviewVersion") as String?)
+    ?.takeIf { it.isNotBlank() }
+    ?: defaultVersionLabel()
+
+fun defaultVersionLabel(): String = runCatching {
+    ProcessBuilder("git", "describe", "--tags", "--always")
+        .directory(rootDir)
+        .redirectErrorStream(true)
+        .start()
+        .inputStream.bufferedReader().readText().trim()
+        .takeIf { it.isNotBlank() && ' ' !in it }
+}.getOrNull() ?: "dev"
+
+/**
+ * Writes `BuildInfo.kt`, so the running app knows which build it is. It did
+ * not: the version on the about page was a constant that said 1.0.0 for every
+ * build ever made, and an updater has nothing to compare without this.
+ */
+abstract class GenerateBuildInfo : DefaultTask() {
+    @get:Input
+    abstract val version: Property<String>
+
+    @get:Input
+    abstract val packageVersion: Property<String>
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun generate() {
+        val file = outputDir.get().file("com/daview/app/BuildInfo.kt").asFile
+        file.parentFile.mkdirs()
+        file.writeText(
+            """
+            |package com.daview.app
+            |
+            |/** Which build this is. Written by the build script; not in git. */
+            |object BuildInfo {
+            |    /** The human label: the tag, or `git describe`. */
+            |    const val VERSION = "${version.get()}"
+            |
+            |    /** MAJOR.MINOR.PATCH as the installers carry it; what the updater compares. */
+            |    const val PACKAGE_VERSION = "${packageVersion.get()}"
+            |}
+            |
+            """.trimMargin()
+        )
+    }
+}
+
+val generateBuildInfo = tasks.register<GenerateBuildInfo>("generateDaviewBuildInfo") {
+    version.set(daviewVersionLabel)
+    packageVersion.set(daviewPackageVersion)
+    outputDir.set(layout.buildDirectory.dir("generated/daview/kotlin"))
+}
+
+/** The generated source, with the task that writes it attached. */
+val generatedBuildInfo = generateBuildInfo.flatMap { it.outputDir }
+
+// Every Kotlin compilation reads the generated source, so every one waits for it.
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().configureEach {
+    dependsOn(generateBuildInfo)
+}
+
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.add("-Xexpect-actual-classes")
+    }
+
+    androidTarget {
+        compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+    }
+
+    jvm("desktop") {
+        compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+    }
+
+    sourceSets {
+        // The UI talks to :core directly, and :core is a JVM library — its
+        // sources are compiled per target, so there is no common metadata for
+        // commonMain to see. Registering one directory in both JVM targets
+        // gives the whole client access to it without inventing an interface
+        // whose only job would be to have two identical implementations.
+        // commonMain keeps just the expect declarations.
+        val app = "src/app"
+
+        commonMain.dependencies {
+            implementation(compose.runtime)
+            implementation(compose.foundation)
+            implementation(libs.compose.material3)
+            implementation(compose.ui)
+            implementation(libs.kotlinx.coroutines.core)
+            implementation(project(":shared"))
+        }
+
+        androidMain {
+            kotlin.srcDir(app)
+            kotlin.srcDir(generatedBuildInfo)
+            dependencies {
+                implementation(project(":core"))
+                implementation(compose.preview)
+                implementation(libs.androidx.activity.compose)
+                implementation(libs.androidx.media3.exoplayer)
+                implementation(libs.androidx.media3.session)
+                implementation(libs.androidx.media3.ui)
+            }
+        }
+
+        val desktopMain by getting
+        desktopMain.apply {
+            kotlin.srcDir(app)
+            kotlin.srcDir(generatedBuildInfo)
+            dependencies {
+                implementation(compose.desktop.currentOs)
+                implementation(libs.kotlinx.coroutines.swing)
+                implementation(project(":core"))
+                // The in-app player is libmpv, reached through JNA. Not FFM:
+                // both JVM targets compile at language level 17, and the panama
+                // API only became final in 22.
+                implementation(libs.jna)
+            }
+        }
+
+        val desktopTest by getting
+        desktopTest.dependencies {
+            implementation(kotlin("test"))
+        }
+
+        // The ASS renderer draws with android.graphics, so the only place its
+        // output can be checked is on a device. These need one attached and are
+        // not part of CI: `./gradlew :composeApp:connectedDebugAndroidTest`.
+        val androidInstrumentedTest by getting
+        androidInstrumentedTest.dependencies {
+            implementation(libs.androidx.test.runner)
+            implementation(libs.androidx.test.junit)
+        }
+
+        // Needed by the shared source directory, which is compiled into both
+        // JVM targets rather than into commonMain.
+        listOf(androidMain.get(), desktopMain).forEach { sourceSet ->
+            sourceSet.dependencies {
+                implementation(compose.materialIconsExtended)
+                implementation(compose.components.resources)
+                implementation(libs.kotlinx.serialization.json)
+                implementation(libs.jetbrains.lifecycle.viewmodel.compose)
+                implementation(libs.coil.compose)
+            }
+        }
+    }
+}
+
+android {
+    namespace = "com.daview.app"
+    compileSdk = libs.versions.androidCompileSdk.get().toInt()
+
+    defaultConfig {
+        applicationId = "com.daview.app"
+        minSdk = libs.versions.androidMinSdk.get().toInt()
+        targetSdk = libs.versions.androidTargetSdk.get().toInt()
+        // The patch field is the commit count — see daviewPackageVersion — so
+        // every build's code is above the one before, which is what the package
+        // installer needs before it accepts an update.
+        versionCode = daviewPackageVersion.substringAfterLast('.').toIntOrNull()?.coerceAtLeast(1) ?: 1
+        versionName = daviewVersionLabel
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    packaging {
+        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    }
+    buildTypes {
+        getByName("release") { isMinifyEnabled = false }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+// The packaging tasks treat `appResourcesRootDir` as an internal property, not
+// an input, so dropping libmpv into it after a build leaves them up to date and
+// they happily re-emit a package with an empty `app/resources`. Verified: fetch
+// the DLL, build again, and it is in the staging directory but not in the
+// package. Declaring the directory as an input is what makes the second build
+// notice.
+//
+// A file tree rather than `inputs.dir`, because the directory is often not
+// there at all: its contents are fetched, not committed, and git cannot carry
+// an empty directory. `optional(true)` does not cover that — it says the
+// property may have no value, not that a named directory may be missing, so
+// `inputs.dir` failed the Linux and macOS builds at configuration time while
+// Windows passed only because the fetch step had just created it. A tree of a
+// missing directory is simply empty.
+tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask>().configureEach {
+    inputs.files(project.fileTree("nativeResources"))
+        .withPropertyName("daviewAppResources")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
 }
 
 compose.desktop {

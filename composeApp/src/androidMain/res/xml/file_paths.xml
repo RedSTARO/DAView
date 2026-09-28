@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the package installer may be handed: only the update packages, which
+     the core puts under its data directory, filesDir/daview/updates. -->
+<paths>
+    <files-path name="updates" path="daview/updates/" />
+</paths>

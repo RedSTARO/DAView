@@ -208,6 +208,30 @@ curl -X POST -H "Content-Type: application/json" --data-binary @backup.json "htt
 - 条目 id 是 `SHA-1(库 id + 路径)`，所以只要库定义一起带过去，观看进度就能重新对上。
   只导设置和进度、不导刮削数据也可以，代价是新机器要重新扫描一遍。
 
+## 自动更新
+
+每台设备自己检查、自己下载、自己装，没有服务器参与。
+
+- **版本从哪来**：CI 给每个包传 `-PdaviewVersion=<标签或 git describe>` 和
+  `-PdaviewPackageVersion=<MAJOR.MINOR.提交数>`，Gradle 据此生成 `BuildInfo.kt`
+  （`composeApp/build/generated/daview/`，不进 git）。以前版本是个常量，每个包都说自己是 1.0.0，没法比。
+  Android 的 `versionCode` 也取提交数，所以新包一定装得上旧包。
+- **更新清单**：打 `v*` 标签发布时，`release` job 用 `scripts/update-manifest.py` 生成 `update.json`
+  （版本、安装包版本、发布页、更新日志、每个平台的下载地址 / SHA-256 / 大小），附到 Release 上，
+  并推到仓库的 **`updates` 孤儿分支**。应用默认从
+  `https://raw.githubusercontent.com/RedSTARO/DAView/updates/update.json` 读它——放在单独的分支而不是
+  master，是因为往 master 提交会再触发一次整个 workflow。安装包本身从 GitHub Release 的附件下载。
+- **比较的是安装包版本**（`MAJOR.MINOR.PATCH`，逐段比），不是标签；任一边解析不出来就不算有更新，
+  宁可不提示也不把新版本换成旧的。下载完先核对 SHA-256，不符的文件不会交给安装程序。
+- **各平台怎么装**：Windows 校验完 MSI 后写一个 `install-update.cmd`（等 2 秒 → `msiexec /passive` →
+  重新启动 `DAView.exe`），脚本一起来应用就退出，因为安装程序换不掉正在运行的文件；Android 通过 FileProvider
+  把 APK 交给系统安装器（第一次会要求允许本应用安装应用）；Linux / macOS 下载后交给系统打开 `.deb` / `.dmg`，
+  剩下的由人完成。
+- **设置 → 通用 → 更新**：「检查更新」、「启动时自动检查更新」（默认开，只在有新版本时提示一句）、
+  清单地址（留空用默认）、GitHub 镜像前缀（可选，加在清单和安装包地址前面）。有新版本时设置页顶部出现卡片：
+  更新日志、下载进度、安装、发布页。
+- **调试包不检查**：debug APK 用的是另一把签名，发布版装不到它上面，所以它既不自动检查也不提供安装。
+
 ## 跨端同步
 
 没有第二台服务器可以商量，所以设备之间通过它们本来就共用的那块存储达成一致：把状态写成

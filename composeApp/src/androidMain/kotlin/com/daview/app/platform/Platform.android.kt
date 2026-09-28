@@ -146,3 +146,31 @@ actual fun createSettingsStore(): SettingsStore = object : SettingsStore {
 }
 
 /** The app's own in-process server, unless the user has pointed it elsewhere. */
+
+actual fun updateAssetKey(): String = "android"
+
+actual fun canSelfUpdate(): Boolean =
+    AndroidContextHolder.isInitialised &&
+        (AndroidContextHolder.context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0
+
+/**
+ * The package installer takes over from here: the first time it asks to allow
+ * installs from this app, then it shows the update. The file is served through
+ * the FileProvider declared in the manifest — an installer may not be handed a
+ * bare file path since Android 7.
+ */
+actual fun installUpdate(file: String): InstallOutcome {
+    if (!AndroidContextHolder.isInitialised) return InstallOutcome.FAILED
+    val context = AndroidContextHolder.context
+    return runCatching {
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context, "${context.packageName}.fileprovider", java.io.File(file)
+        )
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        )
+        InstallOutcome.HANDED_OVER
+    }.getOrElse { InstallOutcome.FAILED }
+}
