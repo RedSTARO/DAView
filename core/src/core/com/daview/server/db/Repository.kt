@@ -778,7 +778,7 @@ class Repository(private val db: Database) {
          */
         val searchPeople: Boolean = false,
         val sort: String = "sortName",
-        /** Reverses whichever order [sort] names. */
+        /** True for [sort]'s descending direction. Which way a field opens is the page's decision. */
         val descending: Boolean = false,
         val limit: Int = 100,
         val offset: Int = 0
@@ -791,20 +791,26 @@ class Repository(private val db: Database) {
         // into one string, so every sort had exactly one direction and there was
         // no way to ask for oldest-first or lowest-rated — which is the search
         // for "what did the scraper get wrong".
-        val descending = query.descending
-        fun dir(defaultDescending: Boolean): String =
-            if (defaultDescending != descending) " DESC" else " ASC"
+        //
+        // The direction is the caller's, as asked: the page sends the arrow it
+        // is showing. It used to be read as "the reverse of this field's usual
+        // direction", so 「最近添加」, 「年份」, 「评分」 and 「最近播放」 opened
+        // oldest-first, lowest-first, under an arrow that said the opposite.
+        val dir = if (query.descending) " DESC" else " ASC"
 
         val orderBinds = ArrayList<Any?>()
         val order = when (query.sort) {
-            "name" -> "i.name COLLATE NOCASE${dir(false)}"
-            "year" -> "i.year${dir(true)} NULLS LAST, i.sort_name"
-            "added" -> "i.date_created${dir(true)}"
-            "played" -> "u.last_played_at${dir(true)} NULLS LAST"
-            "rating" -> "i.community_rating${dir(true)} NULLS LAST, i.sort_name"
+            "name" -> "i.name COLLATE NOCASE$dir"
+            "year" -> "i.year$dir NULLS LAST, i.sort_name"
+            // A title's recency is its newest addition: a show that just
+            // gained an episode moves up, as it does on the home shelf, rather
+            // than staying where its own row's date left it years ago.
+            "added" -> "$NEWEST_ADDITION$dir, i.sort_name"
+            "played" -> "u.last_played_at$dir NULLS LAST"
+            "rating" -> "i.community_rating$dir NULLS LAST, i.sort_name"
             "index" ->
-                "COALESCE(i.parent_index_number, 0)${dir(false)}, " +
-                    "COALESCE(i.index_number, 99999)${dir(false)}"
+                "COALESCE(i.parent_index_number, 0)$dir, " +
+                    "COALESCE(i.index_number, 99999)$dir"
             // How well the title answers the search: the exact title first,
             // then titles that start with it, then the ones that only contain
             // it, and within each the whole works ahead of their episodes.
@@ -816,7 +822,7 @@ class Repository(private val db: Database) {
                     "WHEN i.name LIKE ? OR i.original_name LIKE ? THEN 1 ELSE 2 END, " +
                     "CASE WHEN i.kind IN ('MOVIE','SERIES') THEN 0 ELSE 1 END, i.sort_name"
             }
-            else -> "i.sort_name${dir(false)}"
+            else -> "i.sort_name$dir"
         }
 
         val total = connection.statement(
@@ -1009,6 +1015,12 @@ class Repository(private val db: Database) {
      * new title was added. One entry per series, carrying that series' newest
      * episode, so a freshly scanned season cannot fill the shelf by itself.
      *
+     * The order is the scan's: the scanner stamps each folder as it reaches
+     * it, so what was found later comes first. Rows that share a stamp — the
+     * episodes of one folder — are settled by season and episode number, the
+     * highest standing for the show, and then by name. Nothing is left to the
+     * id, which is a hash.
+     *
      * No window functions here on purpose — the Android build runs on whatever
      * SQLite the device shipped, and `ROW_NUMBER` needs 3.25.
      */
@@ -1023,14 +1035,16 @@ class Repository(private val db: Database) {
                     SELECT n2.id FROM items n2
                      WHERE n2.merged_into IS NULL AND n2.kind IN ('MOVIE','EPISODE')
                        AND COALESCE(n2.series_id, n2.id) = COALESCE(n.series_id, n.id)
-                     ORDER BY n2.date_created DESC, n2.id
+                     ORDER BY n2.date_created DESC,
+                              COALESCE(n2.parent_index_number, 0) DESC, COALESCE(n2.index_number, 0) DESC,
+                              n2.sort_name DESC
                      LIMIT 1
                 )
                 FROM items n
                 WHERE n.merged_into IS NULL AND n.kind IN ('MOVIE','EPISODE')
                 GROUP BY COALESCE(n.series_id, n.id)
               )
-            ORDER BY i.date_created DESC
+            ORDER BY i.date_created DESC, i.sort_name
             LIMIT ?
             """.trimIndent()
         ).apply {
@@ -1655,6 +1669,13 @@ class Repository(private val db: Database) {
             "(SELECT MAX(ua.last_played_at) FROM items a " +
                 "JOIN user_data ua ON ua.item_id = a.id " +
                 "WHERE a.kind = 'EPISODE' AND a.series_id = i.series_id)"
+
+        /**
+         * When a title last gained something: the arrival of its newest
+         * episode, or its own arrival for a film or a show without any.
+         */
+        const val NEWEST_ADDITION =
+            "MAX(i.date_created, COALESCE((SELECT MAX(e.date_created) FROM items e WHERE e.series_id = i.id), 0))"
 
         const val SELECT_ITEM = """
             SELECT i.*,

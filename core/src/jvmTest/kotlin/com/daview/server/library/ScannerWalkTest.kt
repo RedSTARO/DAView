@@ -220,6 +220,22 @@ class ScannerWalkTest {
     }
 
     @Test
+    fun `the shelf follows the walk, later folders first, the highest episode standing for a show`() {
+        val other1 = "/Ani/Other (2021)/Season 01/Other - S01E01.mkv"
+        val other2 = "/Ani/Other (2021)/Season 01/Other - S01E02.mkv"
+        // Listed in this order, so Show (2020) is reached after Other (2021).
+        tree.file(other1)
+        tree.file(ep1)
+        tree.file(ep2)
+        walk()
+        assertEquals(listOf(id(ep2), id(other1)), repository.latest(null, 10).map { it.id })
+
+        tree.file(other2)
+        walk()
+        assertEquals(listOf(id(other2), id(ep2)), repository.latest(null, 10).map { it.id })
+    }
+
+    @Test
     fun `a merge is laid back over each folder as it is rewritten`() {
         tree.file("/Ani/SHOW (2015)/Season 01/SHOW - S01E01.mkv")
         tree.file("/Ani/Show (2015)/Season 01/Show - S01E01.mkv")

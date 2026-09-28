@@ -81,7 +81,8 @@ class Scanner(
         private val library: LibraryDto,
         private val progress: ProgressSink
     ) {
-        private val now = System.currentTimeMillis()
+        private val startedAt = System.currentTimeMillis()
+        private var lastStamp = 0L
         private val warnings = mutableListOf<String>()
 
         /** The root's folders and loose videos, in listing order. */
@@ -190,7 +191,7 @@ class Scanner(
                 repository.deleteItems(orphans.map { it.id })
                 removed += orphans.size
             }
-            repository.markScanned(library.id, now)
+            repository.markScanned(library.id, startedAt)
 
             // The catalogue may just have changed size by orders of magnitude.
             // Leaving the planner on the statistics it had before the scan is
@@ -238,10 +239,28 @@ class Scanner(
             return prepared.filter { it.dto.id !in previous }
         }
 
-        private fun recordsFor(root: DavEntry): List<ItemRecord> = when {
-            !root.isDirectory -> listOf(movieFromFile(library, root, looseSubtitles, parentId = null, now = now))
-            library.kind.isSeriesLike -> scanSeriesFolder(library, root, now)
-            else -> scanMovieFolder(library, root, now)
+        private fun recordsFor(root: DavEntry): List<ItemRecord> {
+            val now = stamp()
+            return when {
+                !root.isDirectory -> listOf(movieFromFile(library, root, looseSubtitles, parentId = null, now = now))
+                library.kind.isSeriesLike -> scanSeriesFolder(library, root, now)
+                else -> scanMovieFolder(library, root, now)
+            }
+        }
+
+        /**
+         * The `date_created` of everything one folder yields: when the walk
+         * reached it, and strictly later than the folder before.
+         *
+         * One stamp for the whole walk left everything a scan found tied, and
+         * 「最近添加」 then fell back on the id — a hash — to order a scan's
+         * additions among themselves, and to pick which episode stood for a
+         * show. Now what was found later comes first, and within a folder the
+         * episode numbers decide.
+         */
+        private fun stamp(): Long {
+            lastStamp = maxOf(System.currentTimeMillis(), lastStamp + 1)
+            return lastStamp
         }
 
         /**
