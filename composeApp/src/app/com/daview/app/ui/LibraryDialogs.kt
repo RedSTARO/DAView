@@ -67,7 +67,8 @@ import kotlinx.coroutines.launch
 internal fun scanPhaseLabel(phase: String): String = when (phase) {
     "queued" -> "排队中"
     "listing" -> "读取目录"
-    "scanning" -> "扫描"
+    "scanning" -> "扫描新目录"
+    "checking" -> "检查已有目录"
     "saving" -> "写入"
     "scraping" -> "获取元数据"
     "probing" -> "读取音轨与字幕"
@@ -99,7 +100,7 @@ fun ColumnScope.ScanMenuItems(state: AppState, libraryId: String, dismiss: () ->
         )
         return
     }
-    ScanOption("扫描新增文件", "读取目录的变化，只为新条目获取元数据。平时用这个") {
+    ScanOption("扫描新增文件", "先找新目录并为它们获取元数据，再检查已有的剧有没有新集。平时用这个") {
         dismiss(); state.startScan(libraryId, ScanMode.FULL)
     }
     ScanOption("补全缺失的元数据", "不读目录，只为还没有海报和简介的条目获取。填了新的 API Key 之后用") {

@@ -1,10 +1,11 @@
 package com.daview.server.media
 
 import com.daview.server.config.AppConfig
+import com.daview.server.config.ScraperConfig
 import com.daview.server.db.Repository
 import com.daview.server.library.Scanner
 import com.daview.server.scraper.MetadataService
-import com.daview.server.storage.WebDavClient
+import com.daview.server.storage.DirectoryLister
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.ScanMode
 import com.daview.shared.model.ScanProgressDto
@@ -17,7 +18,7 @@ class ScanService(
     private val repository: Repository,
     private val metadata: MetadataService,
     private val streams: StreamService,
-    private val davProvider: () -> WebDavClient?,
+    private val davProvider: () -> DirectoryLister?,
     private val configProvider: () -> AppConfig
 ) {
     private val log = LoggerFactory.getLogger(ScanService::class.java)
@@ -50,7 +51,12 @@ class ScanService(
         if (libraryId in cancelled) throw ScanCancelled()
     }
 
-    fun submit(library: LibraryDto, mode: ScanMode): ScanProgressDto {
+    /**
+     * Queues a scan. [automatic] marks one nobody asked for — the check the
+     * app runs on start-up — so the interface can stay quiet about it unless
+     * it turns something up.
+     */
+    fun submit(library: LibraryDto, mode: ScanMode, automatic: Boolean = false): ScanProgressDto {
         if (isRunning(library.id)) return progress.getValue(library.id)
         val initial = ScanProgressDto(
             libraryId = library.id,
@@ -58,11 +64,19 @@ class ScanService(
             phase = "queued",
             current = 0,
             total = 0,
-            message = if (mode == ScanMode.MISSING) "排队中（仅刮削未刮削）" else "排队中"
+            message = if (mode == ScanMode.MISSING) "排队中（仅刮削未刮削）" else "排队中",
+            automatic = automatic
         )
         progress[library.id] = initial
         executor.submit { runScan(library, mode) }
         return initial
+    }
+
+    private fun update(libraryId: String, phase: String, current: Int, total: Int, message: String) {
+        checkCancelled(libraryId)
+        progress[libraryId] = progress.getValue(libraryId).copy(
+            phase = phase, current = current, total = total, message = message, running = true
+        )
     }
 
     private fun runScan(library: LibraryDto, mode: ScanMode) {
@@ -74,49 +88,53 @@ class ScanService(
             return
         }
         try {
-            // MISSING skips the file walk on purpose: nothing about the files has
-            // changed, and walking 118 folders plus probing 400 containers to fill
-            // in a handful of unmatched titles is the slow way round.
-            val result = if (mode == ScanMode.MISSING) null else {
-                Scanner(dav, repository).scan(library) { phase, current, total, message ->
-                    checkCancelled(library.id)
-                    progress[library.id] = progress.getValue(library.id).copy(
-                        phase = phase, current = current, total = total, message = message, running = true
-                    )
-                }.also { log.info("库 {} 扫描完成: {} 项，移除 {} 项", library.name, it.itemCount, it.removed) }
+            val config = configProvider()
+            val scraper = config.scraper.copy(
+                // Blank means "whatever the app is set to". Libraries used to
+                // be created with a hardcoded language, so the setting on
+                // screen never reached a scraper.
+                language = library.language.ifBlank { config.scraper.language }
+            )
+            val sink = Scanner.ProgressSink { phase, current, total, message ->
+                update(library.id, phase, current, total, message)
             }
 
-            val config = configProvider()
-            metadata.enrichLibrary(
-                library,
-                config.scraper.copy(
-                    // Blank means "whatever the app is set to". Libraries
-                    // used to be created with a hardcoded language, so the
-                    // setting on screen never reached a scraper.
-                    language = library.language.ifBlank { config.scraper.language }
-                ),
-                force = mode == ScanMode.REFRESH
-            ) { current, total, message ->
-                checkCancelled(library.id)
-                progress[library.id] = progress.getValue(library.id).copy(
-                    phase = "scraping", current = current, total = total, message = message, running = true
+            val result = when (mode) {
+                // MISSING skips the file walk on purpose: nothing about the
+                // files has changed, and walking 118 folders to fill in a
+                // handful of unmatched titles is the slow way round.
+                ScanMode.MISSING -> {
+                    enrichLibrary(library, scraper, force = false)
+                    null
+                }
+                ScanMode.FULL -> incremental(library, dav, scraper, sink)
+                ScanMode.REFRESH -> {
+                    val walk = Scanner(dav, repository).begin(library, sink)
+                    walk.scanNew()
+                    walk.scanExisting()
+                    walk.finish().also { enrichLibrary(library, scraper, force = true) }
+                }
+            }
+            result?.let {
+                log.info(
+                    "库 {} 扫描完成: {} 项，新增 {} 部 / {} 集，移除 {} 项",
+                    library.name, it.itemCount, it.newTitles, it.newEpisodes, it.removed
                 )
             }
 
             if (mode != ScanMode.MISSING) {
                 streams.probeMissing(library.id, PROBE_BUDGET) { current, total, message ->
-                    checkCancelled(library.id)
-                    progress[library.id] = progress.getValue(library.id).copy(
-                        phase = "probing", current = current, total = total, message = message, running = true
-                    )
+                    update(library.id, "probing", current, total, message)
                 }
             }
 
-            val warnings = result?.warnings.orEmpty()
             progress[library.id] = progress.getValue(library.id).copy(
                 phase = "done",
                 running = false,
-                message = if (warnings.isEmpty()) "完成" else "完成（${warnings.size} 个警告）",
+                message = doneMessage(result),
+                newTitles = result?.newTitles ?: 0,
+                newEpisodes = result?.newEpisodes ?: 0,
+                removed = result?.removed ?: 0,
                 finishedAt = System.currentTimeMillis()
             )
         } catch (cancel: ScanCancelled) {
@@ -134,6 +152,77 @@ class ScanService(
         } finally {
             cancelled -= library.id
         }
+    }
+
+    /**
+     * The everyday scan, one level at a time.
+     *
+     * Folders the library has never seen come first and are scraped as soon
+     * as they have been read, so a new show has its poster while the rest of
+     * the share is still being checked. Only then are the folders it already
+     * knew read again for new seasons and episodes; a show that gained some
+     * has its episode titles fetched again, which a plain "scrape what has no
+     * metadata" never did — the show itself was scraped long ago.
+     */
+    private fun incremental(
+        library: LibraryDto,
+        dav: DirectoryLister,
+        scraper: ScraperConfig,
+        sink: Scanner.ProgressSink
+    ): Scanner.Result {
+        val walk = Scanner(dav, repository).begin(library, sink)
+        val attempted = HashSet<String>()
+
+        val fresh = walk.scanNew()
+        scrape(library, scraper, fresh, attempted)
+
+        val changes = walk.scanExisting()
+        changes.seriesWithNewEpisodes.forEachIndexed { index, seriesId ->
+            val series = repository.item(seriesId) ?: return@forEachIndexed
+            // Episodes of a folder merged into another show belong to the
+            // show it was merged into; that is the one whose ids fetch them.
+            val target = series.mergedInto?.let { repository.item(it) } ?: series
+            update(library.id, "scraping", index + 1, changes.seriesWithNewEpisodes.size, "更新分集：${target.name}")
+            runCatching { metadata.refreshEpisodes(target, library, scraper) }
+                .onFailure { log.warn("更新 {} 的分集失败: {}", target.name, it.message) }
+        }
+
+        // Titles that turned up inside folders that already existed, plus
+        // whatever earlier scans could not match: a new key or a renamed
+        // folder is its chance. What was tried a moment ago is not tried twice.
+        val remaining = (changes.newTitleIds + repository.itemsNeedingScrape(library.id, force = false).map { it.id })
+            .distinct()
+            .filter { it !in attempted }
+        scrape(library, scraper, remaining, attempted)
+
+        return walk.finish()
+    }
+
+    private fun scrape(library: LibraryDto, scraper: ScraperConfig, ids: List<String>, attempted: MutableSet<String>) {
+        if (ids.isEmpty()) return
+        val items = ids.mapNotNull { repository.item(it) }
+        attempted += ids
+        metadata.enrichItems(library, scraper, items) { current, total, message ->
+            update(library.id, "scraping", current, total, message)
+        }
+    }
+
+    private fun enrichLibrary(library: LibraryDto, scraper: ScraperConfig, force: Boolean) {
+        metadata.enrichLibrary(library, scraper, force) { current, total, message ->
+            update(library.id, "scraping", current, total, message)
+        }
+    }
+
+    /** What the card says once the scan is over: the changes, or that there were none. */
+    private fun doneMessage(result: Scanner.Result?): String {
+        if (result == null) return "完成"
+        val parts = buildList {
+            if (result.newTitles > 0) add("新增 ${result.newTitles} 部")
+            if (result.newEpisodes > 0) add("新增 ${result.newEpisodes} 集")
+            if (result.removed > 0) add("移除 ${result.removed} 项")
+        }
+        val summary = if (parts.isEmpty()) "完成，没有变化" else "完成：" + parts.joinToString("，")
+        return if (result.warnings.isEmpty()) summary else "$summary（${result.warnings.size} 个警告）"
     }
 
     private companion object {

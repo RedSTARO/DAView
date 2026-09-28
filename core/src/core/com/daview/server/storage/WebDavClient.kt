@@ -30,6 +30,16 @@ class WebDavException(message: String, val status: Int? = null, cause: Throwable
     RuntimeException(message, cause)
 
 /**
+ * The one thing the scanner asks of the storage: what a directory holds.
+ *
+ * Split out so a walk can be exercised against a tree held in memory; the
+ * real client is the only implementation that talks to a share.
+ */
+fun interface DirectoryLister {
+    fun list(relativePath: String): List<DavEntry>
+}
+
+/**
  * Minimal WebDAV client built on the JDK HTTP client.
  *
  * Two behaviours of the 123pan endpoint shape this class:
@@ -39,7 +49,7 @@ class WebDavException(message: String, val status: Int? = null, cause: Throwable
  *    `PUT` out of the `Allow` header even on a share that accepts it, so [put]
  *    is the only way to find out.
  */
-class WebDavClient(private val config: StorageConfig) {
+class WebDavClient(private val config: StorageConfig) : DirectoryLister {
 
     // OkHttp rather than java.net.http: the same blocking API exists on Android,
     // where java.net.http does not exist at all.
@@ -79,7 +89,7 @@ class WebDavClient(private val config: StorageConfig) {
         return if (encoded.isEmpty()) "$base/" else "$base/$encoded"
     }
 
-    fun list(relativePath: String): List<DavEntry> {
+    override fun list(relativePath: String): List<DavEntry> {
         val url = absoluteUrl(relativePath).let { if (it.endsWith("/")) it else "$it/" }
         val body = """<?xml version="1.0" encoding="utf-8"?>
             |<d:propfind xmlns:d="DAV:"><d:prop>

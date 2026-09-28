@@ -295,6 +295,21 @@ class AppState(private val scope: CoroutineScope) {
         settings.putString(KEY_WIFI_ONLY, value.toString())
     }
 
+    /**
+     * Whether each start of the app checks the share for new content.
+     *
+     * The check is the everyday scan of every library, run in the background
+     * and kept quiet: nothing is said unless it found something. Off, the only
+     * scans are the ones started by hand.
+     */
+    var scanOnStartup by mutableStateOf(settings.getString(KEY_SCAN_ON_STARTUP) != "0")
+        private set
+
+    fun changeScanOnStartup(value: Boolean) {
+        scanOnStartup = value
+        settings.putString(KEY_SCAN_ON_STARTUP, if (value) "1" else "0")
+    }
+
     /** How large subtitles are drawn, as a factor of the player's own default. */
     var subtitleScale by mutableStateOf(settings.getString(KEY_SUBTITLE_SCALE)?.toFloatOrNull() ?: 1f)
         private set
@@ -702,6 +717,7 @@ class AppState(private val scope: CoroutineScope) {
             }
             initialLoaded = true
             refreshHome()
+            if (scanOnStartup) startupScan()
         }
     }
 
@@ -1610,6 +1626,7 @@ class AppState(private val scope: CoroutineScope) {
      */
     fun pollScanStatus() {
         if (scanPoll?.isActive == true) return
+        val since = System.currentTimeMillis()
         scanPoll = scope.launch {
             var sawRunning = false
             while (isActive) {
@@ -1624,11 +1641,51 @@ class AppState(private val scope: CoroutineScope) {
                     if (sawRunning) {
                         (current as? Screen.Library)?.let { loadLibrary(it.libraryId, LoadMode.REFRESH) }
                     }
+                    announceAutomaticScans(since)
                     return@launch
                 }
                 delay(2000)
             }
         }
+    }
+
+    /**
+     * The check for new content the app runs when it starts, if asked to.
+     *
+     * Quiet by design: no "已开始扫描", no foreground service on Android, and
+     * nothing at the end unless a library changed. The answer to "is there
+     * anything new" is usually no, and a message saying so at every launch
+     * is noise. Progress still shows on the library page and in the settings,
+     * where somebody looking for it will look.
+     */
+    private fun startupScan() = scope.launch {
+        // Let the first screen read and paint before the walk competes for the disk.
+        delay(STARTUP_SCAN_DELAY_MS)
+        if (serverInfo?.storageConfigured != true || libraries.isEmpty()) return@launch
+        val queued = runCatching { library.scanAll(automatic = true) }.getOrDefault(emptyList())
+        if (queued.isNotEmpty()) pollScanStatus()
+    }
+
+    /**
+     * What the automatic scans that ended since [since] turned up, if
+     * anything: one line across every library, and nothing at all otherwise.
+     */
+    private fun announceAutomaticScans(since: Long) {
+        val finished = scanStatus.filter {
+            it.automatic && it.phase == "done" && (it.finishedAt ?: 0L) >= since
+        }
+        val changed = finished.filter { it.newTitles + it.newEpisodes + it.removed > 0 }
+        if (changed.isEmpty()) return
+        val titles = changed.sumOf { it.newTitles }
+        val episodes = changed.sumOf { it.newEpisodes }
+        val removed = changed.sumOf { it.removed }
+        val parts = buildList {
+            if (titles > 0) add("新增 $titles 部作品")
+            if (episodes > 0) add("新增 $episodes 集")
+            if (removed > 0) add("移除 $removed 项")
+        }
+        val where = if (changed.size == 1) "「${changed.first().libraryName}」" else "媒体库"
+        notify(where + parts.joinToString("，"))
     }
 
     fun cancelScan(libraryId: String) = run {
@@ -1705,6 +1762,10 @@ class AppState(private val scope: CoroutineScope) {
         const val KEY_SUBTITLE_LANGUAGE = "player.subtitleLanguage"
         const val KEY_SUBTITLE_SCALE = "player.subtitleScale"
         const val KEY_WIFI_ONLY = "offline.wifiOnly"
+        const val KEY_SCAN_ON_STARTUP = "library.scanOnStartup"
+
+        /** How long after opening the start-up check waits, so the first screen is read first. */
+        const val STARTUP_SCAN_DELAY_MS = 3_000L
         const val KEY_PLAYER = "player.preferred"
         const val KEY_HOME_SECTIONS = "home.sections"
         const val KEY_LIBRARY_VIEW = "library.view."

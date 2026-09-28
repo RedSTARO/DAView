@@ -166,6 +166,16 @@ class MediaFacade(private val context: ServerContext) {
     }
 
     /**
+     * Queues the everyday scan of every library, as the app does when it
+     * starts. Marked automatic, so the interface only speaks up if a scan
+     * found something. Nothing is queued without a share to read.
+     */
+    suspend fun scanAll(automatic: Boolean = true): List<ScanProgressDto> = io {
+        if (context.webdav() == null) emptyList()
+        else context.repository.libraries().map { context.scans.submit(it, ScanMode.FULL, automatic) }
+    }
+
+    /**
      * Scrapes one item again.
      *
      * A fallback match writes scraped_at, and the "只刮削未刮削的" pass keys off

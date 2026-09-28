@@ -145,7 +145,8 @@ class ScanForegroundService : Service() {
     private fun phaseLabel(phase: String) = when (phase) {
         "queued" -> "排队中"
         "listing" -> "读取目录"
-        "scanning" -> "扫描文件"
+        "scanning" -> "扫描新目录"
+        "checking" -> "检查已有目录"
         "saving" -> "写入数据库"
         "scraping" -> "刮削"
         "probing" -> "解析容器"

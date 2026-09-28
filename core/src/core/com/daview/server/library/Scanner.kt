@@ -2,9 +2,10 @@ package com.daview.server.library
 
 import com.daview.server.db.ItemRecord
 import com.daview.server.db.Repository
+import com.daview.server.db.ScannedRow
 import com.daview.server.media.ImageCache
 import com.daview.server.storage.DavEntry
-import com.daview.server.storage.WebDavClient
+import com.daview.server.storage.DirectoryLister
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.MediaItemDto
@@ -19,9 +20,13 @@ import java.security.MessageDigest
  * The traversal is deliberately conservative: names are parsed, nothing is
  * written back to the share (the reference share is read-only anyway), and
  * anything that cannot be understood is skipped rather than guessed at.
+ *
+ * A scan goes one level at a time — see [Walk] — so what is new is found,
+ * written and handed over for scraping before the folders that were already
+ * known are checked for new episodes.
  */
 class Scanner(
-    private val dav: WebDavClient,
+    private val dav: DirectoryLister,
     private val repository: Repository
 ) {
     private val log = LoggerFactory.getLogger(Scanner::class.java)
@@ -33,68 +38,229 @@ class Scanner(
         fun report(phase: String, current: Int, total: Int, message: String)
     }
 
-    data class Result(val itemCount: Int, val removed: Int, val warnings: List<String>)
+    /** What a walk changed, once it is over. */
+    data class Result(
+        /** Items in the library after the walk. */
+        val itemCount: Int,
+        /** Films and shows the library had never seen, wherever they turned up. */
+        val newTitles: Int,
+        /** Episodes that appeared under shows the library already had. */
+        val newEpisodes: Int,
+        val removed: Int,
+        val warnings: List<String>
+    )
 
-    fun scan(library: LibraryDto, progress: ProgressSink): Result {
-        val warnings = mutableListOf<String>()
-        val records = mutableListOf<ItemRecord>()
-        val now = System.currentTimeMillis()
+    /** What checking the folders the library already knew turned up. */
+    data class Changes(
+        /** Films and shows found inside folders that already existed — a new film in a collection, say. */
+        val newTitleIds: List<String>,
+        /** Shows that gained episodes; their episode titles want fetching again. */
+        val seriesWithNewEpisodes: Set<String>
+    )
 
-        progress.report("listing", 0, 1, "读取 ${library.path}")
-        val roots = dav.list(library.path)
-        val folders = roots.filter {
-            it.isDirectory &&
-                !NameParser.isExtrasFolder(it.name) &&
-                // A NAS puts @eaDir beside every folder and a #recycle at the
-                // share root; each was being read as a title and scraped.
-                !NameParser.isSystemFolder(it.name)
-        }
-        val looseVideos = roots.filter { !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name) }
-        val looseSubtitles = roots.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
+    /** Lists the library's root and works out what is new, what is known and what is gone. */
+    fun begin(library: LibraryDto, progress: ProgressSink): Walk = Walk(library, progress)
 
-        val total = folders.size + looseVideos.size
-        var index = 0
+    /**
+     * One pass over a library, taken in levels.
+     *
+     * Everything used to be read first and written once at the end, which put
+     * a new show's poster minutes away: the whole share had to be walked and
+     * every unmatched entry retried before the scraper got to it. Now the root
+     * listing is split into folders the library has never seen and folders it
+     * has. [scanNew] reads and writes the former one folder at a time, so the
+     * caller can scrape them straight away; [scanExisting] then reads the
+     * latter for new seasons and episodes; [finish] removes what is no longer
+     * listed anywhere.
+     *
+     * Rows are compared per folder rather than library-wide, which is also
+     * what stops one failed round trip from emptying a folder: a listing that
+     * throws leaves the rows under it exactly as they were.
+     */
+    inner class Walk internal constructor(
+        private val library: LibraryDto,
+        private val progress: ProgressSink
+    ) {
+        private val now = System.currentTimeMillis()
+        private val warnings = mutableListOf<String>()
 
-        folders.forEach { folder ->
-            index++
-            progress.report("scanning", index, total, folder.name)
-            runCatching {
-                if (library.kind.isSeriesLike) {
-                    records += scanSeriesFolder(library, folder, now)
-                } else {
-                    records += scanMovieFolder(library, folder, now)
-                }
-            }.onFailure {
-                log.warn("扫描 {} 失败", folder.path, it)
-                warnings += "${folder.name}: ${it.message}"
+        /** The root's folders and loose videos, in listing order. */
+        private val roots: List<DavEntry>
+        private val looseSubtitles: List<DavEntry>
+
+        /** Rows the library already has, grouped by the root entry they sit under. */
+        private val known: Map<String, List<ScannedRow>>
+
+        /** Rows under nothing that is listed any more. */
+        private val orphans: List<ScannedRow>
+        private val hadRows: Boolean
+
+        /** Ids written or deliberately kept during this walk. */
+        private val seen = HashSet<String>()
+        private var newTitles = 0
+        private var newEpisodes = 0
+        private var removed = 0
+        private var finished = false
+
+        init {
+            progress.report("listing", 0, 1, "读取 ${library.path}")
+            val entries = dav.list(library.path)
+            val folders = entries.filter {
+                it.isDirectory &&
+                    !NameParser.isExtrasFolder(it.name) &&
+                    // A NAS puts @eaDir beside every folder and a #recycle at the
+                    // share root; each was being read as a title and scraped.
+                    !NameParser.isSystemFolder(it.name)
             }
+            val looseVideos = entries.filter {
+                !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name)
+            }
+            looseSubtitles = entries.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
+            roots = folders + looseVideos
+
+            val rows = repository.scannedRows(library.id)
+            hadRows = rows.isNotEmpty()
+            val grouped = HashMap<String, MutableList<ScannedRow>>()
+            val lost = ArrayList<ScannedRow>()
+            rows.forEach { row ->
+                val root = row.path?.let { path ->
+                    roots.firstOrNull { path == it.path || path.startsWith(it.path + "/") }
+                }
+                if (root == null) lost += row else grouped.getOrPut(root.path) { ArrayList() } += row
+            }
+            known = grouped
+            orphans = lost
         }
 
-        looseVideos.forEach { video ->
-            index++
-            progress.report("scanning", index, total, video.name)
-            records += movieFromFile(library, video, looseSubtitles, parentId = null, now = now)
+        /**
+         * Level one: folders and files the library has never seen. Each one is
+         * written as soon as it has been read.
+         *
+         * @return ids of the films and shows found, for scraping.
+         */
+        fun scanNew(): List<String> {
+            val fresh = roots.filter { it.path !in known }
+            val ids = ArrayList<String>()
+            fresh.forEachIndexed { index, root ->
+                progress.report("scanning", index + 1, fresh.size, root.name)
+                val written = process(root, before = null)
+                val titles = written.filter { it.dto.kind.isTitle }
+                newTitles += titles.size
+                titles.mapTo(ids) { it.dto.id }
+            }
+            return ids
         }
 
-        progress.report("saving", total, total, "写入数据库")
-        repository.upsertScannedItems(records)
+        /** Level two: folders the library already knew, read again for what changed inside them. */
+        fun scanExisting(): Changes {
+            val familiar = roots.filter { it.path in known }
+            val titles = ArrayList<String>()
+            val series = LinkedHashSet<String>()
+            familiar.forEachIndexed { index, root ->
+                progress.report("checking", index + 1, familiar.size, root.name)
+                val fresh = process(root, before = known.getValue(root.path))
+                fresh.forEach { record ->
+                    when {
+                        record.dto.kind.isTitle -> {
+                            newTitles++
+                            titles += record.dto.id
+                        }
+                        record.dto.kind == ItemKind.EPISODE -> {
+                            newEpisodes++
+                            record.dto.seriesId?.let { series += it }
+                        }
+                    }
+                }
+            }
+            return Changes(titles, series)
+        }
 
-        // Parentage was just rebuilt from the folder tree, so any merge the user
-        // made has to be laid back on top of it.
-        repository.reapplyMerges()
+        /** Removes what is no longer listed, stamps the library and returns the tally. */
+        fun finish(): Result {
+            check(!finished) { "这次扫描已经结束" }
+            finished = true
+            if (roots.isEmpty() && hadRows) {
+                // A share that answers with nothing is far more often a gateway
+                // having a bad moment than a library that was really emptied.
+                // Removing every item over it would also throw away the dates
+                // they were added on, so they stay until a listing says otherwise.
+                log.warn("库 {} 的根目录列出来是空的，保留现有条目", library.name)
+                warnings += "根目录列出来是空的，已保留现有条目"
+            } else if (orphans.isNotEmpty()) {
+                repository.deleteItems(orphans.map { it.id })
+                removed += orphans.size
+            }
+            repository.markScanned(library.id, now)
 
-        val seen = records.map { it.dto.id }.toSet()
-        val stale = repository.idsInLibrary(library.id) - seen
-        if (stale.isNotEmpty()) repository.deleteItems(stale)
-        repository.markScanned(library.id, now)
+            // The catalogue may just have changed size by orders of magnitude.
+            // Leaving the planner on the statistics it had before the scan is
+            // what makes a freshly filled library feel slower than one that has
+            // been reopened.
+            repository.refreshStatistics()
+            return Result(seen.size, newTitles, newEpisodes, removed, warnings)
+        }
 
-        // The catalogue just changed size by orders of magnitude. Leaving the
-        // planner on the statistics it had before the scan is what makes a
-        // freshly filled library feel slower than one that has been reopened.
-        repository.refreshStatistics()
+        /**
+         * Reads one root entry, writes what it holds and removes what was
+         * under it before but is not any more.
+         *
+         * @return the records that did not exist before.
+         */
+        private fun process(root: DavEntry, before: List<ScannedRow>?): List<ItemRecord> {
+            val records = try {
+                recordsFor(root)
+            } catch (t: Throwable) {
+                log.warn("扫描 {} 失败", root.path, t)
+                warnings += "${root.name}: ${t.message}"
+                // What was known under it stays; one failed round trip must not
+                // empty a folder.
+                before?.forEach { seen += it.id }
+                return emptyList()
+            }
+            val previous = before.orEmpty().associateBy { it.id }
+            val prepared = records.map { record -> previous[record.dto.id]?.let { keepProbe(record, it) } ?: record }
+            repository.upsertScannedItems(prepared)
+            // Parentage was just rebuilt from the folder tree, so any merge the
+            // user made has to be laid back on top of it — here, not once the
+            // walk is over, or a merged show sits split for as long as the rest
+            // of the share takes to read.
+            repository.reapplyMerges()
 
-        return Result(records.size, stale.size, warnings)
+            val produced = prepared.mapTo(HashSet()) { it.dto.id }
+            seen += produced
+            if (before != null) {
+                val stale = before.filter { it.id !in produced }
+                if (stale.isNotEmpty()) {
+                    repository.deleteItems(stale.map { it.id })
+                    removed += stale.size
+                }
+            }
+            return prepared.filter { it.dto.id !in previous }
+        }
+
+        private fun recordsFor(root: DavEntry): List<ItemRecord> = when {
+            !root.isDirectory -> listOf(movieFromFile(library, root, looseSubtitles, parentId = null, now = now))
+            library.kind.isSeriesLike -> scanSeriesFolder(library, root, now)
+            else -> scanMovieFolder(library, root, now)
+        }
+
+        /**
+         * A rescan only knows what the listing says about a file. The tracks a
+         * probe found inside the container — and the fact that the probe ran —
+         * are kept while the file is the same one. Every scan used to wipe them
+         * and then read up to 400 containers over the network to put them back.
+         */
+        private fun keepProbe(record: ItemRecord, before: ScannedRow): ItemRecord {
+            if (before.probedAt == null) return record
+            if (before.etag != record.etag || before.sizeBytes != record.dto.sizeBytes) return record
+            return record.copy(
+                dto = record.dto.copy(mediaStreams = before.embeddedStreams + record.dto.mediaStreams),
+                probedAt = before.probedAt
+            )
+        }
     }
+
+    private val ItemKind.isTitle: Boolean get() = this == ItemKind.MOVIE || this == ItemKind.SERIES
 
     // ------------------------------------------------------------ movies
 
@@ -200,7 +366,10 @@ class Scanner(
         val info = NameParser.parseTitle(folder.name)
         val seriesId = itemId(library.id, folder.path)
         val out = mutableListOf<ItemRecord>()
-        val artwork = localArtwork(dav.list(folder.path))
+        // One listing serves both the artwork and the seasons; it used to be
+        // asked for twice, which doubled the round trips of the whole walk.
+        val children = dav.list(folder.path)
+        val artwork = localArtwork(children)
 
         out += ItemRecord(
             dto = MediaItemDto(
@@ -220,7 +389,6 @@ class Scanner(
             etag = folder.etag
         )
 
-        val children = dav.list(folder.path)
         val seasonFolders = children.filter { it.isDirectory && NameParser.parseSeasonFolder(it.name) != null }
         val otherFolders = children.filter {
             it.isDirectory && NameParser.parseSeasonFolder(it.name) == null && !NameParser.isExtrasFolder(it.name)

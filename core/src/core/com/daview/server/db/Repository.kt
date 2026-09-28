@@ -58,6 +58,23 @@ data class ItemRecord(
     val probedAt: Long? = null
 )
 
+/**
+ * What the scanner needs to know about a row that is already there: enough
+ * to tell whether the file behind it changed, and the tracks a probe found
+ * inside it, which a listing cannot see and a rescan must not lose.
+ */
+data class ScannedRow(
+    val id: String,
+    val kind: ItemKind,
+    val path: String?,
+    val etag: String?,
+    val sizeBytes: Long?,
+    val probedAt: Long?,
+    /** Streams inside the container, as the probe reported them; external subtitles are left out. */
+    val embeddedStreams: List<MediaStreamDto>,
+    val seriesId: String?
+)
+
 class Repository(private val db: Database) {
 
     init {
@@ -236,10 +253,26 @@ class Repository(private val db: Database) {
         ).apply { setString(1, seriesId) }.useQuery { it.map(::readItem) }
     }
 
-    fun idsInLibrary(libraryId: String): Set<String> = db.read { connection ->
-        connection.statement("SELECT id FROM items WHERE library_id = ?")
-            .apply { setString(1, libraryId) }
-            .useQuery { rs -> rs.map { it.requireString("id") }.toSet() }
+    /** Every row of a library, in the slice the scanner compares a listing against. */
+    fun scannedRows(libraryId: String): List<ScannedRow> = db.read { connection ->
+        connection.statement(
+            "SELECT id, kind, path, etag, size_bytes, probed_at, media_streams, series_id FROM items WHERE library_id = ?"
+        ).apply { setString(1, libraryId) }.useQuery { rs ->
+            rs.map {
+                ScannedRow(
+                    id = it.requireString("id"),
+                    kind = runCatching { ItemKind.valueOf(it.requireString("kind")) }.getOrDefault(ItemKind.MOVIE),
+                    path = it.getString("path"),
+                    etag = it.getString("etag"),
+                    sizeBytes = it.getLongOrNull("size_bytes"),
+                    probedAt = it.getLongOrNull("probed_at"),
+                    embeddedStreams = runCatching {
+                        json.decodeFromString(streamListSerializer, it.requireString("media_streams"))
+                    }.getOrDefault(emptyList()).filter { stream -> !stream.isExternal },
+                    seriesId = it.getString("series_id")
+                )
+            }
+        }
     }
 
     // ------------------------------------------------------------ merging

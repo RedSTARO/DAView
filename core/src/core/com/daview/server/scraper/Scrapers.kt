@@ -100,8 +100,21 @@ interface MetadataScraper {
     ): String? = null
 
     fun details(providerId: String, kind: ItemKind, config: ScraperConfig): ScrapedMetadata?
-    fun episodes(providerId: String, config: ScraperConfig): List<ScrapedEpisode> = emptyList()
+
+    /**
+     * The show's episode list. [maxAgeMs] is how old a cached answer may be:
+     * a show that has just gained an episode on the share is asked about
+     * afresh, or its new episode would keep its file name for a week.
+     */
+    fun episodes(
+        providerId: String,
+        config: ScraperConfig,
+        maxAgeMs: Long = SCRAPE_CACHE_MAX_AGE_MS
+    ): List<ScrapedEpisode> = emptyList()
 }
+
+/** How long a provider's answer is reused before it is asked for again. */
+const val SCRAPE_CACHE_MAX_AGE_MS = 7L * 24 * 3600 * 1000
 
 /** Shared JSON-over-HTTP plumbing with an on-disk response cache. */
 abstract class HttpScraper(protected val repository: Repository?) {
@@ -119,7 +132,7 @@ abstract class HttpScraper(protected val repository: Repository?) {
         url: String,
         headers: Map<String, String> = emptyMap(),
         cacheKey: String? = null,
-        cacheMaxAgeMs: Long = 7L * 24 * 3600 * 1000
+        cacheMaxAgeMs: Long = SCRAPE_CACHE_MAX_AGE_MS
     ): JsonElementOrNull {
         cacheKey?.let { key ->
             repository?.cacheGet(key, cacheMaxAgeMs)?.let {
@@ -284,16 +297,18 @@ class TmdbScraper(repository: Repository?) : HttpScraper(repository), MetadataSc
         )
     }
 
-    override fun episodes(providerId: String, config: ScraperConfig): List<ScrapedEpisode> {
+    override fun episodes(providerId: String, config: ScraperConfig, maxAgeMs: Long): List<ScrapedEpisode> {
         val series = getJson(
             "${base(config)}/tv/$providerId?api_key=${config.tmdbApiKey}&language=${config.language}",
-            cacheKey = "tmdb:details:tv:$providerId:${config.language}"
+            cacheKey = "tmdb:details:tv:$providerId:${config.language}",
+            cacheMaxAgeMs = maxAgeMs
         ).obj ?: return emptyList()
         val seasons = series["seasons"]?.jsonArray.orEmpty().mapNotNull { (it as? JsonObject)?.int("season_number") }
         return seasons.flatMap { seasonNumber ->
             val payload = getJson(
                 "${base(config)}/tv/$providerId/season/$seasonNumber?api_key=${config.tmdbApiKey}&language=${config.language}",
-                cacheKey = "tmdb:season:$providerId:$seasonNumber:${config.language}"
+                cacheKey = "tmdb:season:$providerId:$seasonNumber:${config.language}",
+                cacheMaxAgeMs = maxAgeMs
             ).obj ?: return@flatMap emptyList()
             payload["episodes"]?.jsonArray.orEmpty().mapNotNull { element ->
                 val episode = element as? JsonObject ?: return@mapNotNull null
@@ -446,12 +461,13 @@ class TvdbScraper(repository: Repository?) : HttpScraper(repository), MetadataSc
         )
     }
 
-    override fun episodes(providerId: String, config: ScraperConfig): List<ScrapedEpisode> {
+    override fun episodes(providerId: String, config: ScraperConfig, maxAgeMs: Long): List<ScrapedEpisode> {
         val headers = auth(config) ?: return emptyList()
         val payload = getJson(
             "$BASE/series/$providerId/episodes/official?page=0",
             headers,
-            cacheKey = "tvdb:episodes:$providerId"
+            cacheKey = "tvdb:episodes:$providerId",
+            cacheMaxAgeMs = maxAgeMs
         ).obj?.get("data")?.jsonObject ?: return emptyList()
         return payload["episodes"]?.jsonArray.orEmpty().mapNotNull { element ->
             val episode = element as? JsonObject ?: return@mapNotNull null
@@ -568,11 +584,12 @@ class BangumiScraper(repository: Repository?) : HttpScraper(repository), Metadat
         )
     }
 
-    override fun episodes(providerId: String, config: ScraperConfig): List<ScrapedEpisode> {
+    override fun episodes(providerId: String, config: ScraperConfig, maxAgeMs: Long): List<ScrapedEpisode> {
         val payload = getJson(
             "$BASE/v0/episodes?subject_id=$providerId&type=0&limit=100",
             headers(config),
-            cacheKey = "bgm:episodes:$providerId"
+            cacheKey = "bgm:episodes:$providerId",
+            cacheMaxAgeMs = maxAgeMs
         ).obj ?: return emptyList()
         return payload["data"]?.jsonArray.orEmpty().mapNotNull { element ->
             val episode = element as? JsonObject ?: return@mapNotNull null

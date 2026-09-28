@@ -236,6 +236,14 @@ private fun LibrariesTab(state: AppState, storageReady: Boolean, openStorage: ()
             Text("添加媒体库…")
         }
     }
+    Column(Modifier.padding(horizontal = 20.dp)) {
+        SwitchRow(
+            "启动时检查新增内容",
+            state.scanOnStartup,
+            enabled = storageReady,
+            detail = "打开应用后在后台扫描每个媒体库：先找新目录并获取元数据，再检查已有的剧有没有新集。只在发现变化时才提示"
+        ) { state.changeScanOnStartup(it) }
+    }
     if (pickerOpen) {
         WebDavPickerDialog(state, onDismiss = { pickerOpen = false })
     }

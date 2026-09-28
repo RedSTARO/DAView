@@ -108,7 +108,10 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
         // A share of the height the page actually has, not a fixed band: on a
         // phone held sideways a 380dp banner was the whole screen and more.
         val heroHeight = (maxHeight * 0.52f).coerceIn(220.dp, 460.dp)
-        val scanning = state.scanStatus.filter { it.running }
+        // The check the app runs on its own at start-up stays off the home
+        // page: a banner at every launch is what "quiet unless it found
+        // something" rules out. It still shows on the library page.
+        val scanning = state.scanStatus.filter { it.running && !it.automatic }
         // Over the banner's picture the corner is free; anywhere else it sat
         // on the first row's "see all" or the scan banner's button.
         val floatingRefresh = heroItem != null && scanning.isEmpty()

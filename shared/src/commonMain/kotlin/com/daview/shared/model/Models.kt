@@ -520,7 +520,11 @@ data class ServerSettingsDto(
 /** What a scan should actually do. */
 @Serializable
 enum class ScanMode {
-    /** Walk the files, then scrape whatever has no metadata yet. */
+    /**
+     * The everyday scan, one level at a time: folders the library has never
+     * seen are read and scraped first, then the ones it knows are checked for
+     * new seasons and episodes, then whatever is no longer listed is removed.
+     */
     @SerialName("full") FULL,
 
     /**
@@ -544,7 +548,14 @@ data class ScanProgressDto(
     val message: String = "",
     val running: Boolean = true,
     val finishedAt: Long? = null,
-    val error: String? = null
+    val error: String? = null,
+    /** Started by the app on its own, not by a person; the interface stays quiet unless it found something. */
+    val automatic: Boolean = false,
+    /** Films and shows that were not there before, once the scan is done. */
+    val newTitles: Int = 0,
+    /** Episodes added under shows that were already there. */
+    val newEpisodes: Int = 0,
+    val removed: Int = 0
 )
 
 @Serializable

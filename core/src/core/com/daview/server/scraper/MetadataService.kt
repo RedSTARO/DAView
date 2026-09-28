@@ -53,19 +53,26 @@ class MetadataService(
         config: ScraperConfig,
         force: Boolean,
         progress: ProgressSink
+    ): Int = enrichItems(library, config, repository.itemsNeedingScrape(library.id, force), progress)
+
+    /** Scrapes exactly [items], in the order given, with the library's sources. */
+    fun enrichItems(
+        library: LibraryDto,
+        config: ScraperConfig,
+        items: List<MediaItemDto>,
+        progress: ProgressSink
     ): Int {
-        val order = library.providerOrder.ifEmpty { defaultOrder(library.kind) }
-            .filter { scrapers[it]?.isConfigured(config) == true }
+        if (items.isEmpty()) return 0
+        val order = configuredOrder(library, config)
         if (order.isEmpty()) {
             log.info("库 {} 没有可用的刮削源，跳过", library.name)
             return 0
         }
 
-        val targets = repository.itemsNeedingScrape(library.id, force)
         var done = 0
-        targets.forEach { item ->
+        items.forEach { item ->
             done++
-            progress.report(done, targets.size, item.name)
+            progress.report(done, items.size, item.name)
             runCatching {
                 enrichItem(
                     item,
@@ -77,6 +84,36 @@ class MetadataService(
         }
         return done
     }
+
+    /**
+     * Fetches a show's episode list again and lays it over its episodes.
+     *
+     * For a show that gained episodes on the share: the show itself was
+     * scraped long ago, so the pass that scrapes what has no metadata never
+     * reaches it, and the new files kept their file names. Asked for fresh,
+     * past the response cache, because the provider's list may have grown
+     * since the last time.
+     *
+     * @return false when there is nothing to fetch with — the show never
+     *   matched, or no configured source has an id for it.
+     */
+    fun refreshEpisodes(series: MediaItemDto, library: LibraryDto, config: ScraperConfig): Boolean {
+        if (series.kind != ItemKind.SERIES || series.scrapedAt == null || series.providerIds.isEmpty()) return false
+        val order = configuredOrder(library, config)
+        if (order.isEmpty()) return false
+        applyEpisodeMetadata(
+            series,
+            series.providerIds,
+            order,
+            config.copy(language = library.language.ifBlank { config.language }),
+            maxAgeMs = 0
+        )
+        return true
+    }
+
+    private fun configuredOrder(library: LibraryDto, config: ScraperConfig): List<MetadataProvider> =
+        library.providerOrder.ifEmpty { defaultOrder(library.kind) }
+            .filter { scrapers[it]?.isConfigured(config) == true }
 
     fun enrichItem(item: MediaItemDto, order: List<MetadataProvider>, config: ScraperConfig): Boolean {
         val kind = if (item.kind == ItemKind.MOVIE) ItemKind.MOVIE else ItemKind.SERIES
@@ -394,7 +431,8 @@ class MetadataService(
         series: MediaItemDto,
         providerIds: Map<String, String>,
         order: List<MetadataProvider>,
-        config: ScraperConfig
+        config: ScraperConfig,
+        maxAgeMs: Long = SCRAPE_CACHE_MAX_AGE_MS
     ) {
         val episodes = repository.episodesOfSeries(series.id)
         if (episodes.isEmpty()) return
@@ -402,7 +440,7 @@ class MetadataService(
         val scraped = order.asSequence()
             .mapNotNull { provider ->
                 val id = providerIds[provider.name.lowercase()] ?: return@mapNotNull null
-                scrapers[provider]?.episodes(id, config)?.takeIf { it.isNotEmpty() }
+                scrapers[provider]?.episodes(id, config, maxAgeMs)?.takeIf { it.isNotEmpty() }
             }
             .firstOrNull() ?: return
 
