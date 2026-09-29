@@ -89,6 +89,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import com.daview.app.platform.AndroidFilePicker
@@ -492,6 +493,25 @@ actual fun InternalPlayer(
                     // The app draws its own subtitle menu, and it is the only
                     // one that knows about side-loaded subtitle files.
                     setShowSubtitleButton(false)
+                    // media3 draws the subtitles it renders itself — SRT, VTT
+                    // and the ASS inside a container — in the phone's caption
+                    // style, and with captions off in the phone's settings, as
+                    // they ship, white on an opaque black box that blanked a
+                    // strip of the picture under every line. White with a black
+                    // outline instead, as mpv draws them on the desktop. The
+                    // phone's settings are passed over, as they already are for
+                    // the size; media3 reads them in the constructor, so this
+                    // has to come after it.
+                    subtitleView?.setStyle(
+                        CaptionStyleCompat(
+                            android.graphics.Color.WHITE,
+                            android.graphics.Color.TRANSPARENT,
+                            android.graphics.Color.TRANSPARENT,
+                            CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                            android.graphics.Color.BLACK,
+                            /* typeface = */ null
+                        )
+                    )
                     // PlayerView keeps a frame between the picture and the
                     // controls for exactly this.
                     overlayFrameLayout?.addView(
