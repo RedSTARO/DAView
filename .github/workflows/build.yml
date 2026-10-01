@@ -7,6 +7,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only unless a job says otherwise: only the two publishing jobs write,
+# and they ask for it themselves.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -113,7 +118,7 @@ jobs:
       # the legacy "tools" package is gone from the SDK repository: sdkmanager
       # 16 answers "Failed to find package 'tools'" and the step fails before
       # anything is built. platform-tools is all this build needs from it.
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
           packages: platform-tools
           log-accepted-android-sdk-licenses: false
@@ -251,22 +256,45 @@ jobs:
           name: DAView-apk-unsigned
           path: unsigned
 
-      - name: Sign APK
-        id: sign
-        uses: r0adkll/sign-android-release@v1
-        with:
-          releaseDirectory: unsigned
-          signingKeyBase64: ${{ secrets.SIGNING_KEY_BASE64 }}
-          alias: ${{ secrets.ALIAS }}
-          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
-          keyPassword: ${{ secrets.KEY_PASSWORD }}
+      # The SDK's own apksigner, called directly. This used to go through a
+      # third-party action last released in 2019 (declared for node12), which
+      # meant somebody else's mutable tag ran with the keystore in hand and put
+      # both passwords on a command line. Here the passwords reach apksigner
+      # through the environment and the keystore file is gone before the job
+      # ends. The APK arrives aligned from Gradle (the build job checks the
+      # native libraries' 16 KB alignment); signing does not move anything, and
+      # zipalign -c confirms the archive is still aligned before it is signed.
+      - name: 签名 APK
         env:
-          BUILD_TOOLS_VERSION: "34.0.0"
-
-      - name: 重命名已签名 APK
+          SIGNING_KEY_BASE64: ${{ secrets.SIGNING_KEY_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ALIAS }}
+          KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          set -euo pipefail
+          build_tools="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)"
+          echo "using $build_tools"
+          unsigned="$(find unsigned -name '*.apk' -print -quit)"
+          test -n "$unsigned"
+
+          keystore="$RUNNER_TEMP/release.keystore"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$SIGNING_KEY_BASE64" | base64 --decode --ignore-garbage > "$keystore"
+
+          "$build_tools/zipalign" -c 4 "$unsigned"
+
           mkdir -p signed
-          mv "${{ steps.sign.outputs.signedReleaseFile }}" "signed/DAView-${VERSION}.apk"
+          signed="signed/DAView-${VERSION}.apk"
+          # No v4 signature: it is a separate .idsig file only `adb install
+          # --incremental` reads, and nothing here ships it.
+          args=(sign --ks "$keystore" --ks-key-alias "$KEY_ALIAS" --ks-pass env:KEY_STORE_PASSWORD --v4-signing-enabled false)
+          # A PKCS12 store has one password for both; only pass a key password
+          # when one is configured.
+          if [ -n "${KEY_PASSWORD:-}" ]; then
+            args+=(--key-pass env:KEY_PASSWORD)
+          fi
+          "$build_tools/apksigner" "${args[@]}" --out "$signed" "$unsigned"
+          "$build_tools/apksigner" verify --print-certs "$signed" | grep -i 'SHA-256'
 
       - uses: actions/upload-artifact@v4
         with:
@@ -627,7 +655,7 @@ jobs:
           cat dist/update.json
 
       - name: 创建 GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.ref_name }}
           name: "DAView ${{ needs.test.outputs.version }}"
