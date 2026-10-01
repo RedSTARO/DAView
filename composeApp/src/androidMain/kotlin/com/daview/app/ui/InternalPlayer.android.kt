@@ -89,7 +89,6 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
@@ -99,6 +98,8 @@ import com.daview.app.player.BluRayExtractors
 import com.daview.app.subtitle.AssScript
 import com.daview.app.subtitle.AssSource
 import com.daview.app.subtitle.AssSubtitleView
+import com.daview.app.subtitle.EmbeddedAssExtractors
+import com.daview.app.subtitle.EmbeddedAssTracks
 import com.daview.server.library.TsProbe
 import com.daview.shared.model.MediaStreamDto
 import com.daview.shared.model.PlaybackInfoDto
@@ -116,7 +117,8 @@ import kotlin.math.roundToInt
  * ExoPlayer-backed player. Media3 handles Matroska with h264/hevc, AAC/AC3 and
  * SRT natively, so the DAView stream URL can be played directly and external
  * subtitle files are attached as side-loaded subtitle configurations — except
- * ASS, which DAView renders itself over the picture. See [AssSubtitleView].
+ * ASS, which DAView renders itself over the picture, from a file beside the
+ * video or from inside it alike. See [AssSubtitleView] and [EmbeddedAssExtractors].
  *
  * The screen composes one of these per session. What the viewer set that should
  * outlive one file — the rotation lock, the subtitle delay, the speed — lives in
@@ -182,6 +184,13 @@ actual fun InternalPlayer(
 
     // ASS files are not handed to media3 at all — they are drawn by
     // AssSubtitleView instead, which keeps the typesetting media3's parser strips.
+    // The ASS inside the video goes the same way: the extractor keeps its lines
+    // here as it reads them, and media3 never learns the track is there. Only
+    // the tracks the server listed, which are the ones the menu can offer.
+    val embeddedAss = remember { EmbeddedAssTracks() }
+    val embeddedAssListed = remember(info) {
+        subtitleStreams.filter { !it.isExternal && it.isAss }.map { it.index.toString() }.toSet()
+    }
     val sideLoaded = remember(info) {
         subtitleStreams
             .filter { it.isExternal && !it.isAss }
@@ -215,7 +224,7 @@ actual fun InternalPlayer(
                 // size nor its audio and subtitle stream types.
                 DefaultMediaSourceFactory(
                     DefaultDataSource.Factory(context, httpFactory),
-                    BluRayExtractors(DefaultExtractorsFactory())
+                    BluRayExtractors(EmbeddedAssExtractors(embeddedAss, embeddedAssListed))
                 )
             )
             // Audio focus is what makes a phone call, an alarm or another app
@@ -289,7 +298,7 @@ actual fun InternalPlayer(
                     }
                     if (!subtitlesOff) {
                         subtitleStreams.firstOrNull { it.index == selectedSubtitle }
-                            ?.takeIf { !(it.isExternal && it.isAss) }
+                            ?.takeIf { !it.isAss }
                             ?.let { selectTrack(player, C.TRACK_TYPE_TEXT, it, subtitleStreams) }
                     }
                     // Applied, the change comes back through here; not applied,
@@ -393,20 +402,43 @@ actual fun InternalPlayer(
     LaunchedEffect(selectedSubtitle, mountedSubtitle, subtitlesOff) {
         // A file from the phone set its own renderer up when it was picked.
         if (mountedSubtitle != null) return@LaunchedEffect
-        val stream = subtitleStreams.firstOrNull { it.index == selectedSubtitle }
-        val url = stream?.takeIf { it.isExternal && it.isAss && !subtitlesOff }?.let { info.subtitleUrls[it.index] }
-        assScript = if (url == null) {
-            null
-        } else {
-            AssSource.load(url)
+        val stream = subtitleStreams.firstOrNull { it.index == selectedSubtitle }?.takeIf { it.isAss && !subtitlesOff }
+        val url = stream?.takeIf { it.isExternal }?.let { info.subtitleUrls[it.index] }
+        val inside = stream?.takeIf { !it.isExternal }
+        // The ASS inside the video is put together below, off this thread.
+        assScript = when {
+            url != null -> AssSource.load(url)
                 .onFailure { android.util.Log.w("DAView", "subtitle $url", it) }
                 .getOrNull()
+            else -> null
         }
-        // Two renderers drawing at once would double every line.
+        // Two renderers drawing at once would double every line. The ASS inside
+        // the video is not a media3 track at all, so choosing it has to turn
+        // media3's off even before the first of its lines has been read.
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, assScript != null || subtitlesOff)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, assScript != null || inside != null || subtitlesOff)
             .build()
+
+        // The lines inside the video arrive as the player reads ahead, so the
+        // script on screen is brought up to date while this track is chosen.
+        // A snapshot taken while the viewer chose something else — a file from
+        // the phone, most likely, which does not restart this until the next
+        // frame — is dropped rather than drawn over it.
+        if (inside != null) {
+            var seen = -1
+            while (true) {
+                val track = embeddedAss[inside.index.toString()]
+                if (track != null && track.version != seen) {
+                    seen = track.version
+                    val script = withContext(Dispatchers.Default) { track.snapshot() }
+                    if (mountedSubtitle == null && !subtitlesOff && selectedSubtitle == inside.index) {
+                        assScript = script
+                    }
+                }
+                delay(EMBEDDED_ASS_REFRESH_MS)
+            }
+        }
     }
 
     // Leaving the app pauses the film — unless it went to the corner, which is
@@ -545,14 +577,14 @@ actual fun InternalPlayer(
                     // The app draws its own subtitle menu, and it is the only
                     // one that knows about side-loaded subtitle files.
                     setShowSubtitleButton(false)
-                    // media3 draws the subtitles it renders itself — SRT, VTT
-                    // and the ASS inside a container — in the phone's caption
-                    // style, and with captions off in the phone's settings, as
-                    // they ship, white on an opaque black box that blanked a
-                    // strip of the picture under every line. White with a black
-                    // outline instead, as mpv draws them on the desktop. The
-                    // phone's settings are passed over, as they already are for
-                    // the size; media3 reads them in the constructor, so this
+                    // media3 draws the subtitles it still renders itself — SRT
+                    // and VTT, beside the video or inside it — in the phone's
+                    // caption style, and with captions off in the phone's
+                    // settings, as they ship, white on an opaque black box that
+                    // blanked a strip of the picture under every line. White with
+                    // a black outline instead, as mpv draws them on the desktop.
+                    // The phone's settings are passed over, as they already are
+                    // for the size; media3 reads them in the constructor, so this
                     // has to come after it.
                     subtitleView?.setStyle(
                         CaptionStyleCompat(
@@ -738,9 +770,10 @@ actual fun InternalPlayer(
                                         subtitlesOff = false
                                         mountedSubtitle = null
                                         pendingMount = null
-                                        // An ASS file has no media3 track to select —
-                                        // the overlay picks it up from selectedSubtitle.
-                                        if (!(stream.isExternal && stream.isAss)) {
+                                        // ASS, beside the video or inside it, has no
+                                        // media3 track to select — the overlay picks
+                                        // it up from selectedSubtitle.
+                                        if (!stream.isAss) {
                                             player.trackSelectionParameters = player.trackSelectionParameters
                                                 .buildUpon()
                                                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
@@ -930,6 +963,12 @@ actual fun InternalPlayer(
 }
 
 private val SPEEDS = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
+
+/**
+ * How often the script of an ASS track inside the video takes in the lines read
+ * since. Short, because after a seek the line on screen may be one just read.
+ */
+private const val EMBEDDED_ASS_REFRESH_MS = 100L
 
 /** The tick on a menu's current choice. The menus used to list tracks with nothing to say which was playing. */
 @Composable

@@ -27,9 +27,16 @@ class AssRenderer(private val fonts: AssFonts) {
 
     var script: AssScript? = null
         set(value) {
+            // The ASS inside a video comes back every half second with the lines
+            // read since, over the very same header, and the lines parsed so far
+            // were parsed against that header: they stay. A script of its own
+            // has styles of its own, and starts again.
+            val grown = value != null && value.styles === field?.styles
             field = value
-            lines.clear()
-            drawings.clear()
+            if (!grown) {
+                lines.clear()
+                drawings.clear()
+            }
         }
 
     /** Shifts every event, for a script that does not line up with the video. */
