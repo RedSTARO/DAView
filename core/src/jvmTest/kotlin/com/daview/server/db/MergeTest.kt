@@ -77,6 +77,26 @@ class MergeTest {
     }
 
     @Test
+    fun `a duplicate comes back when what it was merged into is removed`() {
+        rescan()
+        repository.mergeItems("keep", listOf("dupe"))
+
+        // The folder that was kept as the target is deleted from the share, and
+        // the scan drops its rows.
+        repository.deleteItems(listOf("keep", "keep-e1"))
+
+        assertNull(repository.item("dupe")?.mergedInto)
+        assertEquals(listOf("dupe-e1"), repository.children("dupe").map { it.id })
+        assertEquals("dupe", repository.item("dupe-e1")?.seriesId)
+        val (listed, _) = repository.query(Repository.Query(libraryId = "lib", kind = ItemKind.SERIES))
+        assertEquals(listOf("dupe"), listed.map { it.id })
+
+        // And the next scan has no merge left to lay back on top.
+        repository.reapplyMerges()
+        assertEquals(listOf("dupe-e1"), repository.children("dupe").map { it.id })
+    }
+
+    @Test
     fun `a merged duplicate is hidden from listings`() {
         rescan()
         repository.mergeItems("keep", listOf("dupe"))

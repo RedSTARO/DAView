@@ -61,18 +61,48 @@ class JdbcSqlDatabase(dataDir: Path, fileName: String = "daview.db") : SqlDataba
 
     private val writeWrapper = JdbcConnection(writer)
 
+    /**
+     * The connection this thread is already working on, when it is inside a
+     * [read] or a [transaction].
+     *
+     * A read started from inside another one used to take a second reader
+     * while still holding the first. Four threads doing that at once held
+     * every slot between them, each waiting for a fifth that could never come
+     * free, and nothing was read again until the app was restarted. A read
+     * started from inside a transaction went to a reader too, which cannot see
+     * what the transaction has written so far — while on Android, where there
+     * is one connection, it can. Both now stay on the connection the thread
+     * already has.
+     */
+    private val current = ThreadLocal<JdbcConnection>()
+
     override fun <T> read(block: (SqlConnection) -> T): T {
+        current.get()?.let { return block(it) }
         slots.acquire()
-        val connection = idle.poll() ?: JdbcConnection(connect()).also { opened += it }
         try {
-            return block(connection)
+            // Inside the try: a connection that cannot be opened has to give
+            // its slot back, or four failures leave no reader at all.
+            val connection = idle.poll() ?: JdbcConnection(connect()).also { opened += it }
+            current.set(connection)
+            try {
+                return block(connection)
+            } finally {
+                current.remove()
+                idle.offer(connection)
+            }
         } finally {
-            idle.offer(connection)
             slots.release()
         }
     }
 
     override fun <T> transaction(block: (SqlConnection) -> T): T = writeLock.withLock {
+        // A transaction opened inside another joins it, as it does on Android.
+        // Committing here would end the outer one half way through and leave
+        // the rest of it running in auto-commit.
+        if (writeLock.holdCount > 1) return@withLock block(writeWrapper)
+
+        val outer = current.get()
+        current.set(writeWrapper)
         writer.autoCommit = false
         try {
             val result = block(writeWrapper)
@@ -83,6 +113,7 @@ class JdbcSqlDatabase(dataDir: Path, fileName: String = "daview.db") : SqlDataba
             throw t
         } finally {
             writer.autoCommit = true
+            if (outer == null) current.remove() else current.set(outer)
         }
     }
 

@@ -158,21 +158,44 @@ class Repository(private val db: Database) {
             .use { it.setString(1, id); it.executeUpdate() }
     }
 
-    fun deleteLibrary(id: String) = db.transaction { connection ->
-        connection.statement(
-            "INSERT INTO deleted_libraries (id, deleted_at) VALUES (?, ?) " +
-                "ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at"
-        ).use { it.setString(1, id); it.setLong(2, System.currentTimeMillis()); it.executeUpdate() }
-        connection.statement("DELETE FROM user_data WHERE item_id IN (SELECT id FROM items WHERE library_id = ?)")
-            .use { it.setString(1, id); it.executeUpdate() }
-        connection.statement("DELETE FROM items WHERE library_id = ?")
-            .use { it.setString(1, id); it.executeUpdate() }
-        connection.statement("DELETE FROM libraries WHERE id = ?")
-            .use { it.setString(1, id); it.executeUpdate() }
+    fun deleteLibrary(id: String) {
+        db.transaction { connection ->
+            connection.statement(
+                "INSERT INTO deleted_libraries (id, deleted_at) VALUES (?, ?) " +
+                    "ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at"
+            ).use { it.setString(1, id); it.setLong(2, System.currentTimeMillis()); it.executeUpdate() }
+            connection.statement("DELETE FROM user_data WHERE item_id IN (SELECT id FROM items WHERE library_id = ?)")
+                .use { it.setString(1, id); it.executeUpdate() }
+            connection.statement("DELETE FROM items WHERE library_id = ?")
+                .use { it.setString(1, id); it.executeUpdate() }
+            connection.statement("DELETE FROM libraries WHERE id = ?")
+                .use { it.setString(1, id); it.executeUpdate() }
+        }
+        // A duplicate in another library may have been merged into something
+        // that lived in this one.
+        releaseStrandedMerges()
     }
 
     /** See [Database.refreshStatistics]; called once a scan has settled. */
-    fun refreshStatistics() = db.refreshStatistics()
+    fun refreshStatistics() {
+        pruneScrapeCache()
+        db.refreshStatistics()
+    }
+
+    /**
+     * Drops provider responses nothing will read again.
+     *
+     * A cached response is served for a week at most, and a key that is asked
+     * for again is overwritten, so a row older than a month belongs to a title
+     * that has left the library or a search that is no longer made. Those were
+     * never removed, and the table only ever grew.
+     */
+    fun pruneScrapeCache(olderThanMs: Long = SCRAPE_CACHE_KEPT_MS) = db.transaction { connection ->
+        connection.statement("DELETE FROM scrape_cache WHERE fetched_at < ?").use {
+            it.setLong(1, System.currentTimeMillis() - olderThanMs)
+            it.executeUpdate()
+        }
+    }
 
     fun markScanned(libraryId: String, at: Long) = db.transaction { connection ->
         connection.statement("UPDATE libraries SET last_scan_at = ? WHERE id = ?").use {
@@ -300,26 +323,52 @@ class Repository(private val db: Database) {
      */
     fun unmergeItem(sourceId: String) {
         val source = item(sourceId) ?: return
-        val prefix = source.path?.trimEnd('/')?.plus("/") ?: return
+        // Without a path there is nothing to hand the children back by, but the
+        // row itself still has to stop being hidden.
+        val prefix = source.path?.trimEnd('/')?.plus("/")
         // substr(...) = ? rather than LIKE: SQLite's LIKE ignores ASCII case, and
         // two folders differing only in case is exactly the kind of duplicate
         // people merge. LIKE would drag the target's own children back too.
         db.transaction { connection ->
-            connection.statement(
-                "UPDATE items SET series_id = ? WHERE series_id = ? AND substr(path, 1, length(?)) = ?"
-            ).use {
-                it.setString(1, sourceId); it.setString(2, source.mergedInto)
-                it.setString(3, prefix); it.setString(4, prefix); it.executeUpdate()
-            }
-            connection.statement(
-                "UPDATE items SET parent_id = ? WHERE parent_id = ? AND substr(path, 1, length(?)) = ?"
-            ).use {
-                it.setString(1, sourceId); it.setString(2, source.mergedInto)
-                it.setString(3, prefix); it.setString(4, prefix); it.executeUpdate()
+            if (prefix != null) {
+                connection.statement(
+                    "UPDATE items SET series_id = ? WHERE series_id = ? AND substr(path, 1, length(?)) = ?"
+                ).use {
+                    it.setString(1, sourceId); it.setString(2, source.mergedInto)
+                    it.setString(3, prefix); it.setString(4, prefix); it.executeUpdate()
+                }
+                connection.statement(
+                    "UPDATE items SET parent_id = ? WHERE parent_id = ? AND substr(path, 1, length(?)) = ?"
+                ).use {
+                    it.setString(1, sourceId); it.setString(2, source.mergedInto)
+                    it.setString(3, prefix); it.setString(4, prefix); it.executeUpdate()
+                }
             }
             connection.statement("UPDATE items SET merged_into = NULL WHERE id = ?")
                 .use { it.setString(1, sourceId); it.executeUpdate() }
         }
+    }
+
+    /**
+     * Gives a merged duplicate back to itself once what it was merged into is
+     * gone.
+     *
+     * Merging two folders and then deleting one of them from the share is the
+     * ordinary way to finish tidying up, and half the time the one deleted is
+     * the one that was kept as the target. Its row goes with the scan; the
+     * duplicate stayed flagged as merged into it, so it was left out of every
+     * listing, its episodes pointed at a series that no longer existed, and
+     * each rescan re-applied the merge. The folder was on the share and the
+     * show was nowhere in the library, with no page left to undo it from.
+     */
+    private fun releaseStrandedMerges() {
+        val stranded = db.read { connection ->
+            connection.statement(
+                "SELECT id FROM items WHERE merged_into IS NOT NULL " +
+                    "AND merged_into NOT IN (SELECT id FROM items)"
+            ).useQuery { rs -> rs.map { it.requireString("id") } }
+        }
+        stranded.forEach(::unmergeItem)
     }
 
     /** The duplicates folded into [targetId]. */
@@ -335,6 +384,9 @@ class Repository(private val db: Database) {
      * again the moment a library is rescanned.
      */
     fun reapplyMerges() {
+        // Before anything is laid back on: a merge whose target has since been
+        // removed is not one to re-apply.
+        releaseStrandedMerges()
         val pairs = db.read { connection ->
             connection.statement("SELECT id, merged_into FROM items WHERE merged_into IS NOT NULL")
                 .useQuery { rs -> rs.map { it.requireString("id") to it.requireString("merged_into") } }
@@ -750,6 +802,7 @@ class Repository(private val db: Database) {
                 statement.executeBatch()
             }
         }
+        releaseStrandedMerges()
     }
 
     data class Query(
@@ -817,9 +870,10 @@ class Repository(private val db: Database) {
             // Alphabetical alone buried "Up" under every title containing "up".
             "relevance" -> {
                 val term = query.search?.trim().orEmpty()
-                orderBinds += term; orderBinds += term; orderBinds += "$term%"; orderBinds += "$term%"
+                val prefix = likeLiteral(term) + "%"
+                orderBinds += term; orderBinds += term; orderBinds += prefix; orderBinds += prefix
                 "CASE WHEN lower(i.name) = lower(?) OR lower(COALESCE(i.original_name, '')) = lower(?) THEN 0 " +
-                    "WHEN i.name LIKE ? OR i.original_name LIKE ? THEN 1 ELSE 2 END, " +
+                    "WHEN i.name LIKE ? $LIKE_ESCAPE OR i.original_name LIKE ? $LIKE_ESCAPE THEN 1 ELSE 2 END, " +
                     "CASE WHEN i.kind IN ('MOVIE','SERIES') THEN 0 ELSE 1 END, i.sort_name"
             }
             else -> "i.sort_name$dir"
@@ -893,20 +947,26 @@ class Repository(private val db: Database) {
         query.yearFrom?.let { where.append(" AND i.year >= ?"); binds += it }
         query.yearTo?.let { where.append(" AND i.year <= ?"); binds += it }
         query.search?.takeIf { it.isNotBlank() }?.let {
-            val pattern = "%${it.trim()}%"
-            if (query.searchPeople) {
-                where.append(
-                    " AND (i.name LIKE ? OR i.original_name LIKE ? OR i.sort_name LIKE ? " +
-                        "OR i.people_names LIKE ? OR i.genres LIKE ?)"
-                )
-                repeat(5) { binds += pattern }
+            val pattern = "%${likeLiteral(it.trim())}%"
+            val columns = if (query.searchPeople) {
+                listOf("i.name", "i.original_name", "i.sort_name", "i.people_names", "i.genres")
             } else {
-                where.append(" AND (i.name LIKE ? OR i.original_name LIKE ? OR i.sort_name LIKE ?)")
-                repeat(3) { binds += pattern }
+                listOf("i.name", "i.original_name", "i.sort_name")
             }
+            where.append(columns.joinToString(" OR ", " AND (", ")") { column -> "$column LIKE ? $LIKE_ESCAPE" })
+            repeat(columns.size) { binds += pattern }
         }
         return where.toString() to binds
     }
+
+    /**
+     * [text] as a LIKE operand that matches only itself. `%` and `_` typed into
+     * a search are characters of a title — "100%", "Re_Zero" — and passed
+     * through as they were they are wildcards: "100%" found every title with
+     * "100" in it. Goes with [LIKE_ESCAPE] on the comparison.
+     */
+    private fun likeLiteral(text: String): String =
+        text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     /**
      * Season 0 is the specials folder in the Emby / Jellyfin layout, and it is
@@ -1086,8 +1146,16 @@ class Repository(private val db: Database) {
         }.useQuery { it.map(::readItem) }
     }
 
-    /** Which slice of a 40-character hex id orders the shelf on a given day. */
-    private fun rotation(day: Long): Int = (Math.floorMod(day, 33L) + 1).toInt()
+    /**
+     * Which eight characters of the id order the shelf on a given day.
+     *
+     * An id is 24 hex characters (the first twelve bytes of a SHA-1), so there
+     * are seventeen whole slices to turn through. This used to count to 33, as
+     * if the id were forty characters long: on nine days out of every 33 the
+     * slice started past the end of the id, was empty for every row, and the
+     * shelf fell back to the alphabetical order it exists to avoid.
+     */
+    private fun rotation(day: Long): Int = (Math.floorMod(day, ROTATION_SLICES) + 1).toInt()
 
     fun itemsNeedingScrape(libraryId: String, force: Boolean): List<MediaItemDto> = db.read { connection ->
         val condition = if (force) "" else "AND i.scraped_at IS NULL"
@@ -1659,6 +1727,15 @@ class Repository(private val db: Database) {
         runCatching { json.decodeFromString(stringListSerializer, raw ?: "[]") }.getOrDefault(emptyList())
 
     private companion object {
+        /** How long a cached provider response is kept; see [pruneScrapeCache]. */
+        const val SCRAPE_CACHE_KEPT_MS = 30L * 24 * 3600 * 1000
+
+        /** Start positions of an eight-character slice inside a 24-character id. */
+        const val ROTATION_SLICES = 17L
+
+        /** Makes the backslashes [likeLiteral] adds mean what it meant by them. */
+        const val LIKE_ESCAPE = "ESCAPE '\\'"
+
         /**
          * When anything under this row's series was last played. The next-up
          * shelf was ordered by season and episode number, so the show finished
