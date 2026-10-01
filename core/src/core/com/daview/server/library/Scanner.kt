@@ -696,7 +696,8 @@ class Scanner(
     /**
      * External subtitle files are matched by base name. Indices start at
      * [EXTERNAL_STREAM_BASE] so they can never clash with the track numbers that
-     * [MkvProbe] reports for embedded streams.
+     * [MkvProbe] reports for embedded streams, or the PIDs [TsProbe] does (which
+     * numbers its streams itself in a file whose PIDs reach into this range).
      */
     /**
      * The subtitle files that belong to a video: the ones beside it, plus the

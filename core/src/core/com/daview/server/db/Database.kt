@@ -322,6 +322,20 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                 INSERT OR IGNORE INTO download_files(item_id, media_path, file, kind, state, total_bytes, downloaded_bytes)
                 SELECT item_id, media_path, file, 'video', state, total_bytes, downloaded_bytes FROM downloads
                 """.trimIndent()
+            ),
+            listOf(
+                // Transport streams — .ts, and the .m2ts a Blu-ray keeps its
+                // streams in — used to be stamped as probed with nothing found,
+                // and a stamped file is never probed again. Now that they can
+                // be read, those stamps are taken off, so the next scan, or the
+                // next time one is opened, reads its tracks and its runtime.
+                """
+                UPDATE items SET probed_at = NULL
+                WHERE kind IN ('MOVIE', 'EPISODE')
+                  AND probed_at IS NOT NULL
+                  AND (lower(path) LIKE '%.ts' OR lower(path) LIKE '%.m2ts' OR lower(path) LIKE '%.mts' OR lower(path) LIKE '%.m2t')
+                  AND (media_streams IS NULL OR media_streams NOT LIKE '%"isExternal":false%')
+                """.trimIndent()
             )
         )
     }

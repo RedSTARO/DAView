@@ -19,6 +19,11 @@ actual object PlatformInfo {
     actual val isDesktop: Boolean = false
     actual val isAndroid: Boolean = true
     actual val hasInternalPlayer: Boolean = true
+
+    // Loads the native libraries on first use; a build made without them
+    // answers false and simply plays no DTS or TrueHD.
+    actual val hasFfmpegDecoders: Boolean
+        get() = runCatching { androidx.media3.decoder.ffmpeg.FfmpegLibrary.isAvailable() }.getOrDefault(false)
 }
 
 actual fun defaultDeviceName(): String = "${Build.MANUFACTURER} ${Build.MODEL}"

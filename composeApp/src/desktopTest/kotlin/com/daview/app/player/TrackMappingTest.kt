@@ -54,6 +54,51 @@ class TrackMappingTest {
         assertEquals(3, TrackMapping.subtitleId(streams, 1001))
     }
 
+    /**
+     * A Blu-ray .m2ts, as TsProbe lists it: streams by PID, and a subtitle file
+     * beside it. When the probe could not list the disc's own PGS, the file
+     * beside it came out as sid 1, which was the PGS, and that is what played.
+     */
+    @Test
+    fun `a Blu-ray clip's subtitle file comes after the disc's own subtitles`() {
+        val clip = listOf(
+            MediaStreamDto(index = 4113, type = StreamType.VIDEO),
+            audio(4352),
+            embeddedSub(4608),
+            externalSub(1000)
+        )
+
+        assertEquals(1, TrackMapping.audioId(clip, 4352))
+        assertEquals(1, TrackMapping.subtitleId(clip, 4608))
+        assertEquals(2, TrackMapping.subtitleId(clip, 1000))
+        assertEquals(1000, TrackMapping.subtitleIndex(clip, 2))
+    }
+
+    /** libavformat makes two audio tracks of an HDMV TrueHD stream; TsProbe lists both, so the next one keeps its number. */
+    @Test
+    fun `the AC-3 core of a TrueHD stream takes an audio id of its own`() {
+        val clip = listOf(audio(4352), audio(4352 + 0x2000), audio(4353))
+
+        assertEquals(3, TrackMapping.audioId(clip, 4353))
+        assertEquals(4353, TrackMapping.audioIndex(clip, 3))
+    }
+
+    /**
+     * mpv can know a subtitle track the probe does not list — a Japanese TV
+     * recording's captions — and then the file beside the video is not where
+     * counting puts it. The id mpv reports for the file is used instead.
+     */
+    @Test
+    fun `an external file is found by the id mpv gave it, not by counting`() {
+        val clip = listOf(MediaStreamDto(index = 4113, type = StreamType.VIDEO), externalSub(1000))
+        val attached = mapOf(1000 to 2)
+
+        assertEquals(2, TrackMapping.subtitleId(clip, 1000, attached))
+        assertEquals(1000, TrackMapping.subtitleIndex(clip, 2, attached))
+        // Track 1 is the captions, which DAView does not list.
+        assertNull(TrackMapping.subtitleIndex(clip, 1, attached))
+    }
+
     @Test
     fun `an index that is not in the list has no track`() {
         assertNull(TrackMapping.audioId(streams, 99))
@@ -104,7 +149,7 @@ class TrackMappingTest {
      */
     @Test
     fun `a subtitle file that failed to attach moves the later ones up`() {
-        val attached = setOf(1001)
+        val attached = mapOf(1001 to 2)
         assertNull(TrackMapping.subtitleId(streams, 1000, attached))
         assertEquals(2, TrackMapping.subtitleId(streams, 1001, attached))
         assertEquals(1001, TrackMapping.subtitleIndex(streams, 2, attached))

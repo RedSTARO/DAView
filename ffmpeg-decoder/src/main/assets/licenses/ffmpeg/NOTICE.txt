@@ -1,0 +1,186 @@
+FFmpeg in DAView for Android
+============================
+
+DAView plays DTS, Dolby TrueHD and AC-3 / E-AC-3 audio with FFmpeg's decoders
+when the phone cannot decode it itself. FFmpeg is in these libraries, inside
+the APK under lib/<abi>/:
+
+  libavcodec.so  libavutil.so  libswresample.so
+
+Version: FFmpeg 6.1.6, unmodified - git tag n6.1.6, commit
+f1e3a2bf7a2f2cde936d1ed97f09a26853d20125.
+
+Licence: GNU Lesser General Public License, version 2.1 or later. The full
+text is COPYING.LGPLv2.1 next to this file. FFmpeg was configured without
+--enable-gpl, --enable-nonfree and --enable-version3, so no GPL or non-free
+part of it is included. A few of the source files compiled in carry
+permissive licences of their own; their notices are at the end of this file.
+
+Source code of exactly this version:
+
+  https://github.com/FFmpeg/FFmpeg/tree/n6.1.6
+  https://ffmpeg.org/releases/ffmpeg-6.1.6.tar.xz
+  git://source.ffmpeg.org/ffmpeg.git (tag n6.1.6)
+
+How the libraries were built: by scripts/build-ffmpeg-decoder.sh in
+https://github.com/RedSTARO/DAView, with Android NDK r27d (27.3.13750724) for
+API level 26. FFmpeg's configure ran with the NDK's toolchain directory on
+PATH, from an empty build directory holding a link named "src" to the source.
+These are its configure lines as libavcodec.so records them (what
+avcodec_configuration() returns), one per ABI:
+
+armeabi-v7a:
+--target-os=android --arch=arm --cpu=armv7-a --cross-prefix=armv7a-linux-androideabi26- --nm=llvm-nm --ar=llvm-ar --ranlib=llvm-ranlib --strip=llvm-strip --enable-shared --disable-static --disable-programs --disable-doc --disable-debug --disable-everything --disable-avdevice --disable-avformat --disable-swscale --disable-postproc --disable-avfilter --disable-network --disable-symver --disable-autodetect --disable-iconv --enable-swresample --enable-decoder='ac3,eac3,dca,truehd,mlp' --extra-cflags='-D__BIONIC_NO_PAGE_SIZE_MACRO -march=armv7-a -mfloat-abi=softfp' --extra-ldflags='-Wl,-z,max-page-size=16384 -Wl,--build-id=sha1 -Wl,--no-rosegment -Wl,--fix-cortex-a8'
+
+arm64-v8a:
+--target-os=android --arch=aarch64 --cpu=armv8-a --cross-prefix=aarch64-linux-android26- --nm=llvm-nm --ar=llvm-ar --ranlib=llvm-ranlib --strip=llvm-strip --enable-shared --disable-static --disable-programs --disable-doc --disable-debug --disable-everything --disable-avdevice --disable-avformat --disable-swscale --disable-postproc --disable-avfilter --disable-network --disable-symver --disable-autodetect --disable-iconv --enable-swresample --enable-decoder='ac3,eac3,dca,truehd,mlp' --extra-cflags=-D__BIONIC_NO_PAGE_SIZE_MACRO --extra-ldflags='-Wl,-z,max-page-size=16384 -Wl,--build-id=sha1 -Wl,--no-rosegment'
+
+x86:
+--target-os=android --arch=x86 --cpu=i686 --cross-prefix=i686-linux-android26- --nm=llvm-nm --ar=llvm-ar --ranlib=llvm-ranlib --strip=llvm-strip --enable-shared --disable-static --disable-programs --disable-doc --disable-debug --disable-everything --disable-avdevice --disable-avformat --disable-swscale --disable-postproc --disable-avfilter --disable-network --disable-symver --disable-autodetect --disable-iconv --enable-swresample --enable-decoder='ac3,eac3,dca,truehd,mlp' --extra-cflags=-D__BIONIC_NO_PAGE_SIZE_MACRO --extra-ldflags='-Wl,-z,max-page-size=16384 -Wl,--build-id=sha1 -Wl,--no-rosegment' --disable-asm
+
+x86_64:
+--target-os=android --arch=x86_64 --cpu=x86-64 --cross-prefix=x86_64-linux-android26- --nm=llvm-nm --ar=llvm-ar --ranlib=llvm-ranlib --strip=llvm-strip --enable-shared --disable-static --disable-programs --disable-doc --disable-debug --disable-everything --disable-avdevice --disable-avformat --disable-swscale --disable-postproc --disable-avfilter --disable-network --disable-symver --disable-autodetect --disable-iconv --enable-swresample --enable-decoder='ac3,eac3,dca,truehd,mlp' --extra-cflags=-D__BIONIC_NO_PAGE_SIZE_MACRO --extra-ldflags='-Wl,-z,max-page-size=16384 -Wl,--build-id=sha1 -Wl,--no-rosegment' --disable-asm
+
+The libraries are linked dynamically. libffmpegJNI.so, the JNI wrapper from
+AndroidX Media (Apache License 2.0; its source is in the DAView repository
+under ffmpeg-decoder/), loads them by file name. To run DAView with a
+different build of FFmpeg, build these three libraries from the source above,
+or from a modified version of it, put them into lib/<abi>/ of the APK in place
+of the ones there, and sign the APK again.
+
+This software uses code of FFmpeg (https://ffmpeg.org) licensed under the
+LGPLv2.1, and its source can be downloaded from the addresses above.
+
+
+Notices for files under other licences
+--------------------------------------
+
+libavcodec.so contains FFmpeg's DCT code derived from the Independent JPEG
+Group's software (libavcodec/jfdctfst.c, libavcodec/jfdctint_template.c and
+libavcodec/jrevdct.c; copyright (C) 1991-1996 Thomas G. Lane): this software
+is based in part on the work of the Independent JPEG Group.
+
+libavutil.so contains libavutil/avsscanf.c, taken from musl libc:
+
+    Copyright (c) 2005-2014 Rich Felker, et al.
+
+    Permission is hereby granted, free of charge, to any person obtaining
+    a copy of this software and associated documentation files (the
+    "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to
+    permit persons to whom the Software is furnished to do so, subject to
+    the following conditions:
+
+    The above copyright notice and this permission notice shall be
+    included in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+    IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+    CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+libavcodec.so for armeabi-v7a contains libavcodec/arm/jrevdct_arm.S:
+
+    Copyright (c) 2001 Lionel Ulmer (lionel.ulmer@free.fr / bbrox@bbrox.org)
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+    COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+libavcodec.so contains libavcodec/faandct.c:
+
+    Copyright (c) 2003 Michael Niedermayer <michaelni@gmx.at>
+    Copyright (c) 2003 Roman Shaposhnik
+
+    Permission to use, copy, modify, and/or distribute this software for any
+    purpose with or without fee is hereby granted, provided that the above
+    copyright notice and this permission notice appear in all copies.
+
+    THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+    WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+    MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+    ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+    WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+    ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+libavutil.so contains libavutil/fixed_dsp.c and libavutil/fixed_dsp.h, whose
+headers carry this notice besides the LGPL:
+
+    Copyright (c) 2012
+         MIPS Technologies, Inc., California.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+    1. Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimer.
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in the
+       documentation and/or other materials provided with the distribution.
+    3. Neither the name of the MIPS Technologies, Inc., nor the names of its
+       contributors may be used to endorse or promote products derived from
+       this software without specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE MIPS TECHNOLOGIES, INC. ``AS IS'' AND
+    ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+    ARE DISCLAIMED.  IN NO EVENT SHALL THE MIPS TECHNOLOGIES, INC. BE LIABLE
+    FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+    OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+    HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+    LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+    OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+    SUCH DAMAGE.
+
+libavutil.so contains libavutil/uuid.c, whose header carries this notice
+besides the LGPL:
+
+    Copyright (C) 1996, 1997 Theodore Ts'o.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+    1. Redistributions of source code must retain the above copyright
+       notice, and the entire permission notice in its entirety,
+       including the disclaimer of warranties.
+    2. Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in the
+       documentation and/or other materials provided with the distribution.
+    3. The name of the author may not be used to endorse or promote
+       products derived from this software without specific prior
+       written permission.
+
+    THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
+    WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+    OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE, ALL OF
+    WHICH ARE HEREBY DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR BE
+    LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+    CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+    OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
+    BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+    LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+    USE OF THIS SOFTWARE, EVEN IF NOT ADVISED OF THE POSSIBILITY OF SUCH
+    DAMAGE.
+
+libavutil.so contains libavutil/adler32.c, based on adler32.c from zlib,
+copyright (C) 1995 Mark Adler.

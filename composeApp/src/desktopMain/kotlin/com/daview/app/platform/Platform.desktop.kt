@@ -13,11 +13,18 @@ import java.net.URI
 import java.util.prefs.Preferences
 import com.daview.app.player.MpvNative
 import com.daview.app.player.PlayerPreferences
+import com.daview.app.player.TrackMapping
+import com.daview.server.library.TsProbe
+import com.daview.shared.model.MediaStreamDto
+import com.daview.shared.model.StreamType
 
 actual object PlatformInfo {
     actual val name: String = System.getProperty("os.name") ?: "Desktop"
     actual val isDesktop: Boolean = true
     actual val isAndroid: Boolean = false
+
+    // libmpv decodes everything itself.
+    actual val hasFfmpegDecoders: Boolean = false
 
     /**
      * There is an in-app player exactly when libmpv could be loaded. It is not
@@ -90,7 +97,7 @@ fun setCustomPlayerPath(path: String?) {
  * the CDN link) keeps the server in the loop so it can follow the byte offsets
  * the player requests and turn them into a playback position.
  */
-private fun buildCommand(request: ExternalPlayRequest, executable: String): List<String> {
+internal fun buildCommand(request: ExternalPlayRequest, executable: String): List<String> {
     val seconds = request.startPositionMs / 1000
     return when (request.player.id) {
         "potplayer" -> buildList {
@@ -105,11 +112,8 @@ private fun buildCommand(request: ExternalPlayRequest, executable: String): List
             add(request.streamUrl)
             if (seconds > 0) add("--start-time=$seconds")
             request.subtitleUrl?.let { add("--sub-file=$it") }
-            // VLC counts tracks from the file, so the container's own index is
-            // what it wants here. An external file's index is DAView's own and
-            // means nothing to VLC; that one arrives through --sub-file.
-            request.audioTrack?.let { add("--audio-track=$it") }
-            request.subtitleTrack?.takeIf { it in 0 until EXTERNAL_BASE }?.let { add("--sub-track=$it") }
+            vlcTrack(request.streams, request.audioIndex, StreamType.AUDIO)?.let { add("--audio-track=$it") }
+            vlcSubtitleTrack(request.streams, request.subtitleIndex)?.let { add("--sub-track=$it") }
             add("--meta-title=${request.title}")
         }
         "mpv", "iina" -> buildList {
@@ -117,17 +121,52 @@ private fun buildCommand(request: ExternalPlayRequest, executable: String): List
             add(request.streamUrl)
             if (seconds > 0) add("--start=$seconds")
             request.subtitleUrl?.let { add("--sub-file=$it") }
-            request.audioTrack?.let { add("--aid=$it") }
-            when (val sid = request.subtitleTrack) {
+            // mpv numbers each type's tracks from 1 in the order libavformat
+            // finds them, which is the order DAView's probes list them in.
+            TrackMapping.audioId(request.streams, request.audioIndex)?.let { add("--aid=$it") }
+            when (val subtitle = request.subtitleIndex) {
                 // Switched off on purpose, and remembered as such.
                 com.daview.shared.model.SUBTITLE_OFF -> add("--sid=no")
                 null -> Unit
-                else -> if (sid < EXTERNAL_BASE) add("--sid=$sid")
+                // A file beside the video arrives through --sub-file instead.
+                else -> request.streams.firstOrNull { it.index == subtitle && !it.isExternal }
+                    ?.let { TrackMapping.subtitleId(request.streams, it.index) }
+                    ?.let { add("--sid=$it") }
             }
             add("--force-media-title=${request.title}")
         }
         else -> listOf(executable, request.streamUrl)
     }
+}
+
+/**
+ * VLC's number for an embedded track: its place among the file's tracks of
+ * that type, from 0. DAView's own index — a Matroska track number, a Blu-ray
+ * PID — means nothing to VLC. VLC reads a Blu-ray TrueHD stream as one track
+ * where libavformat, and DAView's list after it, makes a second of its AC-3
+ * core, so those are not counted, and choosing the core means its TrueHD.
+ */
+private fun vlcTrack(streams: List<MediaStreamDto>, index: Int?, type: StreamType): Int? {
+    if (index == null) return null
+    val core = { stream: MediaStreamDto ->
+        streams.any { it.codec == "truehd" && !it.isExternal && it.index + TsProbe.TRUEHD_CORE_OFFSET == stream.index }
+    }
+    val wanted = streams.firstOrNull { it.index == index && core(it) }?.let { it.index - TsProbe.TRUEHD_CORE_OFFSET } ?: index
+    val position = streams.filter { it.type == type && !it.isExternal && !core(it) }.indexOfFirst { it.index == wanted }
+    return position.takeIf { it >= 0 }
+}
+
+/**
+ * [vlcTrack] for a subtitle, where VLC can count differently again: it makes a
+ * track of every page of a teletext stream and of every language a DVB
+ * subtitle stream lists. Past one of those the number is not known, and VLC
+ * is left to pick, as it did before it was told anything.
+ */
+private fun vlcSubtitleTrack(streams: List<MediaStreamDto>, index: Int?): Int? {
+    val embedded = streams.filter { it.type == StreamType.SUBTITLE && !it.isExternal }
+    val position = embedded.indexOfFirst { it.index == index }
+    if (position < 0 || embedded.take(position + 1).any { it.codec == "teletext" || it.codec == "dvbsub" }) return null
+    return vlcTrack(streams, index, StreamType.SUBTITLE)
 }
 
 actual fun launchExternalPlayer(request: ExternalPlayRequest): ExternalPlaybackHandle? {
@@ -151,9 +190,6 @@ actual fun launchExternalPlayer(request: ExternalPlayRequest): ExternalPlaybackH
         }
     }
 }
-
-/** DAView numbers external subtitle files from here up; players never see those numbers. */
-private const val EXTERNAL_BASE = 1000
 
 actual fun openUrl(url: String) {
     runCatching {

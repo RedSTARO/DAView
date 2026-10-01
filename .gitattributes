@@ -1,0 +1,7 @@
+# Files of the FFmpeg decoder build that must keep LF line endings in every
+# checkout, Windows included, where core.autocrlf would turn them into CRLF.
+# The script runs under bash on Linux hosts, which a CR at the end of each
+# line breaks. The licence files ship in the APK and are checked byte for byte
+# against FFmpeg's own COPYING.LGPLv2.1 and against the repository's copies.
+/scripts/build-ffmpeg-decoder.sh text eol=lf
+/ffmpeg-decoder/src/main/assets/licenses/** text eol=lf

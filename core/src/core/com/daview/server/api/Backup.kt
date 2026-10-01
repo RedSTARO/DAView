@@ -346,5 +346,11 @@ private fun BackupItemDto.toRecord() = ItemRecord(
     dateModified = dateModified,
     etag = etag,
     scrapedAt = scrapedAt,
-    probedAt = probedAt
+    // A backup from a build that could not read transport streams carries
+    // them stamped as probed with nothing found; restored as it is, the stamp
+    // would keep them that way. Left off, as the database migration leaves it.
+    probedAt = probedAt.takeUnless { item.isUnreadTransportStream() }
 )
+
+private fun com.daview.shared.model.MediaItemDto.isUnreadTransportStream(): Boolean =
+    path?.let(com.daview.server.library.TsProbe::isTransportStream) == true && mediaStreams.none { !it.isExternal }

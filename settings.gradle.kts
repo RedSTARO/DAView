@@ -30,3 +30,4 @@ dependencyResolutionManagement {
 include(":shared")
 include(":core")
 include(":composeApp")
+include(":ffmpeg-decoder")

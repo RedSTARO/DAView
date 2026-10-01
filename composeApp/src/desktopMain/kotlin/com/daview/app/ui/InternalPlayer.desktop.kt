@@ -157,7 +157,7 @@ actual fun InternalPlayer(
     /** A subtitle file picked from this computer for this session. */
     var mountedSubtitle by remember { mutableStateOf<String?>(null) }
     /** The external subtitle files mpv actually took, once they are added. */
-    var attachedSubtitles by remember { mutableStateOf<Set<Int>?>(null) }
+    var attachedSubtitles by remember { mutableStateOf<Map<Int, Int>?>(null) }
     /** From opening the file until its first frame, which over the network is a while. */
     var loading by remember { mutableStateOf(true) }
     var failure by remember { mutableStateOf<String?>(null) }
@@ -432,12 +432,16 @@ actual fun InternalPlayer(
         created.setTitle(displayTitle(info))
 
         attachTracks = {
-            // Every external subtitle is attached in a fixed order, because that
-            // order is what TrackMapping turns DAView's indices into.
-            val added = mutableSetOf<Int>()
+            // Every external subtitle is attached in a fixed order, and the id
+            // mpv gives each is read back from its track list rather than
+            // counted: mpv can know a subtitle track the probe did not list.
+            val added = mutableMapOf<Int, Int>()
             TrackMapping.externalSubtitles(info.item.mediaStreams).forEach { stream ->
                 info.subtitleUrls[stream.index]?.let { url ->
-                    if (created.addSubtitle(url, stream.displayTitle, stream.language)) added += stream.index
+                    if (created.addSubtitle(url, stream.displayTitle, stream.language)) {
+                        added[stream.index] = created.externalSubtitleId(url)
+                            ?: (TrackMapping.embeddedSubtitles(info.item.mediaStreams).size + added.size + 1)
+                    }
                 }
             }
             attachedSubtitles = added

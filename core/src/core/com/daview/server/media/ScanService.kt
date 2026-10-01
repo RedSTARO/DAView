@@ -226,7 +226,7 @@ class ScanService(
     }
 
     private companion object {
-        /** Container probing costs one HTTP round trip per file; cap it per scan. */
+        /** Container probing costs a round trip or two per file (a transport stream's tail is the second); cap it per scan. */
         const val PROBE_BUDGET = 400
     }
 }

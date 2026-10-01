@@ -124,6 +124,84 @@ jobs:
       - name: 安装 compile SDK
         run: sdkmanager --install "platforms;android-37.0"
 
+      # Most phones cannot decode DTS or TrueHD, and some lack AC-3/E-AC-3, so
+      # the app carries FFmpeg's decoders for them, built here rather than
+      # taken from someone else's AAR: scripts/build-ffmpeg-decoder.sh compiles
+      # FFmpeg (LGPL only, as shared libraries) and media3's JNI wrapper for
+      # all four ABIs, and the :ffmpeg-decoder module packages what it writes
+      # to build/ffmpeg-decoder/jniLibs. The script holds the pinned FFmpeg tag
+      # and NDK version; the steps below read them from it.
+      - name: 读取 FFmpeg 与 NDK 版本
+        id: ffmpeg-pins
+        run: bash scripts/build-ffmpeg-decoder.sh --print-pins >> "$GITHUB_OUTPUT"
+
+      # The libraries change only with the script, the wrapper's source, the
+      # FFmpeg tag or the NDK, so a build that touches none of them reuses the
+      # last result. Two more inputs are in the key because the script checks
+      # them and a cache hit skips the script: the Java sources, whose native
+      # methods the wrapper's exports must match, and the licence files, which
+      # must match FFmpeg's COPYING and name every file whose licence asks for
+      # a notice. No restore-keys: an older build is never a substitute.
+      # Restore and save are separate steps so that a fresh build is cached
+      # even when Gradle fails afterwards.
+      - name: 恢复 FFmpeg 解码库缓存
+        id: ffmpeg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/ffmpeg-decoder/jniLibs
+            build/ffmpeg-decoder/build-info.txt
+          key: ffmpeg-decoder-${{ steps.ffmpeg-pins.outputs.ffmpeg_tag }}-ndk${{ steps.ffmpeg-pins.outputs.ndk_version }}-${{ hashFiles('scripts/build-ffmpeg-decoder.sh', 'ffmpeg-decoder/src/main/jni/**', 'ffmpeg-decoder/src/main/java/**', 'ffmpeg-decoder/src/main/assets/licenses/**') }}
+
+      # That exact NDK rather than whichever the runner image happens to ship:
+      # the script refuses any other revision.
+      - name: 安装 NDK
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: sdkmanager --install "ndk;${{ steps.ffmpeg-pins.outputs.ndk_version }}"
+
+      # Clones FFmpeg at the pinned tag (shallow), checks its commit, then
+      # builds and verifies every library; see ffmpeg-decoder/README.md.
+      - name: 编译 FFmpeg 解码库
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: >-
+          bash scripts/build-ffmpeg-decoder.sh
+          --ndk "$ANDROID_HOME/ndk/${{ steps.ffmpeg-pins.outputs.ndk_version }}"
+          --ffmpeg "$RUNNER_TEMP/ffmpeg"
+          --out build/ffmpeg-decoder
+
+      - name: 保存 FFmpeg 解码库缓存
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/ffmpeg-decoder/jniLibs
+            build/ffmpeg-decoder/build-info.txt
+          key: ${{ steps.ffmpeg-cache.outputs.cache-primary-key }}
+
+      # Without these the module still compiles and the APK still installs; it
+      # just plays no DTS or TrueHD. The job stops here instead, and checks
+      # the APK itself after Gradle. The hashes are printed so that a local
+      # build of the same pins can be compared with this one.
+      - name: 检查 FFmpeg 解码库
+        run: |
+          missing=0
+          for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+            for lib in avutil swresample avcodec ffmpegJNI; do
+              file="build/ffmpeg-decoder/jniLibs/$abi/lib$lib.so"
+              if [ -s "$file" ]; then
+                ls -l "$file"
+              else
+                echo "::error::$file is missing"
+                missing=1
+              fi
+            done
+          done
+          cat build/ffmpeg-decoder/build-info.txt || true
+          if [ "$missing" = 0 ]; then
+            (cd build/ffmpeg-decoder/jniLibs && sha256sum */*.so)
+          fi
+          exit "$missing"
+
       - uses: gradle/actions/setup-gradle@v4
 
       # The release variant, unsigned. `isMinifyEnabled` stays off in the Gradle
@@ -135,6 +213,17 @@ jobs:
           ./gradlew :composeApp:assembleRelease
           "-PdaviewVersion=${{ needs.test.outputs.version }}"
           "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
+
+      # The check before Gradle looks at what went in; this looks at what came
+      # out, so a packaging mistake in :ffmpeg-decoder cannot pass for a build
+      # with FFmpeg. The APK must hold all 16 libraries, each stored on a 16 KB
+      # boundary (Android 15+ devices with 16 KB pages map them straight out
+      # of the APK) or compressed, with 16 KB-aligned segments, and the licence
+      # files exactly as in the repository. Signing happens in the next job.
+      - name: 检查 APK 中的 FFmpeg 解码库
+        run: >-
+          bash scripts/build-ffmpeg-decoder.sh --check-apk
+          composeApp/build/outputs/apk/release/*-release-unsigned.apk
 
       - uses: actions/upload-artifact@v4
         with:

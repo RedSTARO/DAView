@@ -1433,6 +1433,11 @@ private fun GeneralSection(state: AppState) {
                 (state.serverInfo?.let { " · 共 ${it.itemCount} 个条目" } ?: "")
         )
         Hint("媒体库保存在这台设备上，不依赖任何服务器；设备之间通过 WebDAV 上的同步文件对齐。")
+        // The Android app ships FFmpeg's audio decoders under the LGPL, which
+        // wants the people who get the app to be told so.
+        if (PlatformInfo.hasFfmpegDecoders) {
+            Hint("DTS、TrueHD 等音轨由 FFmpeg 6.1.6 解码（LGPL 2.1 或更高版本，未经修改，以共享库随安装包提供）；许可证全文与源代码地址见安装包内 assets/licenses/ffmpeg/。")
+        }
         Spacer(Modifier.height(24.dp))
     }
 }

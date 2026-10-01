@@ -128,6 +128,11 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         option("audio-client-name", "DAView")
         option("network-timeout", "30")
         option("force-seekable", "yes")
+        // A lot of Blu-rays, TV anime above all, are 1080i, and shown as they
+        // are decoded every frame holds two moments at once, combed wherever
+        // anything moves. "auto" touches only frames flagged as interlaced,
+        // which leaves nearly every other file exactly as it was.
+        option("deinterlace", "auto")
         config.startPositionMs.takeIf { it > 0 }?.let {
             // Applied per file. One file per session, so an option is simpler
             // than threading it through loadfile's positional arguments, whose
@@ -253,6 +258,16 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
 
     /** Attaches a subtitle file from this computer and switches to it. */
     fun addSubtitleFile(path: String, title: String) = command("sub-add", path, "select", title)
+
+    /** The id mpv gave the subtitle file it loaded from [url], read from its track list; null when it lists none. */
+    fun externalSubtitleId(url: String): Int? {
+        val count = property("track-list/count")?.toIntOrNull() ?: return null
+        for (n in 0 until count) {
+            if (property("track-list/$n/type") != "sub" || property("track-list/$n/external") != "yes") continue
+            if (property("track-list/$n/external-filename") == url) return property("track-list/$n/id")?.toIntOrNull()
+        }
+        return null
+    }
 
     fun seekChapter(delta: Int) = command("add", "chapter", delta.toString())
 

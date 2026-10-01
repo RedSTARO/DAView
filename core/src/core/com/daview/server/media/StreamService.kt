@@ -4,6 +4,7 @@ import com.daview.server.db.ItemRecord
 import com.daview.server.db.Repository
 import com.daview.server.library.MkvProbe
 import com.daview.server.library.Mp4Probe
+import com.daview.server.library.TsProbe
 import com.daview.server.storage.WebDavClient
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.MediaStreamDto
@@ -163,24 +164,38 @@ class StreamService(
 
         val now = System.currentTimeMillis()
         val reader = rangeReader(path)
+        var failure: Throwable? = null
         val probed: Pair<Long?, List<MediaStreamDto>>? = when {
             MkvProbe.isMatroska(path) -> runCatching { MkvProbe.probe(reader) }
-                .onFailure { log.warn("解析 Matroska {} 失败: {}", path, it.message) }
+                .onFailure { failure = it; log.warn("解析 Matroska {} 失败: {}", path, it.message) }
                 .getOrNull()
                 ?.let { it.durationMs to MkvProbe.toMediaStreams(it.tracks) }
 
             Mp4Probe.isMp4(path) -> runCatching {
                 Mp4Probe.probe(reader, item.sizeBytes ?: fileSize(path))
             }
-                .onFailure { log.warn("解析 MP4 {} 失败: {}", path, it.message) }
+                .onFailure { failure = it; log.warn("解析 MP4 {} 失败: {}", path, it.message) }
                 .getOrNull()
                 ?.let { it.durationMs to Mp4Probe.toMediaStreams(it.tracks) }
+
+            TsProbe.isTransportStream(path) -> runCatching {
+                TsProbe.probe(reader, item.sizeBytes ?: fileSize(path))
+            }
+                .onFailure { failure = it; log.warn("解析 TS {} 失败: {}", path, it.message) }
+                .getOrNull()
+                ?.let { it.durationMs to it.streams }
 
             else -> null
         }
 
         if (probed == null) {
-            repository.upsertItem(record.copy(probedAt = now))
+            // A read that failed — on the network, or answered with an error
+            // status by the share or its CDN — says nothing about the file, and
+            // stamping it would leave it without tracks or a runtime for good.
+            // Left unstamped, it is tried again on the next scan or the next
+            // time it is opened, as chapters are.
+            val unread = failure is java.io.IOException || failure is com.daview.server.storage.WebDavException
+            if (!unread) repository.upsertItem(record.copy(probedAt = now))
             return item
         }
 

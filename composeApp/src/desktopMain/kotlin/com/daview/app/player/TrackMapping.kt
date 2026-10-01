@@ -7,15 +7,17 @@ import com.daview.shared.model.StreamType
  * Translates between DAView's stream indices and mpv's track ids.
  *
  * They do not agree and cannot be made to. A DAView index is the container's
- * own track number for an embedded track (Matroska numbers them however it
- * likes) and a synthetic number from 1000 up for an external subtitle file,
- * which is not in the container at all. mpv numbers tracks 1..n per type, in
- * the order it finds them: the container's order first, then external files in
- * the order they were added.
+ * own number for an embedded track (Matroska numbers them however it likes; a
+ * transport stream's is its PID) and a synthetic number from 1000 up for an
+ * external subtitle file, which is not in the container at all. mpv numbers
+ * tracks 1..n per type, in the order it finds them: the container's order
+ * first, then external files in the order they were added.
  *
  * So the mapping is positional, and it holds only because both sides walk the
  * container in the same order and this file also decides the order external
- * subtitles are attached in.
+ * subtitles are attached in. For a transport stream that is TsProbe's job: it
+ * lists the tracks the way libavformat does, down to the second track it
+ * makes of a Blu-ray's TrueHD.
  */
 object TrackMapping {
 
@@ -40,21 +42,21 @@ object TrackMapping {
      * mpv `sid` for a DAView subtitle stream index. External files sit after
      * every embedded track, which is where `sub-add` puts them.
      *
-     * [attached] is the external files that were actually added, when that is
-     * known: one that could not be fetched is not in mpv's list, and every file
-     * after it moves up a place.
+     * [attached] is the sid mpv gave each external file that was actually
+     * added, read back from its track list, when that is known. Counting is all
+     * there is without it, and counting goes wrong when a file could not be
+     * fetched, or when mpv knows a subtitle track the probe did not list — a
+     * Japanese TV recording's captions, a broadcast recording's second program.
      */
-    fun subtitleId(streams: List<MediaStreamDto>, index: Int?, attached: Set<Int>? = null): Int? {
+    fun subtitleId(streams: List<MediaStreamDto>, index: Int?, attached: Map<Int, Int>? = null): Int? {
         if (index == null) return null
         val embedded = embeddedSubtitles(streams)
         val embeddedPosition = embedded.indexOfFirst { it.index == index }
         if (embeddedPosition >= 0) return embeddedPosition + 1
-        val externalPosition = attachedExternals(streams, attached).indexOfFirst { it.index == index }
+        if (attached != null) return attached[index]
+        val externalPosition = externalSubtitles(streams).indexOfFirst { it.index == index }
         return if (externalPosition < 0) null else embedded.size + externalPosition + 1
     }
-
-    private fun attachedExternals(streams: List<MediaStreamDto>, attached: Set<Int>?): List<MediaStreamDto> =
-        externalSubtitles(streams).let { all -> if (attached == null) all else all.filter { it.index in attached } }
 
     /**
      * The way back: a DAView index for the track mpv says it is playing.
@@ -72,10 +74,12 @@ object TrackMapping {
         return embeddedAudio(streams).getOrNull(mpvId - 1)?.index
     }
 
-    fun subtitleIndex(streams: List<MediaStreamDto>, mpvId: Int?, attached: Set<Int>? = null): Int? {
+    fun subtitleIndex(streams: List<MediaStreamDto>, mpvId: Int?, attached: Map<Int, Int>? = null): Int? {
         if (mpvId == null || mpvId < 1) return null
+        attached?.entries?.firstOrNull { it.value == mpvId }?.let { return it.key }
         val embedded = embeddedSubtitles(streams)
         embedded.getOrNull(mpvId - 1)?.let { return it.index }
-        return attachedExternals(streams, attached).getOrNull(mpvId - 1 - embedded.size)?.index
+        if (attached != null) return null
+        return externalSubtitles(streams).getOrNull(mpvId - 1 - embedded.size)?.index
     }
 }

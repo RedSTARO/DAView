@@ -1,5 +1,7 @@
 package com.daview.app.platform
 
+import com.daview.shared.model.MediaStreamDto
+
 /** One external player DAView knows how to hand a URL to. */
 data class ExternalPlayerInfo(
     val id: String,
@@ -16,13 +18,17 @@ data class ExternalPlayRequest(
     val startPositionMs: Long,
     val subtitleUrl: String? = null,
     /**
-     * Which embedded tracks to start on. The app knows — it stores the choice
-     * per item and syncs it between devices — and used to keep that to itself,
-     * so a dual-audio episode opened in PotPlayer on whichever track the player
-     * happened to prefer.
+     * Which tracks to start on. The app knows — it stores the choice per item
+     * and syncs it between devices — and used to keep that to itself, so a
+     * dual-audio episode opened in PotPlayer on whichever track the player
+     * happened to prefer. These are DAView's own stream indices, with the
+     * item's [streams] to place them by: every player numbers tracks its own
+     * way. [subtitleIndex] is SUBTITLE_OFF when subtitles were switched off on
+     * purpose.
      */
-    val audioTrack: Int? = null,
-    val subtitleTrack: Int? = null
+    val audioIndex: Int? = null,
+    val subtitleIndex: Int? = null,
+    val streams: List<MediaStreamDto> = emptyList()
 )
 
 /**
@@ -43,6 +49,9 @@ expect object PlatformInfo {
 
     /** True where an in-app player exists (Android today). */
     val hasInternalPlayer: Boolean
+
+    /** Whether the FFmpeg audio decoders built into the Android app are there to use. */
+    val hasFfmpegDecoders: Boolean
 }
 
 expect fun defaultDeviceName(): String

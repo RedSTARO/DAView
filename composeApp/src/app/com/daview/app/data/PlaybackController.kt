@@ -302,8 +302,9 @@ class PlaybackController(
                             // one the core picked. It was computed and stored and
                             // then not passed on, so an external player fell back to
                             // its own default — usually the wrong language.
-                            audioTrack = playback.audioStreamIndex,
-                            subtitleTrack = chosenSubtitle
+                            audioIndex = playback.audioStreamIndex,
+                            subtitleIndex = chosenSubtitle,
+                            streams = playback.item.mediaStreams
                         )
                     )
                 }

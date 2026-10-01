@@ -86,16 +86,20 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import com.daview.app.platform.AndroidFilePicker
+import com.daview.app.player.BluRayExtractors
 import com.daview.app.subtitle.AssScript
 import com.daview.app.subtitle.AssSource
 import com.daview.app.subtitle.AssSubtitleView
+import com.daview.server.library.TsProbe
 import com.daview.shared.model.MediaStreamDto
 import com.daview.shared.model.PlaybackInfoDto
 import com.daview.shared.model.SUBTITLE_OFF
@@ -144,6 +148,15 @@ actual fun InternalPlayer(
     var tuningMenu by remember { mutableStateOf(false) }
     var chapterMenu by remember { mutableStateOf(false) }
     var selectedAudio by remember { mutableStateOf(info.audioStreamIndex) }
+    // The viewer's audio choice when this phone cannot play it and media3
+    // plays another track instead. The stand-in is what the menu ticks, but
+    // not what is recorded: the choice is synced and carried to the next
+    // episode, and another device may well play it.
+    var audioStandIn by remember { mutableStateOf<Int?>(null) }
+    // A track picked from the menu while media3 has no track list — the file
+    // from the phone being mounted reloads the media — put in place once the
+    // list is back.
+    var pendingAudio by remember { mutableStateOf<Int?>(null) }
     var selectedSubtitle by remember { mutableStateOf(info.subtitleStreamIndex?.takeIf { it != SUBTITLE_OFF }) }
     // Whether the viewer asked for no subtitles, as opposed to not having asked
     // for any yet. Only the first of those should stop media3 selecting a track
@@ -188,9 +201,22 @@ actual fun InternalPlayer(
             .setConnectTimeoutMs(20_000)
             .setReadTimeoutMs(30_000)
 
-        ExoPlayer.Builder(context)
+        // What the phone cannot decode itself — DTS, which most Blu-rays carry,
+        // TrueHD, and AC-3 where there is no Dolby decoder — goes to the FFmpeg
+        // built into the app, after the phone's own decoders and any
+        // passthrough have had the first say.
+        ExoPlayer.Builder(
+            context,
+            DefaultRenderersFactory(context).setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+        )
             .setMediaSourceFactory(
-                DefaultMediaSourceFactory(DefaultDataSource.Factory(context, httpFactory))
+                // A Blu-ray's .m2ts is read by an extractor of DAView's own:
+                // media3's transport stream extractor takes neither its packet
+                // size nor its audio and subtitle stream types.
+                DefaultMediaSourceFactory(
+                    DefaultDataSource.Factory(context, httpFactory),
+                    BluRayExtractors(DefaultExtractorsFactory())
+                )
             )
             // Audio focus is what makes a phone call, an alarm or another app
             // pause the film instead of talking over it.
@@ -227,7 +253,7 @@ actual fun InternalPlayer(
             mountedSubtitle != null -> null
             else -> selectedSubtitle
         }
-        latestOnProgress(player.currentPosition, !player.isPlaying, selectedAudio, subtitle)
+        latestOnProgress(player.currentPosition, !player.isPlaying, audioStandIn ?: selectedAudio, subtitle)
     }
 
     DisposableEffect(player) {
@@ -249,8 +275,18 @@ actual fun InternalPlayer(
                 // the tracks. Media3 would otherwise play its own default.
                 if (!initialApplied) {
                     initialApplied = true
-                    val audioApplied = audioStreams.firstOrNull { it.index == selectedAudio }
-                        ?.let { selectTrack(player, C.TRACK_TYPE_AUDIO, it, audioStreams) } ?: false
+                    pendingAudio = null
+                    val chosen = audioStreams.firstOrNull { it.index == selectedAudio }
+                    val audioApplied = chosen?.let { selectTrack(player, C.TRACK_TYPE_AUDIO, it, audioStreams) } ?: false
+                    if (chosen != null && !audioApplied) audioStandIn = chosen.index
+                    // Picture with no sound, or another track than the one
+                    // chosen, and no word why, reads as a broken file.
+                    val audio = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                    if (audio.none { it.isSupported } && (audio.isNotEmpty() || audioStreams.isNotEmpty())) {
+                        hint = "这台设备解不了这个文件的音轨"
+                    } else if (chosen != null && !audioApplied) {
+                        hint = "这台设备放不了选定的音轨，先播另一条"
+                    }
                     if (!subtitlesOff) {
                         subtitleStreams.firstOrNull { it.index == selectedSubtitle }
                             ?.takeIf { !(it.isExternal && it.isAss) }
@@ -260,6 +296,11 @@ actual fun InternalPlayer(
                     // what media3 picked is what plays, and the tick in the menu
                     // has to say so.
                     if (audioApplied) return
+                }
+                pendingAudio?.let { index ->
+                    pendingAudio = null
+                    val stream = audioStreams.firstOrNull { it.index == index }
+                    if (stream != null && selectTrack(player, C.TRACK_TYPE_AUDIO, stream, audioStreams)) return
                 }
                 pendingMount?.let { label ->
                     val group = tracks.groups.firstOrNull { group ->
@@ -278,8 +319,19 @@ actual fun InternalPlayer(
                 val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
                 val playing = audioGroups.indexOfFirst { it.isSelected }
                 if (playing >= 0) {
+                    // A choice can play as another stream's track — a Blu-ray
+                    // TrueHD as the AC-3 core beside it — and is still the choice.
+                    val chosen = audioStreams.firstOrNull { it.index == selectedAudio }
+                    val asChosen = chosen != null &&
+                        trackFor(player, C.TRACK_TYPE_AUDIO, chosen, audioStreams)?.mediaTrackGroup == audioGroups[playing].mediaTrackGroup
                     val stream = streamForGroup(audioGroups, playing, audioStreams)
-                    if (stream != null && stream.index != selectedAudio) {
+                    // While a stand-in plays this app sets no audio track of its
+                    // own, so one set now was picked in media3's own menu, and
+                    // that is a choice to record.
+                    if (audioStandIn != null && player.trackSelectionParameters.overrides.keys.any { it.type == C.TRACK_TYPE_AUDIO }) {
+                        audioStandIn = null
+                    }
+                    if (!asChosen && stream != null && stream.index != selectedAudio) {
                         selectedAudio = stream.index
                         report()
                     }
@@ -629,13 +681,29 @@ actual fun InternalPlayer(
                                 DropdownMenuItem(text = { Text("没有可选的音轨") }, onClick = { audioMenu = false }, enabled = false)
                             }
                             audioStreams.forEach { stream ->
+                                // A track the phone cannot decode, or one the
+                                // player does not offer at all — a Blu-ray's
+                                // TrueHD — is listed but cannot be chosen:
+                                // forcing it would stop playback.
+                                val playable = trackFor(player, C.TRACK_TYPE_AUDIO, stream, audioStreams)?.isTrackSupported(0)
+                                    ?: player.currentTracks.groups.isEmpty()
                                 DropdownMenuItem(
                                     leadingIcon = { ChosenMark(stream.index == selectedAudio) },
-                                    text = { Text(stream.displayTitle) },
+                                    text = { Text(if (playable) stream.displayTitle else "${stream.displayTitle}（无法播放）") },
+                                    enabled = playable,
                                     onClick = {
                                         audioMenu = false
-                                        selectedAudio = stream.index
-                                        selectTrack(player, C.TRACK_TYPE_AUDIO, stream, audioStreams)
+                                        // While media3 has no track list the
+                                        // choice waits for it, as the server's
+                                        // own pick does.
+                                        if (player.currentTracks.groups.isEmpty()) {
+                                            selectedAudio = stream.index
+                                            audioStandIn = null
+                                            pendingAudio = stream.index
+                                        } else if (selectTrack(player, C.TRACK_TYPE_AUDIO, stream, audioStreams)) {
+                                            selectedAudio = stream.index
+                                            audioStandIn = null
+                                        }
                                         report()
                                     }
                                 )
@@ -1029,7 +1097,7 @@ private fun describePlaybackError(error: PlaybackException): String {
         PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> "文件不存在，可能已被移动或删除。"
         PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
         PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
-        PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES -> "这台设备解不了这个视频格式，可以在设置里换外部播放器。"
+        PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES -> "这台设备解不了这个格式，可以在详情页用外部播放器打开。"
         PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
         PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED -> "文件格式无法识别，或文件已损坏。"
         else -> "播放出错。"
@@ -1045,28 +1113,14 @@ private val MediaStreamDto.isAss: Boolean
     get() = codec?.lowercase() in setOf("ass", "ssa")
 
 /**
- * Maps a DAView stream onto an ExoPlayer track. Embedded streams carry the
- * container's track number, which Matroska's extractor uses as the format id
- * (prefixed when side-loaded subtitles merge sources); failing that, the n-th
- * embedded stream of the type is the n-th group, since the file's own tracks
- * come before side-loaded ones. External subtitles are matched by label.
+ * Puts the player on a DAView stream. A track this phone cannot decode is
+ * never forced: media3 would stop with a decoder error where, left to choose,
+ * it plays what it can.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 private fun selectTrack(player: ExoPlayer, trackType: Int, stream: MediaStreamDto, streamsOfType: List<MediaStreamDto>): Boolean {
-    val groups: List<Tracks.Group> = player.currentTracks.groups.filter { it.type == trackType }
-    val target = if (stream.isExternal) {
-        groups.firstOrNull { group ->
-            (0 until group.length).any { group.getTrackFormat(it).label == stream.displayTitle }
-        }
-    } else {
-        val number = stream.index.toString()
-        groups.firstOrNull { group ->
-            (0 until group.length).any {
-                val id = group.getTrackFormat(it).id
-                id == number || id?.endsWith(":$number") == true
-            }
-        } ?: groups.getOrNull(streamsOfType.filter { !it.isExternal }.indexOfFirst { it.index == stream.index })
-    } ?: return false
+    val target = trackFor(player, trackType, stream, streamsOfType) ?: return false
+    if (!target.isTrackSupported(0)) return false
 
     player.trackSelectionParameters = player.trackSelectionParameters
         .buildUpon()
@@ -1088,17 +1142,63 @@ private fun screenLocked(screen: PlayerScreenState): androidx.compose.runtime.Mu
         }
     }
 
-/** The DAView stream behind the n-th media3 group of a type — the inverse of [selectTrack]. */
+/**
+ * The media3 group that plays a DAView stream, or null when the player offers
+ * none. Embedded streams carry the container's own number for the track:
+ * Matroska's track number, which its extractor uses as the format id, or a
+ * transport stream's PID, which follows the program number ("1/4352"); either
+ * is prefixed when side-loaded subtitles merge sources. Failing that, the n-th
+ * embedded stream of the type is the n-th group, since the file's own tracks
+ * come before side-loaded ones — where [positionsAgree]. External subtitles are
+ * matched by label.
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+private fun trackFor(player: ExoPlayer, trackType: Int, stream: MediaStreamDto, streamsOfType: List<MediaStreamDto>): Tracks.Group? {
+    val groups: List<Tracks.Group> = player.currentTracks.groups.filter { it.type == trackType }
+    if (stream.isExternal) {
+        return groups.firstOrNull { group ->
+            (0 until group.length).any { group.getTrackFormat(it).label == stream.displayTitle }
+        }
+    }
+    val number = stream.index.toString()
+    val embedded = streamsOfType.filter { !it.isExternal }
+    val byNumber = { wanted: String ->
+        groups.firstOrNull { group -> (0 until group.length).any { isContainerTrack(group.getTrackFormat(it).id, wanted) } }
+    }
+    return byNumber(number)
+        // A Blu-ray TrueHD plays as the AC-3 core beside it, the same audio:
+        // the phone gets no TrueHD track of its own.
+        ?: (stream.index + TsProbe.TRUEHD_CORE_OFFSET).takeIf { core -> stream.codec == "truehd" && embedded.any { it.index == core } }
+            ?.let { byNumber(it.toString()) }
+        ?: groups.takeIf { positionsAgree(it, embedded) }?.getOrNull(embedded.indexOfFirst { it.index == stream.index })
+}
+
+/** The DAView stream behind the n-th media3 group of a type — the inverse of [trackFor]. */
 @androidx.annotation.OptIn(UnstableApi::class)
 private fun streamForGroup(groups: List<Tracks.Group>, position: Int, streamsOfType: List<MediaStreamDto>): MediaStreamDto? {
     val group = groups[position]
     val embedded = streamsOfType.filter { !it.isExternal }
     (0 until group.length).forEach { track ->
         val id = group.getTrackFormat(track).id ?: return@forEach
-        embedded.firstOrNull { id == it.index.toString() || id.endsWith(":${it.index}") }?.let { return it }
+        embedded.firstOrNull { isContainerTrack(id, it.index.toString()) }?.let { return it }
     }
-    return embedded.getOrNull(position)
+    return if (positionsAgree(groups, embedded)) embedded.getOrNull(position) else null
 }
+
+/** Whether a media3 format id names the container's track [number]. */
+private fun isContainerTrack(id: String?, number: String): Boolean =
+    id != null && (id == number || id.endsWith(":$number") || id.substringAfterLast('/') == number)
+
+/**
+ * Whether the n-th group stands for the n-th embedded stream: only when there
+ * are as many of one as of the other. media3 leaves out what it cannot read —
+ * a Blu-ray's TrueHD or second view, a Matroska track with a codec id it does
+ * not know — and counting past a gap lands on the wrong track. The tracks it
+ * does read are found by number anyway.
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+private fun positionsAgree(groups: List<Tracks.Group>, embedded: List<MediaStreamDto>): Boolean =
+    groups.size == embedded.size
 
 /** The activity behind the composition, for the platform calls that need one. */
 private tailrec fun android.content.Context.findActivityOrNull(): android.app.Activity? =
