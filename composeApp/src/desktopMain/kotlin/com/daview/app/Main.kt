@@ -29,6 +29,9 @@ import com.daview.app.platform.SettingsStore
 import com.daview.app.platform.createSettingsStore
 import com.daview.app.ui.DaViewIcon
 import com.daview.app.ui.LocalWindowFullscreen
+import com.daview.server.config.ConfigStore
+import com.daview.server.enableFileLogging
+import com.daview.server.logUncaughtExceptions
 import java.awt.AWTEvent
 import java.awt.Dimension
 import java.awt.GraphicsEnvironment
@@ -46,6 +49,11 @@ import kotlin.system.exitProcess
  * pipe, and only while a player is reading from it.
  */
 fun main() {
+    // Before anything else logs. The installed app has no console, so without
+    // the file there is nothing to read after something has gone wrong.
+    enableFileLogging(ConfigStore.defaultDataDir())
+    logUncaughtExceptions()
+
     application {
         val store = remember { createSettingsStore() }
 

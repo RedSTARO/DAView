@@ -91,7 +91,10 @@ class ConfigStore(val dataDir: Path) {
         dataDir.createDirectories()
         val base = if (file.exists()) {
             runCatching { json.decodeFromString(AppConfig.serializer(), file.readText()) }
-                .getOrElse { AppConfig() }
+                .getOrElse { failure ->
+                    setAside(failure)
+                    AppConfig()
+                }
         } else {
             AppConfig()
         }
@@ -125,9 +128,30 @@ class ConfigStore(val dataDir: Path) {
         Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
     }
 
+    /**
+     * A config that will not parse is kept, not overwritten.
+     *
+     * Falling back to the defaults is right — the app has to start — but the
+     * next save replaces `config.json`, and that file was the only copy of the
+     * storage credentials and the API keys. A file cut short by a full disk or
+     * a crash is usually still readable by eye, so it is moved aside under a
+     * name that says what it is, and the log says where it went.
+     */
+    private fun setAside(failure: Throwable) {
+        val kept = dataDir.resolve("config.json.unreadable-${System.currentTimeMillis()}")
+        val moved = runCatching { Files.move(file, kept) }.isSuccess
+        log.warn(
+            "config.json could not be read ({}); starting from defaults{}",
+            failure.message?.lineSequence()?.firstOrNull() ?: failure::class.simpleName,
+            if (moved) ", the old file is kept as ${kept.fileName}" else ""
+        )
+    }
+
     private fun env(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() }
 
     companion object {
+        private val log = org.slf4j.LoggerFactory.getLogger(ConfigStore::class.java)
+
         fun defaultDataDir(): Path {
             System.getenv("DAVIEW_DATA")?.takeIf { it.isNotBlank() }?.let { return Path.of(it) }
             val local = System.getenv("LOCALAPPDATA")
