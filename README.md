@@ -215,8 +215,9 @@ RTX Video Super Resolution 与 RTX Video HDR），也可以把播放交给 PotPl
 - **比较的是安装包版本**（`MAJOR.MINOR.PATCH`，逐段比），不是标签；任一边解析不出来就不算有更新，
   宁可不提示也不把新版本换成旧的。下载完先核对 SHA-256，不符的文件不会交给安装程序；清单里没给
   SHA-256 的包不下载，比清单写的更大的响应会被中止。
-- **各平台怎么装**：Windows 校验完 MSI 后写一个 `install-update.cmd`（等 2 秒 → `msiexec /passive` →
-  重新启动 `DAView.exe`），脚本一起来应用就退出，因为安装程序换不掉正在运行的文件；Android 通过 FileProvider
+- **各平台怎么装**：Windows 校验完 MSI 后起一段隐藏的 PowerShell（等 2 秒 → `msiexec /passive` →
+  重新启动 `DAView.exe`；安装失败或被取消也会把应用带回来），它一起来应用就退出，因为安装程序换不掉正在运行的文件。
+  脚本以 `-EncodedCommand` 传入，路径不出现在任何命令行上——以前的批处理文件在路径含 `&`、`^` 时根本不会执行；Android 通过 FileProvider
   把 APK 交给系统安装器（第一次会要求允许本应用安装应用）；Linux / macOS 下载后交给系统打开 `.deb` / `.dmg`，
   剩下的由人完成。
 - **设置 → 通用 → 更新**：「检查更新」、「启动时自动检查更新」（默认开，只在有新版本时提示一句）、
