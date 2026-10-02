@@ -14,7 +14,11 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a pull request makes the older run pointless. On master
+  # and on tags it does not: cancelling a run there could stop publish-ci half
+  # way through replacing the packages every installed copy updates from, so
+  # a newer run waits for the older one to finish instead.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # The daemon buys nothing on a runner that is thrown away afterwards, and it
@@ -492,20 +496,30 @@ jobs:
             --notes-file /tmp/notes.txt
           cat dist/update.json
 
-      # Recreated rather than edited: one release holding the newest build's
-      # packages and nothing else, whatever the earlier ones were called. The
-      # tag goes with it, so the new one points at this commit. Neither the tag
-      # nor the branch below sets this workflow off again: it runs on v* tags
+      # Edited in place, never taken down. It used to be deleted and created
+      # again, and a run that stopped in between — cancelled by the next push,
+      # a runner lost, a network error — left the manifest on `updates` naming
+      # packages that no longer existed, so every installed copy failed to
+      # update until a later run got through. Now the tag moves to this
+      # commit, the new packages go up beside the old ones, the manifest is
+      # switched over, and only then are the old packages removed. Neither the
+      # tag nor the branch sets this workflow off again: it runs on v* tags
       # and on master only.
-      - name: 更新 ci 预发布
+      - name: 上传到 ci 预发布
         run: |
-          gh release delete ci --yes --cleanup-tag || true
-          git push --delete origin refs/tags/ci || true
-          gh release create ci dist/DAView-* dist/update.json \
-            --prerelease \
-            --target "${{ github.sha }}" \
-            --title "CI 构建 $VERSION" \
-            --notes-file /tmp/notes.txt
+          set -euo pipefail
+          if gh release view ci >/dev/null 2>&1; then
+            git tag -f ci "$GITHUB_SHA"
+            git push --force origin refs/tags/ci
+            gh release edit ci --prerelease --title "CI 构建 $VERSION" --notes-file /tmp/notes.txt
+            gh release upload ci dist/DAView-* dist/update.json --clobber
+          else
+            gh release create ci dist/DAView-* dist/update.json \
+              --prerelease \
+              --target "$GITHUB_SHA" \
+              --title "CI 构建 $VERSION" \
+              --notes-file /tmp/notes.txt
+          fi
 
       - name: 发布更新清单到 updates 分支
         run: |
@@ -518,6 +532,20 @@ jobs:
           git add update.json
           git commit -m "update manifest for $VERSION"
           git push --force origin updates
+
+      # Last, so the manifest the app reads never names a package that is
+      # already gone. Anything on the release that this run did not upload
+      # belonged to an earlier build.
+      - name: 清理 ci 预发布上的旧安装包
+        run: |
+          set -euo pipefail
+          keep="$(cd dist && ls -1)"
+          gh release view ci --json assets --jq '.assets[].name' | while IFS= read -r name; do
+            if ! grep -qxF -- "$name" <<<"$keep"; then
+              echo "removing $name"
+              gh release delete-asset ci "$name" --yes
+            fi
+          done
 
   # ─── Telegram 通知（每次 master/tag 推送，汇总所有产物状态）──────────────────
   notify-telegram:
