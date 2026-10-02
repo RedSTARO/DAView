@@ -103,16 +103,27 @@ actual fun copyToClipboard(text: String) {
 
 actual fun onScanStarted() {
     requestNotificationPermission()
-    if (AndroidContextHolder.isInitialised) {
-        com.daview.app.ScanForegroundService.start(AndroidContextHolder.context)
-    }
+    startKeepingAlive { com.daview.app.ScanForegroundService.start(it) }
 }
 
 actual fun onDownloadStarted() {
     requestNotificationPermission()
-    if (AndroidContextHolder.isInitialised) {
-        com.daview.app.DownloadForegroundService.start(AndroidContextHolder.context)
-    }
+    startKeepingAlive { com.daview.app.DownloadForegroundService.start(it) }
+}
+
+/**
+ * Starts a foreground service, and survives being told no.
+ *
+ * Since Android 12 an app that is not in the foreground may not start one:
+ * the call throws. These are reached from coroutines — a download queue
+ * taken up again at start-up, a scan that begins after a listing — so the
+ * person may already have left the app by the time one gets here, and the
+ * exception then took the whole app down. Without the service the work
+ * simply runs unprotected, which is what it did before there was one.
+ */
+private fun startKeepingAlive(start: (Context) -> Unit) {
+    if (!AndroidContextHolder.isInitialised) return
+    runCatching { start(AndroidContextHolder.context) }
 }
 
 actual suspend fun pickImageFile(): PickedFile? = AndroidFilePicker.pickBytes(arrayOf("image/*"))

@@ -19,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Keeps the process alive for as long as a scan is running.
@@ -42,7 +43,10 @@ class ScanForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
-            intent.getStringExtra(EXTRA_LIBRARY_ID)?.let { createCoreContext().scans.cancel(it) }
+            // Off the main thread: reaching the library may mean opening it.
+            intent.getStringExtra(EXTRA_LIBRARY_ID)?.let { id ->
+                scope.launch(Dispatchers.IO) { createCoreContext().scans.cancel(id) }
+            }
             return START_NOT_STICKY
         }
 
@@ -56,12 +60,12 @@ class ScanForegroundService : Service() {
     }
 
     private suspend fun watch() {
-        val scans = createCoreContext().scans
+        val scans = withContext(Dispatchers.IO) { createCoreContext().scans }
         // The submit and the service start race; give the scan a moment to
         // appear before concluding there is nothing to watch.
         delay(500)
         while (scope.isActive) {
-            val running = scans.status().filter { it.running }
+            val running = withContext(Dispatchers.IO) { scans.status() }.filter { it.running }
             if (running.isEmpty()) break
             val first = running.first()
             val progress = if (first.total > 0) first.current to first.total else null
@@ -134,6 +138,23 @@ class ScanForegroundService : Service() {
             NotificationManager.IMPORTANCE_LOW
         ).apply { setShowBadge(false) }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+    }
+
+    /**
+     * Android 15 allows a data-sync foreground service six hours in any
+     * twenty-four, then calls this and expects the service gone within
+     * seconds. One still in the foreground after that is not warned again: the
+     * system throws in the app's process and the app dies. A first scan of a large share over a slow link
+     * can take that long.
+     *
+     * Leaving the foreground does not stop the work. It carries on for as long
+     * as the process is left alone, and what it had not finished is picked up
+     * the next time the app is opened.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        watcher?.cancel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onDestroy() {

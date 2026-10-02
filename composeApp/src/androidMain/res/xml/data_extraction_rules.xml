@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What leaves the device in a backup, on Android 12 and later.
+
+     Everything the app keeps is under filesDir/daview: config.json, which holds
+     the WebDAV password and the scraper keys in plain text, the database, the
+     artwork cache, downloaded update packages and the offline copies of films.
+     With no rules all of it was offered to the backup: the credentials went
+     wherever the backup went, and a few downloaded episodes put the set far
+     over the 25 MB a cloud backup may hold, at which point nothing is backed
+     up at all.
+
+     Cloud: only when the backup is encrypted with the device's own lock, which
+     is what makes it acceptable for config.json to be in it; never the offline
+     copies, the caches or the fonts on external storage.
+
+     A transfer straight to a new device has no size limit and no third party,
+     so it takes the offline copies too: their rows are in the database and
+     would otherwise point at files that never arrived. -->
+<data-extraction-rules>
+    <cloud-backup disableIfNoEncryptionCapabilities="true">
+        <exclude domain="file" path="daview/offline/" />
+        <exclude domain="file" path="daview/cache/" />
+        <exclude domain="file" path="daview/updates/" />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="daview/cache/" />
+        <exclude domain="file" path="daview/updates/" />
+    </device-transfer>
+</data-extraction-rules>

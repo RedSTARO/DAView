@@ -20,6 +20,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Keeps the process alive while a film is being copied to this device.
@@ -44,7 +45,9 @@ class DownloadForegroundService : Service() {
             // The whole queue, not the one on top: a series is two dozen
             // entries, and cancelling them one notification at a time is not
             // a way out anyone would take.
-            createCoreContext().offline.cancelAll()
+            // Off the main thread: it writes every queued row and deletes
+            // what had arrived of each.
+            scope.launch(Dispatchers.IO) { createCoreContext().offline.cancelAll() }
             return START_NOT_STICKY
         }
 
@@ -57,12 +60,15 @@ class DownloadForegroundService : Service() {
     }
 
     private suspend fun watch() {
-        val offline = createCoreContext().offline
+        val offline = withContext(Dispatchers.IO) { createCoreContext().offline }
         // The queue write and the service start race; give the download a
         // moment to appear before concluding there is nothing to watch.
         delay(500)
         while (scope.isActive) {
-            val active = offline.all().filter {
+            // A database read every second and a half, on the one
+            // connection Android gives the app: on the main thread it
+            // waited behind whatever a scan was writing.
+            val active = withContext(Dispatchers.IO) { offline.all() }.filter {
                 it.state == DownloadState.RUNNING || it.state == DownloadState.QUEUED
             }
             if (active.isEmpty()) break
@@ -148,6 +154,24 @@ class DownloadForegroundService : Service() {
             NotificationManager.IMPORTANCE_LOW
         ).apply { setShowBadge(false) }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+    }
+
+    /**
+     * Android 15 allows a data-sync foreground service six hours in any
+     * twenty-four, then calls this and expects the service gone within
+     * seconds. One still in the foreground after that is not warned again: the
+     * system throws in the app's process and the app dies. A queue waiting for Wi-Fi sits
+     * here for exactly that kind of time: started on mobile data in the morning,
+     * still waiting in the evening.
+     *
+     * Leaving the foreground does not stop the work. It carries on for as long
+     * as the process is left alone, and what it had not finished is picked up
+     * the next time the app is opened.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        watcher?.cancel()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onDestroy() {
