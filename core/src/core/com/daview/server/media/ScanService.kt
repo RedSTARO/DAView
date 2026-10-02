@@ -64,7 +64,9 @@ class ScanService(
             phase = "queued",
             current = 0,
             total = 0,
-            message = if (mode == ScanMode.MISSING) "排队中（仅刮削未刮削）" else "排队中",
+            // The phase already says it is queued; every page puts the phase
+            // in front of the message, so repeating it here read 「排队中 · 排队中」.
+            message = if (mode == ScanMode.MISSING) "仅刮削未刮削的条目" else "",
             automatic = automatic
         )
         progress[library.id] = initial

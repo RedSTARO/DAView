@@ -73,6 +73,36 @@ class RepositoryUpkeepTest {
     }
 
     @Test
+    fun `a library counts the entries its page lists`() {
+        repository.upsertLibrary(
+            com.daview.shared.model.LibraryDto(id = "lib", name = "电视剧", kind = com.daview.shared.model.LibraryKind.SERIES, path = "/TV")
+        )
+        fun series(id: String) = ItemRecord(
+            dto = MediaItemDto(id = id, libraryId = "lib", kind = ItemKind.SERIES, name = id, sortName = id, path = "/TV/$id")
+        )
+        repository.upsertItems(
+            listOf(
+                series("ipartment"),
+                series("ipartment-dupe"),
+                series("all-is-well"),
+                // A film kept in a show's folder is listed on that show's page.
+                ItemRecord(
+                    dto = MediaItemDto(
+                        id = "ipartment-movie", libraryId = "lib", kind = ItemKind.MOVIE, name = "The Movie",
+                        sortName = "the movie", parentId = "ipartment", path = "/TV/ipartment/The Movie (2018)"
+                    )
+                )
+            )
+        )
+        repository.mergeItems("ipartment", listOf("ipartment-dupe"))
+
+        val (page, total) = repository.query(Repository.Query(libraryId = "lib", topLevelOnly = true))
+        assertEquals(2, total)
+        assertEquals(page.size, repository.library("lib")?.itemCount)
+        assertEquals(2, repository.libraries().single().itemCount)
+    }
+
+    @Test
     fun `cached provider responses older than a month are dropped when a scan settles`() {
         repository.cachePut("tmdb:search:old", "{}")
         repository.cachePut("tmdb:search:new", "{}")

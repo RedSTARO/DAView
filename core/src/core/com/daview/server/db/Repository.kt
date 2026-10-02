@@ -108,17 +108,13 @@ class Repository(private val db: Database) {
     // ------------------------------------------------------------ libraries
 
     fun libraries(): List<LibraryDto> = db.read { connection ->
-        connection.statement(
-            "SELECT l.*, (SELECT COUNT(*) FROM items i WHERE i.library_id = l.id AND i.kind IN ('MOVIE','SERIES')) AS item_count " +
-                "FROM libraries l ORDER BY l.created_at"
-        ).useQuery { it.map(::readLibrary) }
+        connection.statement("SELECT l.*, $LIBRARY_ITEM_COUNT FROM libraries l ORDER BY l.created_at")
+            .useQuery { it.map(::readLibrary) }
     }
 
     fun library(id: String): LibraryDto? = db.read { connection ->
-        connection.statement(
-            "SELECT l.*, (SELECT COUNT(*) FROM items i WHERE i.library_id = l.id AND i.kind IN ('MOVIE','SERIES')) AS item_count " +
-                "FROM libraries l WHERE l.id = ?"
-        ).apply { setString(1, id) }.useQuery { if (it.next()) readLibrary(it) else null }
+        connection.statement("SELECT l.*, $LIBRARY_ITEM_COUNT FROM libraries l WHERE l.id = ?")
+            .apply { setString(1, id) }.useQuery { if (it.next()) readLibrary(it) else null }
     }
 
     fun upsertLibrary(library: LibraryDto) = db.transaction { connection ->
@@ -1747,6 +1743,17 @@ class Repository(private val db: Database) {
         runCatching { json.decodeFromString(stringListSerializer, raw ?: "[]") }.getOrDefault(emptyList())
 
     private companion object {
+        /**
+         * How many entries a library has, counted the way its page lists them:
+         * the films and shows at its top, not a film kept inside a show's
+         * folder (it is listed on that show's page) and not a duplicate merged
+         * into another entry. Counting every film and show made the card say
+         * 5 over a page that showed 4.
+         */
+        const val LIBRARY_ITEM_COUNT =
+            "(SELECT COUNT(*) FROM items i WHERE i.library_id = l.id AND i.kind IN ('MOVIE','SERIES') " +
+                "AND i.parent_id IS NULL AND i.merged_into IS NULL) AS item_count"
+
         /** How long a cached provider response is kept; see [pruneScrapeCache]. */
         const val SCRAPE_CACHE_KEPT_MS = 30L * 24 * 3600 * 1000
 
