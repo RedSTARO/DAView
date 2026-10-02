@@ -336,6 +336,15 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                   AND (lower(path) LIKE '%.ts' OR lower(path) LIKE '%.m2ts' OR lower(path) LIKE '%.mts' OR lower(path) LIKE '%.m2t')
                   AND (media_streams IS NULL OR media_streams NOT LIKE '%"isExternal":false%')
                 """.trimIndent()
+            ),
+            listOf(
+                // When a person last changed a library's definition. The sync
+                // file carried the definitions with nothing to say which side
+                // was newer, so every pull laid the file's copy over this
+                // device's: a rename, a new scraping order or a language was
+                // undone within minutes of being made, by this device's own
+                // earlier upload as readily as by another device's.
+                "ALTER TABLE libraries ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0"
             )
         )
     }

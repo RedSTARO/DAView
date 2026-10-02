@@ -135,11 +135,19 @@ class UpdateService(dataDir: Path) {
         fileName: String,
         onProgress: (received: Long, total: Long?) -> Unit = { _, _ -> }
     ): Path {
-        directory.createDirectories()
-        val target = directory.resolve(fileName)
-        val part = directory.resolve("$fileName.part")
+        // No digest, no install. The digest is the one thing that ties the
+        // bytes to the manifest that named them; without it whatever arrived —
+        // from a mirror, over a redirect — would be handed to an installer on
+        // trust. The release workflow writes one for every package.
+        val expected = asset.sha256?.trim()?.takeIf { it.isNotEmpty() }
+            ?: throw IOException("更新清单没有给出这个安装包的 SHA-256，不会下载")
 
-        if (target.exists() && asset.sha256 != null && sha256(target).equals(asset.sha256, ignoreCase = true)) {
+        directory.createDirectories()
+        val safeName = safeFileName(fileName)
+        val target = directory.resolve(safeName)
+        val part = directory.resolve("$safeName.part")
+
+        if (target.exists() && sha256(target).equals(expected, ignoreCase = true)) {
             val size = Files.size(target)
             onProgress(size, size)
             return target
@@ -164,6 +172,11 @@ class UpdateService(dataDir: Path) {
                             output.write(buffer, 0, read)
                             digest.update(buffer, 0, read)
                             count += read
+                            // More than the manifest said is already not the
+                            // package; stop rather than fill the disk with it.
+                            if (asset.size != null && count > asset.size) {
+                                throw IOException("下载的内容比清单写的大（应为 ${asset.size} 字节），已中止")
+                            }
                             if (count - lastReported >= PROGRESS_STEP) {
                                 lastReported = count
                                 onProgress(count, total)
@@ -172,7 +185,7 @@ class UpdateService(dataDir: Path) {
                     }
                 }
                 val actual = digest.digest().joinToString("") { "%02x".format(it) }
-                if (asset.sha256 != null && !actual.equals(asset.sha256, ignoreCase = true)) {
+                if (!actual.equals(expected, ignoreCase = true)) {
                     throw IOException("下载的文件校验失败（SHA-256 不符）")
                 }
                 if (asset.size != null && count != asset.size) {
@@ -219,6 +232,24 @@ class UpdateService(dataDir: Path) {
     companion object {
         /** Progress is reported every this many bytes, not every read. */
         private const val PROGRESS_STEP = 512L * 1024
+
+        /**
+         * [name] as a plain file name inside the updates directory.
+         *
+         * The name comes from the manifest — its `name`, or the tail of its
+         * address — and it is resolved against a directory and, on Windows,
+         * written into a batch file. `..\..\Start Menu\Programs\Startup\x.cmd`
+         * is a name too. Only the last path segment is kept, and of that only
+         * letters, digits, `.`, `-`, `_` and `+`; anything else becomes `_`,
+         * which also keeps `%`, `&` and `^` out of the script.
+         */
+        internal fun safeFileName(name: String): String {
+            val leaf = name.substringAfterLast('/').substringAfterLast('\\')
+            val cleaned = leaf.map { ch ->
+                if (ch.isLetterOrDigit() && ch.code < 128 || ch in "._-+") ch else '_'
+            }.joinToString("").trimStart('.')
+            return cleaned.ifBlank { "DAView-update" }
+        }
 
         /**
          * Puts a mirror in front of [url], for networks where GitHub itself is

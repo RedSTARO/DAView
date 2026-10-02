@@ -146,7 +146,9 @@ class MediaFacade(private val context: ServerContext) {
             // not line up across the sync file.
             id = incoming.id.ifBlank { Scanner.libraryId(incoming.path) },
             name = incoming.name.ifBlank { incoming.path.trim('/').substringAfterLast('/') },
-            providerOrder = incoming.providerOrder.ifEmpty { context.metadata.defaultOrder(incoming.kind) }
+            providerOrder = incoming.providerOrder.ifEmpty { context.metadata.defaultOrder(incoming.kind) },
+            // A person defined this, now: the stamp the sync merge goes by.
+            updatedAt = System.currentTimeMillis()
         )
         context.repository.upsertLibrary(library)
         context.repository.library(library.id) ?: library
@@ -154,8 +156,10 @@ class MediaFacade(private val context: ServerContext) {
 
     suspend fun updateLibrary(id: String, incoming: LibraryDto): LibraryDto = io {
         context.repository.library(id) ?: notFound("媒体库不存在")
-        context.repository.upsertLibrary(incoming.copy(id = id))
-        context.repository.library(id)!!
+        // Stamped, or the next sync pull puts back whatever the sync file
+        // still says; see applyBackup.
+        context.repository.upsertLibrary(incoming.copy(id = id, updatedAt = System.currentTimeMillis()))
+        context.repository.library(id) ?: notFound("媒体库不存在")
     }
 
     suspend fun deleteLibrary(id: String) = io { context.repository.deleteLibrary(id) }

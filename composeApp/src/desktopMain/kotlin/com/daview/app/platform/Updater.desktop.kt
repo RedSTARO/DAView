@@ -37,7 +37,10 @@ private fun installOnWindows(installer: File): InstallOutcome {
     val script = File(installer.parentFile, "install-update.cmd")
     return runCatching {
         script.writeText(windowsInstallScript(installer.absolutePath, launcher), Charsets.UTF_8)
-        ProcessBuilder("cmd", "/c", "start", "\"\"", "/min", script.absolutePath).start()
+        // Quoted here rather than left to ProcessBuilder, which only quotes an
+        // argument with a space in it: a profile directory named `R&D` has
+        // none, and cmd would cut the command in two at the ampersand.
+        ProcessBuilder("cmd", "/c", "start", "\"\"", "/min", "\"${script.absolutePath}\"").start()
         // Off a daemon thread so the page can say what is happening first.
         Thread {
             Thread.sleep(800)
@@ -57,11 +60,20 @@ private fun openWithSystem(installer: File): InstallOutcome = runCatching {
  * The batch file [installOnWindows] runs. `chcp 65001` first, because the
  * file is written as UTF-8 and the paths in it may well not be ASCII — the
  * updates directory sits under the user's profile.
+ *
+ * It ends with `exit`, and has to: `start` runs a batch file under `cmd /k`,
+ * which keeps its console open once the script is over. Without the last line
+ * every update left a minimised console window sitting in the taskbar.
+ *
+ * A `%` in a path is doubled, which is how a batch file spells a literal one;
+ * left single, `%name%` inside a path would be read as a variable.
  */
 internal fun windowsInstallScript(installer: String, relaunch: String?): String = buildString {
+    fun literal(path: String) = path.replace("%", "%%")
     appendLine("@echo off")
     appendLine("chcp 65001 >nul")
     appendLine("timeout /t 2 /nobreak >nul")
-    appendLine("msiexec /i \"$installer\" /passive")
-    if (relaunch != null) appendLine("if exist \"$relaunch\" start \"\" \"$relaunch\"")
+    appendLine("msiexec /i \"${literal(installer)}\" /passive")
+    if (relaunch != null) appendLine("if exist \"${literal(relaunch)}\" start \"\" \"${literal(relaunch)}\"")
+    appendLine("exit")
 }

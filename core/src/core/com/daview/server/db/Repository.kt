@@ -124,12 +124,13 @@ class Repository(private val db: Database) {
     fun upsertLibrary(library: LibraryDto) = db.transaction { connection ->
         connection.statement(
             """
-            INSERT INTO libraries(id, name, kind, path, provider_order, language, last_scan_at, image_url, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO libraries(id, name, kind, path, provider_order, language, last_scan_at, image_url, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name, kind = excluded.kind, path = excluded.path,
                 provider_order = excluded.provider_order, language = excluded.language,
-                last_scan_at = excluded.last_scan_at, image_url = excluded.image_url
+                last_scan_at = excluded.last_scan_at, image_url = excluded.image_url,
+                updated_at = excluded.updated_at
             """.trimIndent()
         ).use { statement ->
             statement.setString(1, library.id)
@@ -141,6 +142,7 @@ class Repository(private val db: Database) {
             library.lastScanAt?.let { statement.setLong(7, it) } ?: statement.setNull(7)
             statement.setString(8, library.imageUrl)
             statement.setLong(9, System.currentTimeMillis())
+            statement.setLong(10, library.updatedAt)
             statement.executeUpdate()
         }
     }
@@ -214,7 +216,8 @@ class Repository(private val db: Database) {
         language = rs.requireString("language"),
         itemCount = runCatching { rs.getInt("item_count") }.getOrDefault(0),
         lastScanAt = rs.getLongOrNull("last_scan_at"),
-        imageUrl = rs.getString("image_url")
+        imageUrl = rs.getString("image_url"),
+        updatedAt = rs.getLongOrNull("updated_at") ?: 0L
     )
 
     // ------------------------------------------------------------ items
@@ -1271,6 +1274,23 @@ class Repository(private val db: Database) {
     fun userDataFingerprint(): Pair<Long, Int> = db.read { connection ->
         connection.statement("SELECT COALESCE(MAX(updated_at), 0), COUNT(*) FROM user_data")
             .useQuery { if (it.next()) it.getLongAt(1) to it.getIntAt(2) else 0L to 0 }
+    }
+
+    /**
+     * The same idea for everything the sync file carries: the watch state, the
+     * library definitions and the hand-picked scrape entries, each as its
+     * newest timestamp and its row count.
+     *
+     * The watch state alone used to decide whether there was anything to
+     * upload, so a renamed library or a corrected match stayed on the device
+     * it was made on until something happened to be played.
+     */
+    fun syncFingerprint(): List<Long> = db.read { connection ->
+        connection.statement(
+            "SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM user_data), (SELECT COUNT(*) FROM user_data), " +
+                "(SELECT COALESCE(MAX(updated_at), 0) FROM libraries), (SELECT COUNT(*) FROM libraries), " +
+                "(SELECT COALESCE(MAX(updated_at), 0) FROM scrape_pins), (SELECT COUNT(*) FROM scrape_pins)"
+        ).useQuery { rs -> if (rs.next()) (1..6).map { rs.getLongAt(it) } else List(6) { 0L } }
     }
 
     /** When a watch-state row last changed, or null when there is no such row. */

@@ -66,7 +66,14 @@ data class LibraryDto(
     val language: String = "zh-CN",
     val itemCount: Int = 0,
     val lastScanAt: Long? = null,
-    val imageUrl: String? = null
+    val imageUrl: String? = null,
+    /**
+     * When a person last changed this definition, on whichever device. Zero
+     * for one nobody has edited since this was recorded. It is what lets two
+     * devices tell whose copy is the newer one when they meet in the sync
+     * file; a scan does not move it.
+     */
+    val updatedAt: Long = 0
 )
 
 @Serializable

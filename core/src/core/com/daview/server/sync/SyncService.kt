@@ -39,9 +39,17 @@ class SyncService(
     }
     private val running = AtomicBoolean(false)
 
-    /** Watch-state fingerprint at the last successful upload. */
+    /** Fingerprint of everything the file carries, at the last successful upload. */
     @Volatile
-    private var uploadedFingerprint: Pair<Long, Int>? = null
+    private var uploadedFingerprint: List<Long>? = null
+
+    /**
+     * When a pull was last tried, whether or not it worked. Only a successful
+     * one moves `lastPullAt`, so with the share out of reach every tick — one
+     * a minute — tried again and wrote the same error into the config file.
+     */
+    @Volatile
+    private var lastPullAttemptAt = 0L
 
     @Volatile
     var storageWritable: Boolean? = null
@@ -63,17 +71,30 @@ class SyncService(
      * has to remember to notify this service when progress is written.
      */
     private fun tick() {
+        // Nothing may escape: a scheduled task that throws once is never run
+        // again, and the sync would stop for the rest of the process's life
+        // with the switch still showing on.
+        try {
+            tickOnce()
+        } catch (t: Throwable) {
+            log.warn("同步检查失败: {}", t.message)
+        }
+    }
+
+    private fun tickOnce() {
         val config = context.config.sync
         if (!config.enabled) return
         val now = System.currentTimeMillis()
 
-        if (now - (config.lastPullAt ?: 0L) >= pullIntervalMs(config.minIntervalMinutes)) {
+        val pullInterval = pullIntervalMs(config.minIntervalMinutes)
+        if (now - (config.lastPullAt ?: 0L) >= pullInterval && now - lastPullAttemptAt >= pullInterval) {
+            lastPullAttemptAt = now
             runCatching { pull() }.onFailure { log.warn("自动拉取失败: {}", it.message) }
         }
 
         val elapsed = System.currentTimeMillis() - (context.config.sync.lastUploadAt ?: 0L)
         if (elapsed < config.minIntervalMinutes.coerceAtLeast(1) * 60_000L) return
-        if (context.repository.userDataFingerprint() == uploadedFingerprint) return
+        if (context.repository.syncFingerprint() == uploadedFingerprint) return
         runCatching { upload(automatic = true) }
             .onFailure { log.warn("自动同步失败: {}", it.message) }
     }
@@ -126,7 +147,7 @@ class SyncService(
             }
 
             storageWritable = true
-            uploadedFingerprint = context.repository.userDataFingerprint()
+            uploadedFingerprint = context.repository.syncFingerprint()
             context.updateConfig { it.copy(sync = it.sync.copy(lastUploadAt = now, lastError = null)) }
             if (!automatic) log.info("同步已上传 {} 字节到 {}", bytes.size, path)
             return SyncResultDto(
@@ -222,7 +243,11 @@ class SyncService(
     }
 
     private fun fail(message: String): SyncResultDto {
-        context.updateConfig { it.copy(sync = it.sync.copy(lastError = message)) }
+        // Only when it is news: the config file is rewritten on every change,
+        // and the same failure repeating is not one.
+        if (context.config.sync.lastError != message) {
+            context.updateConfig { it.copy(sync = it.sync.copy(lastError = message)) }
+        }
         return SyncResultDto(ok = false, message = message, at = System.currentTimeMillis())
     }
 

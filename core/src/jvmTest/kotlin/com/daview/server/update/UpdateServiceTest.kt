@@ -116,6 +116,51 @@ class UpdateServiceTest {
     }
 
     @Test
+    fun `a package the manifest gives no digest for is not downloaded`() {
+        serve("/DAView.msi", ByteArray(16))
+        server.start()
+
+        val error = assertFailsWith<IOException> {
+            service.download(UpdateAsset(url("/DAView.msi")), "DAView.msi")
+        }
+        assertTrue("SHA-256" in error.message.orEmpty(), error.message)
+        assertFalse(dir.resolve("updates/DAView.msi").exists())
+    }
+
+    @Test
+    fun `a name with a path in it still lands inside the updates directory`() {
+        val bytes = ByteArray(1024) { it.toByte() }
+        serve("/pkg", bytes)
+        server.start()
+
+        val file = service.download(
+            UpdateAsset(url("/pkg"), sha256 = sha256(bytes)),
+            "..\\..\\Start Menu\\Programs\\Startup\\run&me%.cmd"
+        )
+        assertEquals(dir.resolve("updates"), file.parent)
+        assertEquals("run_me_.cmd", file.name)
+
+        assertEquals("DAView-v1.2.0-5-gabc123.msi", UpdateService.safeFileName("DAView-v1.2.0-5-gabc123.msi"))
+        assertEquals("passwd", UpdateService.safeFileName("../../etc/passwd"))
+        assertEquals("DAView-update", UpdateService.safeFileName("../"))
+        assertEquals("hidden", UpdateService.safeFileName(".hidden"))
+    }
+
+    @Test
+    fun `a body larger than the manifest says is cut off, not written out`() {
+        val bytes = ByteArray(2_000_000) { it.toByte() }
+        serve("/big.msi", bytes)
+        server.start()
+
+        val error = assertFailsWith<IOException> {
+            service.download(UpdateAsset(url("/big.msi"), sha256 = sha256(bytes), size = 1_000), "big.msi")
+        }
+        assertTrue("1000" in error.message.orEmpty(), error.message)
+        assertFalse(dir.resolve("updates/big.msi").exists())
+        assertFalse(dir.resolve("updates/big.msi.part").exists())
+    }
+
+    @Test
     fun `a mirror goes in front of the whole address`() {
         assertEquals(
             "https://mirror.example/https://github.com/x/y",

@@ -160,9 +160,9 @@ fun applyBackup(
     mergeUserDataByTimestamp: Boolean = false,
     /**
      * True when the file came from the sync loop rather than from a person
-     * choosing it. Settings that describe this machine rather than the library
-     * — the address it reaches the share on, its player timeouts — are then left
-     * alone: two devices legitimately hold different values for them.
+     * choosing it. Its settings are then not applied at all, a library this
+     * device deleted stays deleted, and a library's definition replaces this
+     * device's only when it is the newer of the two.
      */
     machineLocal: Boolean = false
 ): BackupSummaryDto {
@@ -171,19 +171,22 @@ fun applyBackup(
         "备份文件版本 ${backup.version} 比这个版本的 DAView（$BACKUP_VERSION）新，先更新应用再导入"
     }
 
-    val settings = backup.settings
+    // Settings are applied from a file a person chose, and from nothing else.
+    //
+    // The sync loop used to apply them too, and they carry no timestamp: every
+    // pull laid the file's values over this device's. Changing the metadata
+    // language lasted until the next pull — a few minutes — and was then put
+    // back by this device's own earlier upload as readily as by another
+    // device's, with nothing said. How this machine reaches the share, and how
+    // it treats an external player, were already left alone for the same
+    // reason; the rest now is too. A restore still sets all of it, because
+    // that is a migration and carrying it across is the point.
+    val settings = backup.settings?.takeUnless { machineLocal }
     if (settings != null) {
         context.updateConfig { current ->
             current.copy(
                 serverName = settings.serverName.ifBlank { current.serverName },
-                // How this machine reaches the share is this machine's business.
-                // Two devices legitimately use different addresses for the same
-                // storage — a LAN address on the desktop, a public one on the
-                // phone — and carrying it in the sync file meant each rewrote
-                // the other's every few minutes, silently. A file the user
-                // imported by hand may still set it, because that is a
-                // migration and the whole point is to carry it across.
-                storage = if (machineLocal) current.storage else current.storage.copy(
+                storage = current.storage.copy(
                     url = settings.storage.url.ifBlank { current.storage.url },
                     username = settings.storage.username.ifBlank { current.storage.username },
                     password = settings.storage.password.ifBlank { current.storage.password }
@@ -195,22 +198,36 @@ fun applyBackup(
                     language = settings.scraper.language.ifBlank { current.scraper.language },
                     tmdbImageBase = settings.scraper.tmdbImageBase.ifBlank { current.scraper.tmdbImageBase }
                 ),
-                // Likewise: whether to proxy an external player, and how long to
-                // wait before retiring its session, depend on what is installed
-                // here. These were applied unconditionally.
-                trackExternalPlayers =
-                    if (machineLocal) current.trackExternalPlayers else settings.trackExternalPlayers,
-                externalSessionIdleTimeoutSec =
-                    if (machineLocal) current.externalSessionIdleTimeoutSec
-                    else settings.externalSessionIdleTimeoutSec
+                trackExternalPlayers = settings.trackExternalPlayers,
+                externalSessionIdleTimeoutSec = settings.externalSessionIdleTimeoutSec
             )
         }
     }
 
-    // A library this device deleted does not come back because another device
-    // has not caught up yet.
     val deleted = context.repository.deletedLibraryIds()
-    backup.libraries.forEach { if (it.id !in deleted) context.repository.upsertLibrary(it) }
+    var appliedLibraries = 0
+    backup.libraries.forEach { remote ->
+        if (machineLocal) {
+            // A library this device deleted does not come back because another
+            // device has not caught up yet.
+            if (remote.id in deleted) return@forEach
+            val local = context.repository.library(remote.id)
+            // The newer definition wins, and a tie stays as it is here. A tie
+            // is the usual case — neither side has edited it — and it used to
+            // go to the file, which is how a rename or a new scraping order
+            // was undone by the next pull.
+            if (local != null && local.updatedAt >= remote.updatedAt) return@forEach
+            // When this device last scanned is this device's own business.
+            context.repository.upsertLibrary(remote.copy(lastScanAt = local?.lastScanAt))
+        } else {
+            // A file the person picked is them putting the library back, so an
+            // earlier delete no longer stands. Skipping it here restored the
+            // library's items with no library to show them in.
+            context.repository.forgetDeletedLibrary(remote.id)
+            context.repository.upsertLibrary(remote)
+        }
+        appliedLibraries++
+    }
 
     // Pins land before the items, so an item restored in the same file already
     // finds its correction in place. Newer wins, same as the watch state — the
@@ -265,7 +282,7 @@ fun applyBackup(
 
     return BackupSummaryDto(
         settingsApplied = settings != null,
-        libraries = backup.libraries.size,
+        libraries = appliedLibraries,
         items = backup.items.size,
         userData = mergedUserData,
         pins = mergedPins,

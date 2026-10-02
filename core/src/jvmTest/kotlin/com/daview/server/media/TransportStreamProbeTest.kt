@@ -91,10 +91,11 @@ class TransportStreamProbeTest {
         repository.upsertItem(ItemRecord(dto = episode("mkv", "/Ani/Show/Show - S01E01.mkv", 1L, emptyList()), probedAt = stamped))
         val read = listOf(MediaStreamDto(index = 4113, type = StreamType.VIDEO, codec = "h264"), subtitle)
         repository.upsertItem(ItemRecord(dto = episode("read", "/Ani/Show/Show - S01E02.M2TS", 1L, read), probedAt = stamped))
-        // Back to the version before this release's step, as a database written
-        // by the previous build would be.
+        // Back to the version the build before transport streams left, as a
+        // database it wrote would be. By number, not "one back": that step is
+        // only the last one until another is added after it.
         database.transaction { connection ->
-            connection.statement("UPDATE schema_version SET version = version - 1").use { it.executeUpdate() }
+            connection.statement("UPDATE schema_version SET version = 15").use { it.executeUpdate() }
         }
         database.close()
 

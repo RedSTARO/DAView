@@ -26,6 +26,9 @@ class UpdateInstallTest {
             "if exist \"C:\\Program Files\\DAView\\DAView.exe\" start \"\" \"C:\\Program Files\\DAView\\DAView.exe\"",
             lines[4]
         )
+        // `start` runs a batch file under `cmd /k`; without this its console
+        // stays open, minimised, after every update.
+        assertEquals("exit", lines.last())
     }
 
     @Test
@@ -33,5 +36,12 @@ class UpdateInstallTest {
         val script = windowsInstallScript("C:\\x\\DAView.msi", null)
         assertFalse("start" in script)
         assertTrue("msiexec" in script)
+        assertEquals("exit", script.trim().lines().last())
+    }
+
+    @Test
+    fun `a percent sign in a path is spelled the way a batch file needs it`() {
+        val script = windowsInstallScript("C:\\Users\\50%off\\updates\\DAView.msi", null)
+        assertTrue("msiexec /i \"C:\\Users\\50%%off\\updates\\DAView.msi\" /passive" in script, script)
     }
 }
