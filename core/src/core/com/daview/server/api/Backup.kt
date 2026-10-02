@@ -1,6 +1,5 @@
 package com.daview.server.api
 
-import com.daview.server.DAVIEW_VERSION
 import com.daview.server.ServerContext
 import com.daview.server.db.ItemRecord
 import com.daview.shared.model.BACKUP_FORMAT
@@ -17,6 +16,7 @@ import com.daview.shared.model.ScraperSettingsDto
 import com.daview.shared.model.StorageSettingsDto
 import com.daview.shared.model.UserDataDto
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.time.Instant
 import java.time.ZoneId
@@ -64,7 +64,8 @@ fun backupFileName(): String = "daview-backup-${stampFormat.format(Instant.now()
 fun backupChunks(context: ServerContext, options: BackupOptions): Sequence<String> = sequence {
     yield("{\"format\":\"$BACKUP_FORMAT\",\"version\":$BACKUP_VERSION")
     yield(",\"createdAt\":${System.currentTimeMillis()}")
-    yield(",\"serverVersion\":\"$DAVIEW_VERSION\"")
+    yield(",\"serverVersion\":")
+    yield(backupJson.encodeToString(String.serializer(), context.appVersion))
     yield(",\"containsSecrets\":${options.secrets}")
 
     if (options.settings) {
@@ -130,7 +131,7 @@ fun backupChunks(context: ServerContext, options: BackupOptions): Sequence<Strin
 fun buildBackup(context: ServerContext, options: BackupOptions): String {
     val file = BackupFileDto(
         createdAt = System.currentTimeMillis(),
-        serverVersion = DAVIEW_VERSION,
+        serverVersion = context.appVersion,
         containsSecrets = options.secrets,
         settings = if (options.settings) context.backupSettings(options.secrets) else null,
         libraries = if (options.libraries) context.repository.libraries() else emptyList(),

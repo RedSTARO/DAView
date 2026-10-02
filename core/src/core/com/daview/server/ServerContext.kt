@@ -13,8 +13,6 @@ import com.daview.server.scraper.MetadataService
 import com.daview.server.storage.WebDavClient
 import java.nio.file.Path
 
-const val DAVIEW_VERSION = "1.0.0"
-
 /**
  * Wires the server's singletons together and keeps them in sync with the config.
  *
@@ -23,6 +21,15 @@ const val DAVIEW_VERSION = "1.0.0"
  * platform's own SQLite.
  */
 class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
+
+    /**
+     * Which build this is, as the app that holds the library knows it. Set by
+     * the app once it has built this; the core cannot see the build's own
+     * label. It used to be a constant here that said 1.0.0 for every build,
+     * and every backup carried that as the version that wrote it.
+     */
+    @Volatile
+    var appVersion: String = "dev"
 
     val configStore = ConfigStore(dataDir)
     val database = Database(sql)

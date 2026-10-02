@@ -141,7 +141,7 @@ RTX Video Super Resolution 与 RTX Video HDR），也可以把播放交给 PotPl
 
 条目页的铅笔按钮打开「手动指定刮削条目」：
 
-1. 选刮削源。只列出这台服务器上真正可用的：TMDB / TheTVDB 要 API Key，bangumi.tv 不用
+1. 选刮削源。只列出这台设备上真正可用的：TMDB / TheTVDB 要 API Key，bangumi.tv 不用
 2. 直接填该站点的条目 id —— TMDB 是 `themoviedb.org/tv/<id>` 里的数字，bangumi 是 `bgm.tv/subject/<id>`
 3. 不知道 id 就用下面的搜索框，点候选项即可指定。搜索框默认填的是**文件夹解析出来的原名**，
    不是刮错之后的名字；这里的搜索也**不走**自动匹配那套年份过滤与相似度阈值，结果原样列出。
@@ -157,45 +157,31 @@ RTX Video Super Resolution 与 RTX Video HDR），也可以把播放交给 PotPl
 - 重新扫描不会覆盖它。扫描器改用一条只更新「文件相关列」的 upsert，已经刮削过的条目，
   标题 / 海报 / provider id 一律保留（`Repository.UPSERT_SCANNED_ITEM`）
 
-对应的接口：
+对应的入口在 `MediaFacade`（进程内直接调用，没有 HTTP）：
 
-```
-GET  /api/items/{id}/identify           # 文件夹原名、可用刮削源、当前钉住的 id
-GET  /api/items/{id}/identify/search    # ?provider=&query=&year=，原始候选，不过滤
-POST /api/items/{id}/identify           # {"provider":"bangumi","providerId":"49278"}
-```
+| 方法 | 作用 |
+| --- | --- |
+| `identifyContext` | 文件夹原名、可用刮削源、当前钉住的 id |
+| `identifySearch` | 按源、片名、年份取原始候选，不过滤 |
+| `identify` | 钉住一个 `provider` + `providerId` 并重建元数据 |
+| `unpin` | 解除钉住，按文件夹名重新匹配；手动编辑过的字段保留 |
 
 ## 备份与迁移
 
-换机器时要带走的东西有三样：服务器设置、媒体库定义、观看进度。手动指定的刮削 id
-存在条目里，所以想连它一起带走就得包含刮削数据。
+换机器时要带走的东西：应用设置、媒体库定义、观看进度，以及手动指定的刮削条目——它们在文件里
+单独成段，不依赖刮削数据。刮削数据本身可选：不带的话文件只有几十 KB，代价是新设备要重新扫描一遍。
 
-```
-GET  /api/backup/export?settings=&libraries=&items=&userdata=&secrets=
-POST /api/backup/import                      # 请求体就是备份文件
-POST /api/backup/import?source=datadir       # 读数据目录下的 import.json
-```
+「设置 → 同步与备份 → 备份与迁移」里是「导出…」和「导入…」，两个勾选项控制「包含元数据」与「包含凭据」：
 
-客户端「设置 → 备份与迁移」里有导出 / 复制地址 / 导入三个按钮，两个开关控制
-「包含刮削数据」与「包含凭据」：
+1. 在旧设备上点「导出…」，在系统的保存对话框里选位置，得到 `daview-backup-<时间>.json`
+2. 在新设备上点「导入…」，用系统文件选择器选中它。应用先列出这份备份里有什么
+   （媒体库、观看记录、手动指定、元数据各多少条，含不含设置和凭据），确认之后才写入
 
-1. 在旧机器上点「导出」，浏览器下载 `daview-backup-<时间>.json`
-2. 在新机器上点「导入…」，用系统文件选择器选中它
+导出和导入走的都是平台自己的文件对话框（Android 的 SAF、桌面的系统对话框），而不是「把文件放进数据目录」——
+**Android 的数据目录在 `filesDir` 下，用户根本放不进东西**。
 
-导入走的是平台自己的文件选择器（Android 的 SAF、桌面的 AWT 对话框），而不是「把文件放进数据目录」——**Android 的数据目录在
-`filesDir` 下，用户根本放不进东西**，那条路在手机上不成立。
-
-无界面恢复仍可把备份文件放进数据目录，命名为 `import.json`。
-
-命令行同样可以：
-
-```bash
-curl -o backup.json "http://old:8096/api/backup/export?token=<token>"
-```
-
-```bash
-curl -X POST -H "Content-Type: application/json" --data-binary @backup.json "http://new:8096/api/backup/import?token=<token>"
-```
+应用里没有服务端，所以备份没有 HTTP 接口，也没有命令行入口；代码上的入口是
+`MediaFacade.backupChunks`（流式导出）与 `MediaFacade.importBackup`。
 
 几个约束：
 
@@ -204,6 +190,8 @@ curl -X POST -H "Content-Type: application/json" --data-binary @backup.json "htt
   账号和密码一样算凭据（这个网盘的账号就是手机号）。
 - **导入时空的凭据表示「保留目标机器已有的」**，所以不含凭据的备份不会把新机器上
   已经填好的 Key 清掉。
+- **手动导入以文件为准**。文件里的观看记录会覆盖本机同一条目的记录，不按时间合并——按时间合并是同步的规则；
+  本机删除过的媒体库会随导入恢复。
 - 导出是**流式**写出的：3246 个条目 4.1 MB，一次只在内存里持有一页，手机上也不会撑爆。
 - 条目 id 是 `SHA-1(库 id + 路径)`，所以只要库定义一起带过去，观看进度就能重新对上。
   只导设置和进度、不导刮削数据也可以，代价是新机器要重新扫描一遍。
@@ -225,7 +213,8 @@ curl -X POST -H "Content-Type: application/json" --data-binary @backup.json "htt
   master，是因为往 master 提交会再触发一次整个 workflow；推 `ci` 标签和 `updates` 分支都不会触发。
   解析版本时只看 `v*` 标签，`ci` 标签不算。
 - **比较的是安装包版本**（`MAJOR.MINOR.PATCH`，逐段比），不是标签；任一边解析不出来就不算有更新，
-  宁可不提示也不把新版本换成旧的。下载完先核对 SHA-256，不符的文件不会交给安装程序。
+  宁可不提示也不把新版本换成旧的。下载完先核对 SHA-256，不符的文件不会交给安装程序；清单里没给
+  SHA-256 的包不下载，比清单写的更大的响应会被中止。
 - **各平台怎么装**：Windows 校验完 MSI 后写一个 `install-update.cmd`（等 2 秒 → `msiexec /passive` →
   重新启动 `DAView.exe`），脚本一起来应用就退出，因为安装程序换不掉正在运行的文件；Android 通过 FileProvider
   把 APK 交给系统安装器（第一次会要求允许本应用安装应用）；Linux / macOS 下载后交给系统打开 `.deb` / `.dmg`，
@@ -240,16 +229,11 @@ curl -X POST -H "Content-Type: application/json" --data-binary @backup.json "htt
 没有第二台服务器可以商量，所以设备之间通过它们本来就共用的那块存储达成一致：把状态写成
 WebDAV 上的一个文件，别的设备读回来合并。
 
-「设置 → 跨端同步」里开关 + 指定路径。同步文件里放的是**服务器设置、媒体库定义、观看进度、
+「设置 → 同步与备份 → 跨端同步」里开关 + 指定路径。同步文件里放的是**设置、媒体库定义、观看进度、
 手动指定的刮削条目**，不含刮削结果——那个每台设备扫描一次就有，带上会让每次上传从 1.5 KB 变成 4 MB。
 手动指定是例外：它不是刮削出来的，是刮削错了之后人做的判断，重扫一遍不会重新得到它。
 
-```
-GET  /api/sync            # 当前设置与状态
-PUT  /api/sync            # 改路径 / 间隔；enabled=true 会先试写
-POST /api/sync/upload     # 立即上传
-POST /api/sync/pull       # 拉回并合并
-```
+代码上的入口是 `MediaFacade.syncSettings` / `updateSyncSettings` / `syncUpload` / `syncPull`；没有 HTTP 接口。
 
 几个必须知道的点：
 
@@ -258,13 +242,18 @@ POST /api/sync/pull       # 拉回并合并
   并显示「这个 WebDAV 不允许写入，无法同步」。不要去读 `Allow` 头判断。
 - **合并规则是按行取新**。`user_data.updated_at` 谁大听谁的，不做三方合并。
   两台设备同时看同一集时，后写的那次覆盖前一次。
+- **媒体库定义也按修改时间取新，设置不随同步走**。每个媒体库带一个 `updatedAt`——人在某台设备上
+  新建或修改它的时刻，扫描不动它。两边不一样时新的那份赢，一样时各自保持原样；本机上次扫描的时间
+  不会被别的设备覆盖。同步文件里仍然写着设置，但拉取时不应用：设置没有时间戳，应用的话每次拉取都会把
+  刚改的元数据语言改回文件里的旧值。手动导入备份时设置照常写入。
 - **上传前一定先读回来合并**。`PUT` 替换的是整个文件，而这个网关没有条件写（没有 `If-Match`），
   所以直接上传本机状态会把另一台设备写进去的行整片抹掉。读不回来时**不上传**——
   拿一次网络抖动换掉别人的记录不划算；文件读回来了但解析不了才覆盖，那种情况下覆盖就是修复。
 - **自动上传和自动拉取都有**。每分钟一个 tick：拉取按上传间隔的一半跑，
-  上传的条件是「观看状态指纹变了」且距上次上传超过设定间隔。指纹是 `MAX(updated_at)` 加行数
-  一条 SQL，所以写进度的地方不需要额外通知同步模块。只写不读的设备永远学不到别人看了什么，
-  所以拉取不能只挂在那个手动按钮上。
+  上传的条件是「同步内容的指纹变了」且距上次上传超过设定间隔。指纹是观看状态、媒体库定义、手动指定
+  三张表各自的 `MAX(updated_at)` 加行数，一条 SQL，所以写进度、改媒体库的地方都不需要额外通知同步模块。
+  只写不读的设备永远学不到别人看了什么，所以拉取不能只挂在那个手动按钮上。存储连不上时，拉取按间隔重试，
+  不是每分钟一次。
 - **只写这一个文件**。上传路径由用户指定，除它以外不碰存储上的任何东西。
 - **库 id 由路径推导**（`SHA-1` 前 12 位，忽略首尾斜杠与大小写），不是随机的。
   两台设备各自把同一个目录添加成媒体库，必须自己算出同一个 id——item id 是
@@ -277,26 +266,33 @@ POST /api/sync/pull       # 拉回并合并
 
 ## 持续集成
 
-`.github/workflows/build.yml`：推送到 master / main、开 PR 或手动触发时跑三件事。
+`.github/workflows/build.yml`：推送到 master / main、打 `v*` 标签、开 PR 或手动触发时运行。
 
-| Job | 平台 | 产物 |
+| Job | 平台 | 做什么 |
 | --- | --- | --- |
-| `test` | ubuntu | `:core:jvmTest`，报告作为 artifact |
-| `msi` | windows | `composeApp/build/compose/binaries/main/msi/*.msi` |
-| `apk` | ubuntu | `composeApp/build/outputs/apk/debug/*.apk` |
+| `test` | ubuntu | `:core:jvmTest`；同时解析版本标签与安装包版本，供后面的 job 使用 |
+| `build-android` | ubuntu | 编译 FFmpeg 解码库（有缓存），`assembleRelease` 出未签名 APK，再检查 APK 里的解码库 |
+| `sign-android` | ubuntu | 用 SDK 自带的 `apksigner` 签名；只在 master / main / 标签的推送上运行 |
+| `build-desktop-windows` | windows | `:composeApp:desktopTest`，拉 libmpv，`packageMsi` |
+| `build-desktop-linux`、`build-desktop-macos` | ubuntu、macos | `packageDeb`、`packageDmg` |
+| `publish-ci` | ubuntu | master 推送：把四个包和 `update.json` 放到 `ci` 预发布上，清单推到 `updates` 分支 |
+| `release` | ubuntu | `v*` 标签：建 GitHub Release，同样发布清单 |
+| `notify-telegram` | ubuntu | 把签名 APK 和各平台的成败发到 Telegram；没配 secret 就跳过 |
 
-打 `v*` 标签时多跑一个 `release` job，把 MSI 与 APK 传到对应的 GitHub Release。
+几个不显然的地方：
 
-两个不显然的地方：
-
-- **MSI 需要 WiX Toolset 3**。jpackage 用它生成 MSI，且不接受 WiX 4/5；
-  新的 runner 镜像不再预装，所以 workflow 里用 choco 装了 3.11.2。
+- **MSI 需要 WiX Toolset 3**。jpackage 用它生成 MSI，且不接受 WiX 4/5；runner 镜像里有 3.x 就直接用，
+  没有才用 choco 装。
 - **Windows 那个 job 会先拉 libmpv**（`scripts/fetch-libmpv.ps1`），拉到才有内置播放器。
   这一步是 `continue-on-error`：拉不到照样出 MSI，只是那个包退回外置播放器。
   `:composeApp:desktopTest` 也挂在这个 job 上，因为它是唯一已经在配置并构建 composeApp 的 runner。
-- **APK 是 debug 版**。没有密钥库的 release 包是未签名的，装不上。要出 release：
-  把密钥库 base64 后存进仓库 secret，在 `composeApp/build.gradle.kts` 里加
-  `signingConfigs`，再把 job 换成 `assembleRelease`。
+- **APK 是 release 变体，签名在单独的 job 里做**。`isMinifyEnabled` 故意关着：应用内嵌了扫描 / 刮削 / SQLite
+  这套 core，并依赖 kotlinx.serialization 的反射，没有一套整理过的 keep 规则，R8 会在运行时把它们裁掉。
+  签名用的四个 secret（`SIGNING_KEY_BASE64`、`ALIAS`、`KEY_STORE_PASSWORD`、`KEY_PASSWORD`）只在
+  `sign-android` 里出现，密码经环境变量交给 `apksigner`；fork 来的 PR 拿不到它们，只会得到未签名的 APK。
+- **第三方 action 钉在提交哈希上**，workflow 的默认权限是只读，只有两个发布 job 自己申请写权限。
+- **Android 的 DTS / TrueHD 解码库在 CI 里现编**（`scripts/build-ffmpeg-decoder.sh`，LGPL，四个 ABI），
+  见 `ffmpeg-decoder/README.md`。
 
 ## 桌面端的应用内播放
 
@@ -510,7 +506,8 @@ PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--
 是为了以后改包名时不会惄无声息地把所有已装副本变成孤儿。
 
 没有要先启动的服务端，也没有令牌要填：应用一开就是首页。WebDAV 地址与刮削 API Key
-在「设置」里填，或者用环境变量（适合无界面的容器部署）：
+在「设置」里填，或者用环境变量预置——启动时读取，盖过 `config.json` 里的同名项，
+并且会在下一次保存设置时一起写进 `config.json`：
 
 ```bash
 DAVIEW_WEBDAV_URL=https://webdav.example.com/webdav
@@ -523,6 +520,11 @@ DAVIEW_DATA=./run           # 数据目录（config.json + daview.db + 图片缓
 ```
 
 > 凭据只写在数据目录下的 `config.json`，该目录已在 `.gitignore` 中。
+>
+> `config.json` 解析不了时（写到一半断电、磁盘满），应用从默认设置启动，原文件改名保留为
+> `config.json.unreadable-<时间>`，不会被下一次保存覆盖。
+>
+> 桌面端的日志在 `<数据目录>/logs/daview.log`：当前文件加三个 2 MB 的旧文件，没人捕获的异常也记在里面。
 
 ## 目录结构
 
@@ -533,6 +535,8 @@ core/        KMP（jvm / android）：WebDAV、扫描、命名解析、刮削、
 composeApp/  Compose Multiplatform 客户端（androidMain / desktopMain）
              src/app 同时注册进两个 JVM target——:core 的源码也是这么编的，
              所以 UI 能直接看见它，不必为「只有一个实现的接口」再加一层
+ffmpeg-decoder/  Android 的 FFmpeg 音频解码（media3 的 decoder_ffmpeg，LGPL）；`.so` 由脚本编出来，不在 git 里
+scripts/     拉 libmpv、编 FFmpeg 解码库、生成更新清单
 docs/        架构说明与实测记录
 
 共享源码放在 `src/core`（客户端是 `src/app`），**不能**放 `src/main`——传统 Android DSL
@@ -565,8 +569,8 @@ UP-TO-DATE，APK 里带的是旧代码。
 - **Android 播放器的新交互只过了编译**：手势、锁屏、字幕文件加载都没在真机上验证过。
 - **Android 上离开外部播放器面板就结束播放**：MX Player / VLC 是另一个应用，DAView 得不到它退出的通知，
   会话留着就只能一直保活下去，所以离开面板时一并结束。桌面能看到进程退出，离开面板不影响播放。
-- **Android 上字幕延迟只对 ASS / SSA 有效**：这类字幕是 DAView 自己画的，可以错开时间；
-  SRT、VTT 和内封字幕交给 Media3 渲染，它没有字幕延迟的接口。
+- **Android 上字幕延迟只对 ASS / SSA 有效**：这类字幕——外挂的和 MKV 内封的——是 DAView 自己画的，
+  可以错开时间；SRT、VTT、PGS 等其余字幕交给 Media3 渲染，它没有字幕延迟的接口。
 - **章节只读 Matroska**：MP4 的章节没有解析；没有章节的文件不会出现章节列表和「跳过片头」。
 - **`keybind` 与 `show-text` 都可能被 mpv 拒绝而毫无动静**：绑不上的键和没人按的键从外面看
   一模一样。所以每个键都试两种写法（`SHARP` / `#`、`ESC` / `ESCAPE`），失败的会在起播 2.5 秒后

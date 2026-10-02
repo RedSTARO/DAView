@@ -1107,7 +1107,10 @@ private fun BackupSection(state: AppState) {
                         ).joinToString("\n")
                     )
                     Spacer(Modifier.height(8.dp))
-                    Hint("观看记录按时间合并，较新的一方为准；媒体库与设置会被写入本机。")
+                    // What a restore does, which is not what sync does: the file
+                    // is taken as it is. This said the newer side would win,
+                    // and an older backup then replaced newer progress here.
+                    Hint("观看记录以这个文件为准，会覆盖本机同一条目的记录；媒体库与设置会被写入本机。")
                 }
             },
             confirmButton = {

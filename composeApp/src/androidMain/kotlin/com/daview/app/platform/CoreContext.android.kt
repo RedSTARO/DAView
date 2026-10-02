@@ -1,5 +1,6 @@
 package com.daview.app.platform
 
+import com.daview.app.BuildInfo
 import com.daview.server.ServerContext
 import com.daview.server.db.AndroidSqlDatabase
 import java.io.File
@@ -22,5 +23,8 @@ private var instance: ServerContext? = null
 fun createCoreContext(): ServerContext = instance ?: run {
     val context = AndroidContextHolder.context
     val dataDir = File(context.filesDir, "daview").apply { mkdirs() }
-    ServerContext(dataDir.toPath(), AndroidSqlDatabase(context, dataDir)).also { instance = it }
+    ServerContext(dataDir.toPath(), AndroidSqlDatabase(context, dataDir)).also {
+        it.appVersion = BuildInfo.VERSION
+        instance = it
+    }
 }

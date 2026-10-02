@@ -33,8 +33,11 @@ GET  <file>                 → 302 → https://<ip>-v3.pd1.cjjd19.com/... ?t=<e
 3. **播放不必经过服务器转发字节。** 签名直链不绑定 IP（用另一台机器的出口
    请求同一条链接仍返回 `206`），也不需要凭据，所以可以直接给播放器或 `<video>`。
 
-第 3 点让 `mode=redirect` 成为默认的低开销路径；只有需要跟踪外置播放器进度时
-才用 `mode=proxy` 让字节流过服务端。
+第 3 点是播放管道有两种模式的原因：`/r/` 把请求 302 到 CDN 直链，零转发，但只在请求边界
+看得到位置；`/p/` 让字节流过管道，外置播放器的进度就是从这里的 `Range` 推算出来的（见第 4 节）。
+
+> 网页端与内嵌的 HTTP 服务端已经移除（`docs/PLAN-LOCAL-FIRST.md`）。下文里凡是写「服务端」的实测结论
+> 仍然成立，只是现在做这件事的是进程内的 `:core`。
 
 ## 2. 媒体库结构
 
@@ -67,32 +70,38 @@ GET  <file>                 → 302 → https://<ip>-v3.pd1.cjjd19.com/... ?t=<e
 
 ## 3. 容器解析
 
-服务端不带 ffmpeg。两个解析器都只读文件的一小部分：
+core 不带 ffmpeg。三个解析器都只读文件的一小部分：
 
 - `MkvProbe`：EBML。`Info` 给时长与 `TimecodeScale`，`Tracks` 给每条轨道的
   编号 / 类型 / 编码 / 语言 / 默认与强制标记 / 分辨率 / 声道数。`SeekHead` 指向
   `Cues` 的位置，`Cues` 解析成 `(时间戳, 绝对字节偏移)` 列表。
 - `Mp4Probe`：ISO-BMFF。只解析 `moov`；`moov` 在文件尾部时按顶层 box 链
   逐个跳读（每次只读 16 字节头），不会下载中间的 `mdat`。
+- `TsProbe`：MPEG-TS 与蓝光的 BDAV（`.ts` / `.m2ts` / `.mts` / `.m2t`）。读节目表得到轨道，
+  读文件两端的时间戳得到时长，所以一个文件读两次、每次一小段。
 
 > 踩过的坑：box 遍历一度用 `Int` 累加偏移，遇到超过 2GB 的 `mdat` 时
 > `size.toInt()` 变负数导致游标倒退、死循环，扫描卡死。现在偏移全程用 `Long`，
 > 并且每层有迭代次数上限；探测线程另有 15 分钟的整体截止时间。
 
-解析是按需的：扫描时最多探测 400 个文件（并发 6），其余在
-`GET /api/items/{id}` 或 `POST /api/playback/start` 时惰性解析并落库。
+解析是按需的：扫描时最多探测 400 个文件（并发 6），其余在打开条目详情（`MediaFacade.item`）
+或开始播放（`MediaFacade.startPlayback`）时惰性解析并落库。
 
 ## 4. 播放会话与进度推算
 
 ```
-POST /api/playback/start
+MediaFacade.startPlayback(request)
   → 会话 { itemId, player, fileSize, runtimeMs, anchorPosition, anchorWallClock }
-  → streamUrl = /api/stream/{itemId}/{name}?session=…&mode=proxy|redirect&token=…
+  → streamUrl = http://127.0.0.1:<临时端口>/<p|r>/<会话 id>/<条目 id>/<文件名>
 
-GET /api/stream/…            每次请求都会调用 onRangeRequest(session, rangeStart)
-  mode=redirect              302 → CDN 直链（零转发，但只在请求边界看得到位置）
-  mode=proxy                 服务端转发字节，并持续调用 onBytesRead(session, offset)
+GET /p/… 或 /r/…             每次请求都会调用 onRangeRequest(session, rangeStart)
+  /r/                        302 → CDN 直链（零转发，但只在请求边界看得到位置）
+  /p/                        管道转发字节，并持续调用 onBytesRead(session, offset)
+GET /t/<会话 id>/<条目 id>/<序号>   外挂字幕，存储给不出直链时的退路
 ```
+
+管道（`PlaybackPipe`）只绑 `127.0.0.1`，端口由系统分配，第一个会话开始时才监听，最后一个会话结束就关闭；
+路径里的会话 id 是请求能被回答的唯一凭据。
 
 位置的三种来源，界面会如实标注：
 
@@ -140,7 +149,8 @@ render API（`MPV_RENDER_API_TYPE_OPENGL`）能把画面渲进自己的 FBO，�
 - RTX Video HDR 必须把结果**呈现**在 PQ / BT.2020 的 swapchain 上。
 
 把帧交给 Skia 合成就没有那条 swapchain 了，HDR 与 RTX 一并失效。所以画面必须由 mpv
-自己的窗口呈现，代价是 Compose 盖不上去——播放控件因此用 mpv 自带的 OSC。
+自己的窗口呈现，代价是 Compose 在同一个窗口里盖不上去——播放控件因此放进另一个浮在画面上的
+透明窗口（README「控件画在哪」）。mpv 自带的 OSC 用不了：嵌在别人窗口里的 mpv 收不到鼠标事件。
 这是个取舍，不是疏忽。
 
 ### 踩过的坑
@@ -228,9 +238,10 @@ render API（`MPV_RENDER_API_TYPE_OPENGL`）能把画面渲进自己的 FBO，�
 `bestMatch` 的阈值只能压低错误率，压不到零，所以留了一条手动通道。
 
 ```
-GET  /api/items/{id}/identify           → 文件夹原名 + 可用源 + 当前 id
-GET  /api/items/{id}/identify/search    → 原始候选（不过滤年份、不算相似度）
-POST /api/items/{id}/identify           → 钉住 provider + id 并重建元数据
+MediaFacade.identifyContext(id)          → 文件夹原名 + 可用源 + 当前 id
+MediaFacade.identifySearch(id, …)        → 原始候选（不过滤年份、不算相似度）
+MediaFacade.identify(id, request)        → 钉住 provider + id 并重建元数据
+MediaFacade.unpin(id)                    → 解除钉住，按文件夹名重新匹配
 ```
 
 三个约束是这个功能能用的前提：
@@ -246,22 +257,22 @@ POST /api/items/{id}/identify           → 钉住 provider + id 并重建元数
    （TMDB 的 `external_ids` 会顺手给出 tvdb id），一律不再 `search()`。
    这条有单元测试守着：`IdentifyTest.a pinned item is never searched again`。
 
-海报地址还带了一个版本号（`/api/images/{id}/primary?v=...`，由远端 URL 算出）。
+海报地址还带了一个版本号（`daview://image/<条目 id>/primary?v=...`，由远端 URL 算出；
+这个 scheme 由应用自己的图片加载器解析到磁盘缓存，不经过任何端口）。
 不带的话条目地址不变，重新指定之后客户端会继续显示自己缓存里的旧海报。
 
 ## 9. 客户端
 
-`shared` 只放 DTO 与 `DaViewClient`（Ktor client，引擎由各平台的 artifact 决定，
-`HttpClient()` 无参构造自动选取）。
+`shared` 只放 DTO（`Models.kt`）和读写备份 / 同步文件用的 `DaViewJson`。
 
 `composeApp` 的平台差异集中在 `platform/Platform.*.kt`：
 
-| 能力 | Android | Desktop | Web |
-| --- | --- | --- | --- |
-| 设置存储 | SharedPreferences | `java.util.prefs` | `localStorage` |
-| 内置播放器 | Media3 / ExoPlayer（ASS 字幕自绘） | libmpv | 无（交给外置 / 标签页） |
-| 外置播放器 | `ACTION_VIEW` 选择器 / MX / VLC | 探测 exe 路径后起进程 | `potplayer://` / `vlc://` |
-| 进程退出可观测 | 否 | 是（用于立即结束会话） | 否 |
+| 能力 | Android | Desktop |
+| --- | --- | --- |
+| 设置存储 | SharedPreferences | `java.util.prefs` |
+| 内置播放器 | Media3 / ExoPlayer（ASS 字幕自绘） | libmpv |
+| 外置播放器 | `ACTION_VIEW` 选择器 / MX / VLC | 探测 exe 路径后起进程 |
+| 进程退出可观测 | 否 | 是（用于立即结束会话） |
 
 ### Android 的 ASS 字幕
 
@@ -324,41 +335,13 @@ Android 一个都没有，片源一般把它们打包在旁边的 `Fonts.rar` �
 - `\frx` 与 `\fry` 用 `android.graphics.Camera` 近似，投影方式与 libass 不同，大角度会有偏差。
 - 换行样式 0 与 3 用最小平方松弛做均分，不复现 libass 在两者之间的具体取舍。
 - 不做禁则处理（行首标点），libass 也不做。
-- 容器内封的 ASS 仍然走 Media3，只有外挂 `.ass` 走自绘——本库扫描结果里没有内封字幕。
+- MKV 内封的 ASS 也走自绘：`EmbeddedAssExtractors` 把字幕块原样取出，不交给 Media3 解析。
+  扫描结果里没列出的内封 ASS 轨仍然交给 Media3。
 
-### 网页端的字体问题
+### 网页端
 
-**结论先写**：现在的构建**不需要**服务端发字体，中文能正常显示——但**首屏那一帧是方框**，
-触发一次重新布局（改窗口大小、切页面、列表重绘）之后就恢复正常。实测环境是 Windows +
-Chromium，宿主机装有中日韩字体；抓包确认 `platformNeedsCjkFont = false` 时页面根本没有
-请求 `/api/font/cjk`，方框也照样在重排后消失。也就是说字形一直是有的，问题出在
-首帧排版时字体尚未就绪、而之后没有任何东西让文本重新测量。
-
-绕过它需要在启动后主动制造一次重排（例如首帧后把根布局的 padding 从 1dp 改成 0dp）。
-这是在给上游渲染器打补丁，所以默认没有加。
-
-下面这张表记录的是**另一件事**：曾经试图把服务器上的字体注入进去，五种方式全部无效。
-既然不注入也能显示中文，这条路已经没有必要走；但那个结论本身仍然成立——
-`platform.Font(identity, bytes)` 在 wasm 上不会被字体解析器接受。
-
-| 尝试 | 结果 |
-| --- | --- |
-| 服务端 `/api/font/cjk` 提供宿主机上的 `simhei.ttf`（9.7 MB，magic `00 01 00 00`，是正规 TTF） | 下载成功，控制台确认 9745792 字节 |
-| `FontFamily(Font("DAViewCJK", bytes))`（`androidx.compose.ui.text.platform.Font`） | 构造不抛异常 |
-| 通过 `MaterialExpressiveTheme(typography = …)` 应用到全部文本样式 | 仍是方框 |
-| 直接给单个 `Text` 传 `fontFamily =` | 仍是方框（拉丁字形也没变，说明字体根本没生效） |
-| `FontFamily.Resolver.preload(family)` 之后再用 | 仍是方框 |
-
-代码保留在 `UiFont.*.kt` 与 `/api/font/cjk`，但 `platformNeedsCjkFont` 在 wasm 上设为
-`false`：既然不注入字体也能渲染中文，每次冷启动下 10 MB 就是纯浪费。
-桌面端与 Android 端走平台字体管理器，不受影响。
-
-**下次从哪儿接着试**：`androidx.compose.ui.text.platform.Font(identity, bytes)` 是
-skiko/JVM 的便利构造，wasm 渲染器并没有把它接进字体解析器——这与上面五种尝试的
-现象一致（family 建得出来、拉丁字形不变、preload 无效）。Compose Multiplatform 在
-网页端的正规路径是把字体放进 `composeResources/font/`，用 `Res.font.*` 配合
-`preloadFont` 加载。代价是仓库里要放一个约 10 MB 的字体（Noto Sans SC 之类的
-OFL 字体），或者在构建时下载。
+已经移除（`f9e49ee`），连同 `DaViewClient`、`/api/font/cjk` 和 `UiFont.*.kt`。当时试过把服务端的中文字体
+注入 wasm 渲染器，五种写法都没有生效；那份记录在这次提交之前的本文件里。
 
 Material 3 Expressive 用到的 `MaterialExpressiveTheme`、`MotionScheme.expressive()`、
 `MaterialShapes`、`ButtonGroup`、`LinearWavyProgressIndicator`、`ContainedLoadingIndicator`、

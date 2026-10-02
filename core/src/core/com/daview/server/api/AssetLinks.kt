@@ -3,15 +3,12 @@ package com.daview.server.api
 /**
  * How the bytes behind an item are addressed for whoever is going to fetch them.
  *
- * The catalogue is the same either way; what differs is who the consumer is. A
- * browser talking to `:server` needs absolute URLs carrying the access token,
- * because an `<img>` tag cannot attach a header. An app holding the core in its
- * own process needs no server at all — it can be handed a scheme its image
- * loader resolves against the local cache, and the storage's own CDN link for
- * video.
- *
- * Keeping that choice behind an interface is what lets one [MediaFacade] serve
- * both without knowing which it is talking to.
+ * An app holding the core in its own process needs no server: artwork gets a
+ * scheme its image loader resolves against the local cache, and video gets an
+ * address on the playback pipe. The interface dates from when a browser was
+ * the other consumer and needed absolute URLs carrying an access token; it is
+ * kept because it is what keeps [MediaFacade] from knowing how the app
+ * addresses its bytes.
  */
 interface AssetLinks {
 

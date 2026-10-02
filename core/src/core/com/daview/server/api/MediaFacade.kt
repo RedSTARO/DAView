@@ -1,6 +1,5 @@
 package com.daview.server.api
 
-import com.daview.server.DAVIEW_VERSION
 import com.daview.server.ServerContext
 import com.daview.server.config.StorageConfig
 import com.daview.server.db.Repository
@@ -20,9 +19,9 @@ import kotlinx.coroutines.withContext
  * HTTP, so an app holding the core in its own process had no way to reach them
  * except by talking to itself over a socket.
  *
- * `:server` is now an adapter over this, and so is the desktop and Android
- * client. One implementation, two front ends; anything that lives in only one
- * of them is a transport concern and belongs there, not here.
+ * The HTTP server that was the other front end has been removed; the desktop
+ * and Android apps are what call this now. Anything that belongs to only one
+ * of them is a platform concern and lives there, not here.
  */
 class MediaFacade(private val context: ServerContext) {
 
@@ -61,14 +60,14 @@ class MediaFacade(private val context: ServerContext) {
     suspend fun info(): ServerInfoDto = io {
         ServerInfoDto(
             name = context.config.serverName,
-            version = DAVIEW_VERSION,
+            version = context.appVersion,
             storageConfigured = context.config.storage.configured,
             libraryCount = context.repository.libraries().size,
             itemCount = context.repository.totalItemCount()
         )
     }
 
-    suspend fun settings(): ServerSettingsDto = io { context.config.toSettingsDto() }
+    suspend fun settings(): ServerSettingsDto = io { context.config.toSettingsDto(context.appVersion) }
 
     suspend fun updateSettings(incoming: ServerSettingsDto): ServerSettingsDto = io {
         val updated = context.updateConfig { current ->
@@ -95,7 +94,7 @@ class MediaFacade(private val context: ServerContext) {
                 )
             )
         }
-        updated.toSettingsDto()
+        updated.toSettingsDto(context.appVersion)
     }
 
     /**
@@ -869,7 +868,7 @@ internal fun DavEntry.toDto() = WebDavEntryDto(
     lastModified = lastModified
 )
 
-internal fun com.daview.server.config.AppConfig.toSettingsDto() = ServerSettingsDto(
+internal fun com.daview.server.config.AppConfig.toSettingsDto(version: String) = ServerSettingsDto(
     storage = StorageSettingsDto(
         url = storage.url,
         username = storage.username,
@@ -887,5 +886,5 @@ internal fun com.daview.server.config.AppConfig.toSettingsDto() = ServerSettings
         tmdbImageBase = scraper.tmdbImageBase
     ),
     serverName = serverName,
-    version = DAVIEW_VERSION
+    version = version
 )

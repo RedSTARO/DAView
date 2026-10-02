@@ -11,10 +11,10 @@ plugins {
  * — everything the app does that is not drawing, built for both the JVM and
  * Android so each app runs it in its own process.
  *
- * There is deliberately no HTTP in here. Serving this over a socket is one
- * possible front end (`:server`, for the web client), not the way the desktop
- * and Android apps reach it: they call in directly, which is why neither of
- * them has to open a port to talk to itself.
+ * There is deliberately no HTTP server in here. The desktop and Android apps
+ * call in directly, which is why neither of them has to open a port to talk to
+ * itself; the web client that needed one, and the `:server` module that served
+ * it, have been removed.
  *
  * Both targets compile the same sources out of `src/core` rather than a shared
  * intermediate source set. Everything in there is plain JVM bytecode that both

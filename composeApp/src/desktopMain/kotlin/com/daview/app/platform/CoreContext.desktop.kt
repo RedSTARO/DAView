@@ -1,5 +1,6 @@
 package com.daview.app.platform
 
+import com.daview.app.BuildInfo
 import com.daview.server.ServerContext
 import com.daview.server.config.ConfigStore
 
@@ -13,4 +14,7 @@ private var instance: ServerContext? = null
 
 @Synchronized
 fun createCoreContext(): ServerContext =
-    instance ?: ServerContext(ConfigStore.defaultDataDir()).also { instance = it }
+    instance ?: ServerContext(ConfigStore.defaultDataDir()).also {
+        it.appVersion = BuildInfo.VERSION
+        instance = it
+    }
