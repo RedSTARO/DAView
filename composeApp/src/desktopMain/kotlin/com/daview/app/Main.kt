@@ -26,6 +26,7 @@ import androidx.compose.ui.window.rememberWindowState
 import com.daview.app.data.ActivePlayback
 import com.daview.app.data.DesktopShortcuts
 import com.daview.app.platform.SettingsStore
+import com.daview.app.platform.SingleInstance
 import com.daview.app.platform.createSettingsStore
 import com.daview.app.ui.DaViewIcon
 import com.daview.app.ui.LocalWindowFullscreen
@@ -49,9 +50,22 @@ import kotlin.system.exitProcess
  * pipe, and only while a player is reading from it.
  */
 fun main() {
+    val dataDir = ConfigStore.defaultDataDir()
+    // Before the library is opened: a second DAView on the same data must not
+    // get as far as the database.
+    if (SingleInstance.takenByAnother(dataDir)) {
+        javax.swing.JOptionPane.showMessageDialog(
+            null,
+            "DAView 已经在运行。\n同一份数据同一时间只能由一个 DAView 打开。",
+            "DAView",
+            javax.swing.JOptionPane.INFORMATION_MESSAGE
+        )
+        exitProcess(0)
+    }
+
     // Before anything else logs. The installed app has no console, so without
     // the file there is nothing to read after something has gone wrong.
-    enableFileLogging(ConfigStore.defaultDataDir())
+    enableFileLogging(dataDir)
     logUncaughtExceptions()
 
     application {
