@@ -115,6 +115,16 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
     override fun close() = sql.close()
 
     companion object {
+        private fun syncRevisionTriggers(table: String, columns: List<String>): List<String> = listOf(
+            "CREATE TRIGGER IF NOT EXISTS sync_${table}_insert AFTER INSERT ON $table " +
+                "BEGIN UPDATE sync_revision SET revision = revision + 1 WHERE id = 1; END",
+            "CREATE TRIGGER IF NOT EXISTS sync_${table}_delete AFTER DELETE ON $table " +
+                "BEGIN UPDATE sync_revision SET revision = revision + 1 WHERE id = 1; END",
+            "CREATE TRIGGER IF NOT EXISTS sync_${table}_update AFTER UPDATE OF ${columns.joinToString()} ON $table " +
+                "WHEN ${columns.joinToString(" OR ") { "NEW.$it IS NOT OLD.$it" }} " +
+                "BEGIN UPDATE sync_revision SET revision = revision + 1 WHERE id = 1; END"
+        )
+
         private val MIGRATIONS: List<List<String>> = listOf(
             listOf(
                 """
@@ -345,7 +355,19 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                 // undone within minutes of being made, by this device's own
                 // earlier upload as readily as by another device's.
                 "ALTER TABLE libraries ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0"
-            )
+            ),
+            listOf(
+                // MAX(updated_at) + COUNT misses edits to a non-maximum row
+                // and same-millisecond writes. A local transaction revision
+                // also detects an edit followed by an undo during upload.
+                "CREATE TABLE IF NOT EXISTS sync_revision (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL)",
+                "INSERT OR IGNORE INTO sync_revision(id, revision) VALUES (1, 0)"
+            ) + syncRevisionTriggers("user_data", listOf(
+                "item_id", "position_ms", "played", "play_count", "favorite", "last_played_at",
+                "audio_stream_index", "subtitle_stream_index", "updated_at"
+            )) + syncRevisionTriggers("libraries", listOf(
+                "id", "name", "kind", "path", "provider_order", "language", "updated_at"
+            )) + syncRevisionTriggers("scrape_pins", listOf("item_id", "provider", "provider_id", "updated_at"))
         )
     }
 }

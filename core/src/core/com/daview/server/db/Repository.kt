@@ -1273,20 +1273,14 @@ class Repository(private val db: Database) {
     }
 
     /**
-     * The same idea for everything the sync file carries: the watch state, the
-     * library definitions and the hand-picked scrape entries, each as its
-     * newest timestamp and its row count.
-     *
-     * The watch state alone used to decide whether there was anything to
-     * upload, so a renamed library or a corrected match stayed on the device
-     * it was made on until something happened to be played.
+     * Transactional change token for shared state. It is independent of wall
+     * clocks, catches equal-timestamp edits and survives process restarts.
+     * Scan bookkeeping, cached metadata and local resume visibility do not
+     * change it. The triggers also cover batch restores and roll back with them.
      */
-    fun syncFingerprint(): List<Long> = db.read { connection ->
-        connection.statement(
-            "SELECT (SELECT COALESCE(MAX(updated_at), 0) FROM user_data), (SELECT COUNT(*) FROM user_data), " +
-                "(SELECT COALESCE(MAX(updated_at), 0) FROM libraries), (SELECT COUNT(*) FROM libraries), " +
-                "(SELECT COALESCE(MAX(updated_at), 0) FROM scrape_pins), (SELECT COUNT(*) FROM scrape_pins)"
-        ).useQuery { rs -> if (rs.next()) (1..6).map { rs.getLongAt(it) } else List(6) { 0L } }
+    fun syncFingerprint(): Long = db.read { connection ->
+        connection.statement("SELECT revision FROM sync_revision WHERE id = 1")
+            .useQuery { rs -> check(rs.next()) { "Sync revision is missing" }; rs.getLongAt(1) }
     }
 
     /** When a watch-state row last changed, or null when there is no such row. */

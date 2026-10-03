@@ -16,8 +16,9 @@ $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { Join-Path $env:LOCALA
 $adb = Join-Path $sdk 'platform-tools/adb.exe'
 $emulator = Join-Path $sdk 'emulator/emulator.exe'
 $serial = "emulator-$Port"
-$avdName = 'DAViewAudit'
+$avdName = 'DAViewAudit_' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
 $emulatorProcess = $null
+$deviceOwned = $false
 $started = [DateTimeOffset]::UtcNow
 $result = [ordered]@{ startedAt = $started.ToString('o'); passed = $false; error = $null; device = $serial }
 $result.uiVariant = if ($ReleaseUiSmoke) { 'release' } else { 'debug' }
@@ -104,7 +105,7 @@ try {
     $env:ANDROID_AVD_HOME = $avdRoot
     $config = @"
 AvdId=$avdName
-avd.ini.displayname=DAView isolated runtime audit
+avd.ini.displayname=$avdName
 avd.ini.encoding=UTF-8
 abi.type=x86_64
 hw.cpu.arch=x86_64
@@ -134,7 +135,9 @@ target=android-36
     # Boot waiting is bounded inside the background worker, never model polling.
     Invoke-Tool $adb @('-s', $serial, 'shell', 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 1; done') 'device-boot' 180000 | Out-Null
     $actualAvd = Invoke-Tool $adb @('-s', $serial, 'emu', 'avd', 'name') 'avd-identity'
-    if ($actualAvd -notmatch "(?m)^$avdName\r?$") { throw 'Connected emulator is not the isolated audit AVD.' }
+    # Windows adb can return CR-CR-LF; compare trimmed lines, not one optional CR.
+    if (@($actualAvd -split "`n" | ForEach-Object { $_.Trim() }) -notcontains $avdName) { throw 'Connected emulator is not the isolated audit AVD.' }
+    $deviceOwned = $true
     Invoke-Tool $adb @('-s', $serial, 'install', '-r', $apk) 'install-app' | Out-Null
     Invoke-Tool $adb @('-s', $serial, 'install', '-r', $testApks[0].FullName) 'install-tests' | Out-Null
     $instrumentation = Invoke-Tool $adb @('-s', $serial, 'shell', 'am', 'instrument', '-w', '-r', 'com.daview.app.test/androidx.test.runner.AndroidJUnitRunner') 'instrumentation' 300000
@@ -180,8 +183,10 @@ target=android-36
     $result.error = $_.Exception.Message
 } finally {
     if ($null -ne $emulatorProcess) {
-        try { Invoke-Tool $adb @('-s', $serial, 'logcat', '-d', '-v', 'threadtime') 'logcat' 15000 | Out-Null } catch { }
-        try { Invoke-Tool $adb @('-s', $serial, 'emu', 'kill') 'shutdown' 15000 | Out-Null } catch { }
+        if ($deviceOwned) {
+            try { Invoke-Tool $adb @('-s', $serial, 'logcat', '-d', '-v', 'threadtime') 'logcat' 15000 | Out-Null } catch { }
+            try { Invoke-Tool $adb @('-s', $serial, 'emu', 'kill') 'shutdown' 15000 | Out-Null } catch { }
+        }
         if (-not $emulatorProcess.WaitForExit(15000)) { $emulatorProcess.Kill($true) }
         $emulatorProcess.Dispose()
     }

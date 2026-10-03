@@ -10,6 +10,7 @@ import com.daview.shared.model.BACKUP_FORMAT
 import com.daview.shared.model.BackupFileDto
 import com.daview.shared.model.BackupSummaryDto
 import com.daview.shared.model.SyncResultDto
+import com.daview.shared.model.MetadataProvider
 import org.slf4j.LoggerFactory
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -46,7 +47,7 @@ class SyncService(
 
     /** Fingerprint of everything the file carries, at the last successful upload. */
     @Volatile
-    private var uploadedFingerprint: List<Long>? = null
+    private var uploadedFingerprint: Long? = null
 
     /**
      * When a pull was last tried, whether or not it worked. Only a successful
@@ -72,8 +73,8 @@ class SyncService(
      * ever wrote would never learn what the others watched — which is what
      * "press 从云端合并 yourself" amounted to.
      *
-     * The upload fingerprint (newest timestamp + row count) means no call site
-     * has to remember to notify this service when progress is written.
+     * The database revision means no call site has to remember to notify
+     * this service when progress is written, even when timestamps tie.
      */
     internal fun tick() {
         // Nothing may escape: a scheduled task that throws once is never run
@@ -208,7 +209,12 @@ class SyncService(
     private fun mergeRemote(dav: WebDavClient, path: String): Merge {
         val read = dav.read(path)
         read.error?.let { return Merge.Unreachable(it) }
-        val raw = read.bytes ?: return Merge.Missing
+        val raw = read.bytes ?: run {
+            // A file removed after our last upload must be recreated even if
+            // nothing changed locally since that successful upload.
+            uploadedFingerprint = null
+            return Merge.Missing
+        }
         val backup = runCatching {
             val document = DaViewJson.parseToJsonElement(raw.decodeToString()) as? JsonObject
                 ?: error("不是 DAView 同步文件")
@@ -224,10 +230,31 @@ class SyncService(
         context.updateConfig {
             it.copy(sync = it.sync.copy(lastPullAt = System.currentTimeMillis(), lastError = null))
         }
-        // Deliberately not touching uploadedFingerprint here. Rows this device
-        // holds and the file does not are still unsent, so calling the merged
-        // state "uploaded" would suppress the upload that carries them.
+        // Another client's PUT can replace our successful upload with an older
+        // snapshot. A merge may leave local data unchanged; the local revision
+        // alone then cannot notice that the remote copy needs those rows back.
+        if (hasUnsentRows(backup)) uploadedFingerprint = null
         return Merge.Applied(summary)
+    }
+
+    private fun hasUnsentRows(remote: BackupFileDto): Boolean {
+        val userTimes = remote.userData.groupBy { it.itemId }.mapValues { (_, rows) -> rows.maxOf { it.updatedAt } }
+        if (context.repository.allUserData().any { local ->
+            val at = userTimes[local.itemId]
+            at == null || local.updatedAt > at
+        }) return true
+        val libraryTimes = remote.libraries.groupBy { it.id }.mapValues { (_, rows) -> rows.maxOf { it.updatedAt } }
+        if (context.repository.libraries().any { local ->
+            val at = libraryTimes[local.id]
+            at == null || local.updatedAt > at
+        }) return true
+        val pinTimes = remote.pins.groupBy { it.itemId }.mapValues { (_, rows) -> rows.maxOf { it.updatedAt } }
+        return context.repository.allPins().any { local ->
+            // Backup export deliberately skips future provider values this
+            // client cannot represent. Do not retry forever trying to send one.
+            if (MetadataProvider.entries.none { it.name == local.provider }) false
+            else pinTimes[local.itemId]?.let { local.updatedAt > it } ?: true
+        }
     }
 
     private sealed interface Merge {

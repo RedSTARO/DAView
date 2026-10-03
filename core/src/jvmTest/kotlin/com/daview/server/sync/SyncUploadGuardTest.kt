@@ -48,6 +48,7 @@ class SyncUploadGuardTest {
     private var declaredLength: Long? = null
 
     private val puts = ConcurrentLinkedQueue<String>()
+    private val putBodies = ConcurrentLinkedQueue<String>()
 
     private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
         createContext("/") { exchange -> handle(exchange) }
@@ -63,7 +64,7 @@ class SyncUploadGuardTest {
             when (it.requestMethod) {
                 "PUT" -> {
                     puts += it.requestURI.path
-                    it.requestBody.readBytes()
+                    putBodies += it.requestBody.readBytes().toString(Charsets.UTF_8)
                     afterPut?.invoke()
                     it.sendResponseHeaders(201, -1)
                 }
@@ -168,5 +169,80 @@ class SyncUploadGuardTest {
         }
         sync.tick()
         assertEquals(2, puts.size, "the completed PUT did not include the edit made while it was in flight")
+    }
+
+    private fun eligibleTick(pull: Boolean = false) {
+        context.updateConfig {
+            it.copy(sync = it.sync.copy(enabled = true, lastUploadAt = null,
+                lastPullAt = if (pull) null else System.currentTimeMillis()))
+        }
+        sync.tick()
+    }
+
+    private fun serve(body: String) { getStatus = 200; getBody = body }
+
+    private fun positionInLastUpload(id: String): Long = com.daview.shared.api.DaViewJson.decodeFromString(
+        com.daview.shared.model.BackupFileDto.serializer(), putBodies.last()
+    ).userData.single { it.itemId == id }.data.positionMs
+
+    @Test
+    fun `an edit below the largest timestamp is still uploaded`() {
+        context.repository.restoreUserData("future", com.daview.shared.model.UserDataDto(positionMs = 10), 1000)
+        context.repository.restoreUserData("edited", com.daview.shared.model.UserDataDto(positionMs = 20), 100)
+        getStatus = 404
+        assertTrue(sync.upload().ok)
+        serve(putBodies.last())
+        context.repository.restoreUserData("edited", com.daview.shared.model.UserDataDto(positionMs = 30), 200)
+        eligibleTick()
+        assertEquals(2, puts.size)
+        assertEquals(30, positionInLastUpload("edited"))
+    }
+
+    @Test
+    fun `a same-timestamp local edit triggers upload without changing the merge tie policy`() {
+        context.repository.restoreUserData("ep", com.daview.shared.model.UserDataDto(positionMs = 10), 100)
+        getStatus = 404
+        assertTrue(sync.upload().ok)
+        serve(putBodies.last())
+        context.repository.restoreUserData("ep", com.daview.shared.model.UserDataDto(positionMs = 20), 100)
+        eligibleTick()
+        assertEquals(2, puts.size)
+        assertEquals(20, positionInLastUpload("ep"))
+    }
+
+    @Test
+    fun `a remote overwrite is repaired even when merging changes no local row`() {
+        context.repository.restoreUserData("ep", com.daview.shared.model.UserDataDto(positionMs = 10), 100)
+        getStatus = 404
+        assertTrue(sync.upload().ok)
+        val oldSnapshot = putBodies.last()
+        context.repository.restoreUserData("ep", com.daview.shared.model.UserDataDto(positionMs = 90), 200)
+        assertTrue(sync.upload().ok)
+        val beforePull = context.repository.syncFingerprint()
+        serve(oldSnapshot) // Another client's late PUT replaced the successful upload.
+        assertTrue(sync.pull().ok)
+        assertEquals(beforePull, context.repository.syncFingerprint())
+        eligibleTick()
+        assertEquals(3, puts.size)
+        assertEquals(90, positionInLastUpload("ep"))
+    }
+
+    @Test
+    fun `a disappeared remote file is recreated with unchanged local data`() {
+        getStatus = 404
+        assertTrue(sync.upload().ok)
+        assertFalse(sync.pull().ok)
+        eligibleTick()
+        assertEquals(2, puts.size)
+    }
+
+    @Test
+    fun `pulling an identical remote copy does not schedule another upload`() {
+        context.repository.restoreUserData("ep", com.daview.shared.model.UserDataDto(positionMs = 10), 100)
+        getStatus = 404
+        assertTrue(sync.upload().ok)
+        serve(putBodies.last())
+        eligibleTick(pull = true)
+        assertEquals(1, puts.size)
     }
 }
