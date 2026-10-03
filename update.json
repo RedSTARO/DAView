@@ -1,0 +1,33 @@
+{
+  "version": "6533738",
+  "packageVersion": "1.0.113",
+  "publishedAt": "2026-10-03T08:25:03Z",
+  "pageUrl": "https://github.com/RedSTARO/DAView/releases/tag/ci",
+  "notes": "CI 构建 6533738（6533738a867c49684bc59b70389e464f90d29d53）\n\n- fix: count a library's entries the way its page lists them, and say queued once\n- ci: never leave the update manifest pointing at deleted packages\n- fix: run the Windows update through encoded PowerShell, not a batch file\n- fix: keep Android's foreground services within the platform's rules\n- fix: let only one desktop DAView open a data directory\n- docs: describe the app that exists, and stop backups saying they came from 1.0.0\n- fix: stop sync undoing local edits, and harden the updater\n- fix: close the gaps a review of the database layer found",
+  "assets": {
+    "android": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-6533738.apk",
+      "name": "DAView-6533738.apk",
+      "sha256": "d97ba3b85c40f8c4772273214f2f8129ad20064ab0bb4875cbde5b1f6589757f",
+      "size": 24404767
+    },
+    "linux": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-6533738.deb",
+      "name": "DAView-6533738.deb",
+      "sha256": "1863478d53a38ab894e81aacd0be6743c53b9c5dc9e937708314c3f4df30a902",
+      "size": 112098988
+    },
+    "macos": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-6533738.dmg",
+      "name": "DAView-6533738.dmg",
+      "sha256": "4e25e17056874728058b0ddc81a148c8b4a5c1ba45452f9fc3c3f04a9b34db86",
+      "size": 131393603
+    },
+    "windows": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-6533738.msi",
+      "name": "DAView-6533738.msi",
+      "sha256": "3c5076144fee2ecb22dc7a86f2a8b8ea084563fcf4c4a3855246770b05ec7d62",
+      "size": 167369219
+    }
+  }
+}
