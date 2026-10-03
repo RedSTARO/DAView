@@ -21,6 +21,7 @@
 | 最低 Android 版本 | minSdk 26 的代码调用 API 33 的读取/URL 方法、API 34 的 Path.of | 用 API 26 可用的有界读取、编码名称重载和 Paths.get | `StreamsTest`、Android lint；[InputStream API](https://developer.android.com/sdk/api_diff/33/changes/java.io.InputStream)、[Path API](https://developer.android.com/reference/java/nio/file/Path) |
 | Android 备份 | 旧版备份只排除 config.json，仍收集含凭据的临时/恢复副本 | Android 11 及更早只备份数据库及其 WAL/SHM、界面首选项 | 备份规则检查、Android lint；未做系统备份/恢复实测 |
 | Android lint | 进度通知缺权限处理、Media3 opt-in 缺失、无用布局与源码不可见 BOM | 修正权限处理和 opt-in，替换无用布局，使用显式 Unicode 转义 | `:composeApp:lintDebug`，0 错误 |
+| Windows 全屏失焦 | AWT 独占全屏在切到其他窗口时最小化 | 当前显示器上的无边框全屏；保留主窗口和视频 HWND，退出时恢复 WINDOWPLACEMENT；关闭时保存进入全屏前的窗口设置 | `WindowsFullscreenTest`，含真实 libmpv 测试图案和焦点转移 |
 
 ## 验证状态
 
@@ -32,6 +33,7 @@
 - 本轮开始时没有可连接的后台回调通道：当前 Windows CLI 没有 `queue`，其 daemon 管理只支持 Unix，桌面 App Server 使用现有进程的 stdio。后台验证不会创建定时轮询或尝试接管该进程。
 - Android 运行验收入口为 `scripts/verify-android-runtime.ps1`：用本机已有 Android 36 x86_64 系统镜像建立独立 AVD，不读取或复制现有模拟器的用户数据。脚本校验 APK 中许可证文本、运行仪器测试、启动应用、保存首页截图/UI 树和 logcat，结束后关闭该测试设备。结果待本轮运行后核验。
 - 可选的 `e07.ass` 真实字幕参考用例在缺少文件时改为 JUnit assumption 跳过，避免空执行被计为通过。
+- 全屏专项验证在 2026-10-03 22:47（Asia/Singapore）完成：桌面 145 项测试，0 失败、0 错误、0 跳过。新增 3 项 Windows 测试验证句柄不重建、恢复原窗口、释放已销毁窗口；显式启用的真实 libmpv 用例让另一个窗口取得焦点，并检查播放进度继续前进、窗口未最小化、退出全屏后原最大化状态及普通窗口矩形恢复。运行产物在本机 `build/audit/fullscreen-focus-02/`。首次运行未配置测试 DLL 路径，实际播放用例未运行；以上数字对应修正路径后的成功运行。
 
 ## 尚未满足的验收项
 

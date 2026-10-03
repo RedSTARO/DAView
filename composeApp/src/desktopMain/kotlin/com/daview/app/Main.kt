@@ -27,6 +27,8 @@ import com.daview.app.data.ActivePlayback
 import com.daview.app.data.DesktopShortcuts
 import com.daview.app.platform.SettingsStore
 import com.daview.app.platform.SingleInstance
+import com.daview.app.platform.WindowsFullscreen
+import com.daview.app.player.MpvNative
 import com.daview.app.platform.createSettingsStore
 import com.daview.app.ui.DaViewIcon
 import com.daview.app.ui.LocalWindowFullscreen
@@ -86,15 +88,8 @@ fun main() {
 
         // What to return to when full screen ends: a window that was maximised
         // before the film should be maximised after it.
-        var beforeFullscreen by remember { mutableStateOf(windowState.placement) }
-        LaunchedEffect(fullscreen.value) {
-            if (fullscreen.value) {
-                if (windowState.placement != WindowPlacement.Fullscreen) beforeFullscreen = windowState.placement
-                windowState.placement = WindowPlacement.Fullscreen
-            } else if (windowState.placement == WindowPlacement.Fullscreen) {
-                windowState.placement = beforeFullscreen
-            }
-        }
+        var beforeFullscreen by remember { mutableStateOf<SavedWindowState?>(null) }
+        var fullscreenError by remember { mutableStateOf<String?>(null) }
 
         // Bytes for an external player come from a socket inside this process,
         // so quitting kills the film that player is showing. Asking first is the
@@ -102,7 +97,7 @@ fun main() {
         var confirmClose by remember { mutableStateOf(false) }
 
         fun quit() {
-            store.remember(windowState, beforeFullscreen)
+            store.remember(if (fullscreen.value) beforeFullscreen ?: windowState.snapshot() else windowState.snapshot())
             exitApplication()
             exitProcess(0)
         }
@@ -131,6 +126,30 @@ fun main() {
                 }
             }
         ) {
+            // AWT's Windows fullscreen path owns the display exclusively and
+            // minimizes on deactivation. Keep the same HWND/Canvas in a normal
+            // borderless window so Alt-Tab does not interrupt the player.
+            val borderless = remember(window) { if (MpvNative.isWindows) WindowsFullscreen(window) else null }
+            LaunchedEffect(fullscreen.value) {
+                try {
+                    if (fullscreen.value) {
+                        if (beforeFullscreen == null) beforeFullscreen = windowState.snapshot()
+                        if (borderless != null) borderless.enter()
+                        else windowState.placement = WindowPlacement.Fullscreen
+                    } else {
+                        if (borderless != null) borderless.close()
+                        else beforeFullscreen?.let { windowState.placement = it.placement }
+                        beforeFullscreen = null
+                    }
+                } catch (e: Exception) {
+                    fullscreen.value = false
+                    fullscreenError = "无法切换全屏：${e.message ?: e::class.simpleName}"
+                }
+            }
+            DisposableEffect(borderless) {
+                onDispose { borderless?.close() }
+            }
+
             // Below this the layout has nowhere left to go: the compact
             // skeleton needs room for a bottom bar and one column of posters.
             LaunchedEffect(window) {
@@ -154,6 +173,16 @@ fun main() {
 
             CompositionLocalProvider(LocalWindowFullscreen provides fullscreen) {
                 App()
+            }
+
+            fullscreenError?.let { message ->
+                com.daview.app.data.ModalMarker()
+                AlertDialog(
+                    onDismissRequest = { fullscreenError = null },
+                    title = { Text("全屏切换失败") },
+                    text = { Text(message) },
+                    confirmButton = { TextButton(onClick = { fullscreenError = null }) { Text("关闭") } }
+                )
             }
 
             if (confirmClose) {
@@ -235,9 +264,12 @@ private fun SettingsStore.savedPosition(): WindowPosition? {
  * Keeps size, place and maximised state across launches. A full-screen window's
  * size is not its own, so what it had before going full screen is kept instead.
  */
-private fun SettingsStore.remember(state: WindowState, beforeFullscreen: WindowPlacement) {
-    val placement = if (state.placement == WindowPlacement.Fullscreen) beforeFullscreen else state.placement
-    putString(KEY_MAXIMIZED, if (placement == WindowPlacement.Maximized) "1" else "0")
+private data class SavedWindowState(val placement: WindowPlacement, val size: DpSize, val position: WindowPosition)
+
+private fun WindowState.snapshot() = SavedWindowState(placement, size, position)
+
+private fun SettingsStore.remember(state: SavedWindowState) {
+    putString(KEY_MAXIMIZED, if (state.placement == WindowPlacement.Maximized) "1" else "0")
     if (state.placement != WindowPlacement.Floating) return
     putString(KEY_WIDTH, state.size.width.value.toString())
     putString(KEY_HEIGHT, state.size.height.value.toString())
