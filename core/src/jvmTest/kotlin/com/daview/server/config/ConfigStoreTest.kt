@@ -7,6 +7,7 @@ import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class ConfigStoreTest {
@@ -51,5 +52,26 @@ class ConfigStoreTest {
 
         assertEquals("Living room", store.current.serverName)
         assertTrue(dir.setAside().isEmpty())
+    }
+
+    @Test
+    fun `a failed recovery move blocks saving until the original file can be preserved`() = withDataDir { dir ->
+        val damaged = """{"storage":{"password":"recover-this-test-password"},"serverName":""""
+        val file = dir.resolve("config.json")
+        file.writeText(damaged)
+        var locked = true
+        val store = ConfigStore(dir) { source, target ->
+            if (locked) throw java.io.IOException("simulated file lock")
+            Files.move(source, target)
+        }
+        assertFailsWith<java.io.IOException> { store.update { it.copy(serverName = "Changed") } }
+        assertEquals(damaged, file.readText(), "a failed backup must not allow an overwrite")
+        assertEquals("DAView", store.current.serverName)
+        assertTrue(dir.setAside().isEmpty())
+
+        locked = false
+        store.update { it.copy(serverName = "Changed") }
+        assertEquals(damaged, dir.setAside().single().readText())
+        assertEquals("Changed", ConfigStore(dir).current.serverName)
     }
 }

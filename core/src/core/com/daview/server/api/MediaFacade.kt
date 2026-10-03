@@ -61,7 +61,7 @@ class MediaFacade(private val context: ServerContext) {
         ServerInfoDto(
             name = context.config.serverName,
             version = context.appVersion,
-            storageConfigured = context.config.storage.configured,
+            storageConfigured = context.webdav() != null,
             libraryCount = context.repository.libraries().size,
             itemCount = context.repository.totalItemCount()
         )

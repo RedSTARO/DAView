@@ -75,13 +75,18 @@ data class AppConfig(
 
 /**
  * Config lives in a single JSON file next to the database. Values may be
- * overridden by environment variables so the secrets never have to be written
- * to disk in a container.
+ * preloaded from environment variables at startup. Those effective settings
+ * are persisted too, just as if they had been entered through the app.
  */
-class ConfigStore(val dataDir: Path) {
+class ConfigStore internal constructor(
+    val dataDir: Path,
+    private val moveUnreadable: (Path, Path) -> Unit
+) {
+    constructor(dataDir: Path) : this(dataDir, { source, target -> Files.move(source, target); Unit })
     private val file: Path = dataDir.resolve("config.json")
     private val lock = ReentrantLock()
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true; encodeDefaults = true }
+    private var unpreservedConfig: Throwable? = null
 
     @Volatile
     private var cached: AppConfig = load()
@@ -123,6 +128,12 @@ class ConfigStore(val dataDir: Path) {
     }
 
     private fun persist(config: AppConfig) {
+        unpreservedConfig?.let { failure ->
+            setAside(failure)
+            if (unpreservedConfig != null) {
+                throw java.io.IOException("无法保留原配置文件，已取消保存；请检查文件权限或占用", failure)
+            }
+        }
         dataDir.createDirectories()
         val tmp = dataDir.resolve("config.json.tmp")
         tmp.writeText(json.encodeToString(AppConfig.serializer(), config))
@@ -139,8 +150,9 @@ class ConfigStore(val dataDir: Path) {
      * name that says what it is, and the log says where it went.
      */
     private fun setAside(failure: Throwable) {
-        val kept = dataDir.resolve("config.json.unreadable-${System.currentTimeMillis()}")
-        val moved = runCatching { Files.move(file, kept) }.isSuccess
+        val kept = dataDir.resolve("config.json.unreadable-${System.currentTimeMillis()}-${System.nanoTime()}")
+        val moved = runCatching { moveUnreadable(file, kept) }.isSuccess
+        unpreservedConfig = if (moved) null else failure
         log.warn(
             "config.json could not be read ({}); starting from defaults{}",
             failure.message?.lineSequence()?.firstOrNull() ?: failure::class.simpleName,

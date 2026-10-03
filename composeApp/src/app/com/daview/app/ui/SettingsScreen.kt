@@ -557,10 +557,12 @@ private fun StorageSection(state: AppState) {
     DirtyTracker(state, "storage", dirty)
 
     fun save() {
+        val submittedPassword = password
         state.saveServerSettings(
             settings.copy(storage = StorageSettingsDto(url = url, username = user, password = password))
-        )
-        password = ""
+        ) { saved ->
+            if (saved && password == submittedPassword) password = ""
+        }
     }
 
     Column(Modifier.padding(horizontal = 20.dp)) {
@@ -666,10 +668,14 @@ private fun ScraperSection(state: AppState) {
     DirtyTracker(state, "scraper", dirty)
 
     fun save(scraper: ScraperSettingsDto = settings.scraper.copy(tmdbApiKey = tmdb, tvdbApiKey = tvdb, bangumiToken = bangumi)) {
-        state.saveServerSettings(settings.copy(scraper = scraper))
-        tmdb = ""
-        tvdb = ""
-        bangumi = ""
+        val submitted = Triple(scraper.tmdbApiKey, scraper.tvdbApiKey, scraper.bangumiToken)
+        state.saveServerSettings(settings.copy(scraper = scraper)) { saved ->
+            if (saved) {
+                if (tmdb == submitted.first) tmdb = ""
+                if (tvdb == submitted.second) tvdb = ""
+                if (bangumi == submitted.third) bangumi = ""
+            }
+        }
     }
 
     Column(Modifier.padding(horizontal = 20.dp)) {

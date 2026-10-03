@@ -5,6 +5,7 @@ import com.daview.server.io.readUpTo
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -75,7 +76,11 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
         .followSslRedirects(true)
         .build()
 
-    private val rootUri: URI = URI.create(config.url.trimEnd('/'))
+    // Parse before accepting a saved configuration. OkHttp also encodes spaces
+    // and Unicode paths consistently with the requests this client will issue.
+    private val rootUri: URI =
+        (config.url.trim().toHttpUrlOrNull()
+            ?: throw WebDavException("WebDAV 地址必须是包含主机名的 http:// 或 https:// 地址")).toUri()
     private val rootPath: String = rootUri.rawPath.trimEnd('/')
 
     private val authHeader: String? = if (config.username.isBlank()) null else

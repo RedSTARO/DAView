@@ -22,6 +22,7 @@
 | Android 备份 | 旧版备份只排除 config.json，仍收集含凭据的临时/恢复副本 | Android 11 及更早只备份数据库及其 WAL/SHM、界面首选项 | 备份规则检查、Android lint；未做系统备份/恢复实测 |
 | Android lint | 进度通知缺权限处理、Media3 opt-in 缺失、无用布局与源码不可见 BOM | 修正权限处理和 opt-in，替换无用布局，使用显式 Unicode 转义 | `:composeApp:lintDebug`，0 错误 |
 | Windows 全屏失焦 | AWT 独占全屏在切到其他窗口时最小化 | 当前显示器上的无边框全屏；保留主窗口和视频 HWND，退出时恢复 WINDOWPLACEMENT；关闭时保存进入全屏前的窗口设置 | `WindowsFullscreenTest`，含真实 libmpv 测试图案和焦点转移 |
+| 配置保存与恢复 | 错误 URL 先持久化再构造客户端，下次启动失败；损坏配置备份失败后仍允许覆盖；保存失败时密码草稿被清空 | 先验证并构造客户端再保存；旧错误地址可在设置中修复；原配置未成功保留则禁止覆盖；只在成功保存后清除本次提交的密码/密钥 | `StorageSettingsTest`、`ConfigStoreTest`，已通过 |
 
 ## 验证状态
 
@@ -36,6 +37,9 @@
 - 可选的 `e07.ass` 真实字幕参考用例在缺少文件时改为 JUnit assumption 跳过，避免空执行被计为通过。
 - 全屏专项验证在 2026-10-03 22:47（Asia/Singapore）完成：桌面 145 项测试，0 失败、0 错误、0 跳过。新增 3 项 Windows 测试验证句柄不重建、恢复原窗口、释放已销毁窗口；显式启用的真实 libmpv 用例让另一个窗口取得焦点，并检查播放进度继续前进、窗口未最小化、退出全屏后原最大化状态及普通窗口矩形恢复。运行产物在本机 `build/audit/fullscreen-focus-02/`。首次运行未配置测试 DLL 路径，实际播放用例未运行；以上数字对应修正路径后的成功运行。
 - 发布产物验收入口为 `scripts/verify-release-artifacts.ps1`：生成当前构建配置的普通/ProGuard Windows 分发目录和 Android release APK；逐字节检查许可资源，并用隔离的 core 数据目录启动两个桌面分发目录，检查窗口、数据库和文件日志。它不安装 MSI、不使用真实存储凭据、不推送或发布。FFmpeg ABI 文件列表单独报告；APK 安装及混淆后的 Android 播放行为仍需运行验收。
+- 首次发布构建的三个任务均成功，但启动校验因 `Process.MainWindowHandle` 返回 0 中止；隔离数据库和日志已创建，现有证据不足以认定应用没有窗口。验证器改为枚举仅属于本次启动及其子进程的可见 AWT 窗口，并保存启动器 stdout/stderr，待重验。
+- 配置修复的最终核心验证在 2026-10-03 23:37（Asia/Singapore）完成：229 项全部通过，无跳过，core lint 无问题（`build/audit/configuration-final-20261003-04/`）。此前同组改动的桌面 145 项无失败、1 项选择性跳过，Android 编译/仪器 APK 组装及应用 lint 已通过（`configuration-release-20261003-02/tests/`）。新增方括号路径用例源于独立 Java 程序复现，HTTP URL 转 URI 改用 `HttpUrl.toUri()` 以避免合法路径被再次拒绝。
+- 第二次组合验证在测试结束后中断，原进程已消失，发布步骤没有最终记录；不计为发布验证成功，也没有凭缺失记录重复启动原任务。
 
 ## 尚未满足的验收项
 

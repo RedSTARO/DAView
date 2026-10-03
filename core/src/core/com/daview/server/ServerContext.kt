@@ -11,6 +11,7 @@ import com.daview.server.media.ScanService
 import com.daview.server.media.StreamService
 import com.daview.server.scraper.MetadataService
 import com.daview.server.storage.WebDavClient
+import com.daview.server.storage.WebDavException
 import java.nio.file.Path
 
 /**
@@ -37,7 +38,14 @@ class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
     val metadata = MetadataService(repository)
 
     @Volatile
-    private var dav: WebDavClient? = buildDav(configStore.current)
+    private var dav: WebDavClient? = try { buildDav(configStore.current) }
+        catch (_: WebDavException) {
+            // Old builds could persist an invalid URL before construction
+            // failed. Keep the settings available so the user can repair them.
+            org.slf4j.LoggerFactory.getLogger(ServerContext::class.java)
+                .warn("存储地址无效，请在设置中修正；已保留原配置")
+            null
+        }
 
     val images = ImageCache(dataDir) { path ->
         // Artwork the scanner found beside the video. It lives on the share, so
@@ -71,10 +79,17 @@ class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
 
     fun webdav(): WebDavClient? = dav
 
+    @Synchronized
     fun updateConfig(transform: (AppConfig) -> AppConfig): AppConfig {
-        val previous = configStore.current.storage
-        val updated = configStore.update(transform)
-        if (updated.storage != previous) dav = buildDav(updated)
+        var prepared = dav
+        val updated = configStore.update { previous ->
+            transform(previous).also { next ->
+                // Validate/construct first. A failure must leave both the file
+                // and the running client on the previous configuration.
+                if (next.storage != previous.storage) prepared = buildDav(next)
+            }
+        }
+        dav = prepared
         return updated
     }
 
