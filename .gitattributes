@@ -5,3 +5,7 @@
 # against FFmpeg's own COPYING.LGPLv2.1 and against the repository's copies.
 /scripts/build-ffmpeg-decoder.sh text eol=lf
 /ffmpeg-decoder/src/main/assets/licenses/** text eol=lf
+/LICENSE text eol=lf
+/NOTICE text eol=lf
+/composeApp/src/androidMain/assets/licenses/** text eol=lf
+/composeApp/nativeResources/common/licenses/** text eol=lf

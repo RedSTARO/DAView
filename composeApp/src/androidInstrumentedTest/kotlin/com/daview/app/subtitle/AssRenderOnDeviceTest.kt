@@ -188,7 +188,7 @@ class AssRenderOnDeviceTest {
                 .getExternalFilesDir("assrender"),
             "e07.ass"
         )
-        if (!file.isFile) return
+        org.junit.Assume.assumeTrue("Optional reference fixture e07.ass is not installed", file.isFile)
         val fonts = AssFonts(null)
         val renderer = AssRenderer(fonts)
         renderer.script = AssScript.parse(AssSource.decode(file.readBytes()))

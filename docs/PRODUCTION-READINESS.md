@@ -30,15 +30,17 @@
 - `:core:lintDebug`：0 问题；`:composeApp:lintDebug`：0 错误、12 警告。警告涉及 PiP 过渡建议、冗余 SDK 判断/资源目录、Modifier 参数顺序和 KTX 建议；未通过屏蔽规则或基线文件隐藏错误。
 - 验证由 `scripts/verify-production.ps1` 启动的一个 Gradle 进程执行。可复核本机 `build/audit/production-20261003-final/` 下的 `gradle.log`、`inputs.sha256` 和 `result.json`。脚本只有在 Gradle 成功且验证期间源文件未变化时才标记 `verified=true`。
 - 本轮开始时没有可连接的后台回调通道：当前 Windows CLI 没有 `queue`，其 daemon 管理只支持 Unix，桌面 App Server 使用现有进程的 stdio。后台验证不会创建定时轮询或尝试接管该进程。
+- Android 运行验收入口为 `scripts/verify-android-runtime.ps1`：用本机已有 Android 36 x86_64 系统镜像建立独立 AVD，不读取或复制现有模拟器的用户数据。脚本校验 APK 中许可证文本、运行仪器测试、启动应用、保存首页截图/UI 树和 logcat，结束后关闭该测试设备。结果待本轮运行后核验。
+- 可选的 `e07.ass` 真实字幕参考用例在缺少文件时改为 JUnit assumption 跳过，避免空执行被计为通过。
 
 ## 尚未满足的验收项
 
-- Android 真机：目前 `adb devices -l` 没有连接设备。后台/前台切换、锁屏、画中画、配置重建、通知拒绝和前台服务超时仍需运行验收。
+- Android 真机：目前 `adb devices -l` 没有连接设备。模拟器测试另行执行；后台/前台切换、锁屏、画中画、配置重建、通知拒绝和前台服务超时仍需运行验收。
 - 桌面真实播放器：原生接口替身测试不能证明 libmpv、显示驱动、HDR、全屏浮层在安装包内的行为。需要实际安装包和播放源验收。
 - Linux/macOS 安装包和两端从旧版升级：本轮尚无运行证据。
 - 离线旧数据：已发生的文件碰撞污染、远端同大小内容替换，无法仅凭长度自动发现。新路径分配和续传检查不能证明旧文件正确。
 - 同步并发：上传前合并缩小了丢数据窗口；不支持条件写入的 WebDAV 仍无法保证两个设备同时 PUT 时不互相覆盖。
 - 发布配置：开始本轮前工作区已有 `composeApp/build.gradle.kts` 和两份 ProGuard 规则的未提交改动；它们独立于本轮审查修复，发布前仍需验证 R8/ProGuard 后的安装包及映射文件归档。
-- 许可证：根目录仍无项目 LICENSE；已有 README 说明 Windows 内置 libmpv 构建采用 GPLv3。项目许可证及实际分发方案仍待明确。
+- 项目许可证：用户授权选择开源许可证后，DAView 自有代码已采用 `GPL-3.0-or-later`，根目录 `LICENSE` 为 GNU 官方完整文本。第三方声明继续适用。Windows 内置 libmpv 及其依赖的对应源码、构建信息和实际安装包中的许可材料仍需逐项验证；选定项目许可证并不自动关闭这些发布验收项。
 
 以上缺口关闭前，不能据单元测试通过宣称应用已达到生产级别。

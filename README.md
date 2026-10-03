@@ -8,6 +8,18 @@ RTX Video Super Resolution 与 RTX Video HDR），也可以把播放交给 PotPl
 技术栈：**Kotlin Multiplatform + Compose Multiplatform + Material 3 Expressive**。
 桌面端与 Android 端各自跑一份 core，设备之间只通过存储上的一个同步文件对齐。
 
+DAView 自有代码采用 **GNU GPL v3 或更新版本（SPDX: `GPL-3.0-or-later`）**，
+全文见 [LICENSE](LICENSE)。这允许使用、研究、修改和再分发；再分发时须遵守许可证的
+源码提供、许可声明等条件。项目不提供担保。第三方代码及库保留各自的许可证，
+包括 `ffmpeg-decoder` 中的 Apache-2.0、LGPL 和其他许可声明；项目许可证不替代这些声明。
+
+Copyright (C) 2026 DAView contributors.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later version.
+This program is distributed without any warranty; see [LICENSE](LICENSE).
+
 ```
 每个应用自己跑一份 core，进程内直接调用，不经过 socket
 ┌──────────────────────────────────────┐   WebDAV / CDN 直链
