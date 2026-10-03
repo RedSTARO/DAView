@@ -286,8 +286,8 @@ WebDAV 上的一个文件，别的设备读回来合并。
 | `test` | ubuntu | `:core:jvmTest`；同时解析版本标签与安装包版本，供后面的 job 使用 |
 | `build-android` | ubuntu | 编译 FFmpeg 解码库（有缓存），`assembleRelease` 出未签名 APK，再检查 APK 里的解码库 |
 | `sign-android` | ubuntu | 用 SDK 自带的 `apksigner` 签名；只在 master / main / 标签的推送上运行 |
-| `build-desktop-windows` | windows | `:composeApp:desktopTest`，拉 libmpv，`packageMsi` |
-| `build-desktop-linux`、`build-desktop-macos` | ubuntu、macos | `packageDeb`、`packageDmg` |
+| `build-desktop-windows` | windows | `:composeApp:desktopTest`，拉 libmpv，`packageReleaseMsi` |
+| `build-desktop-linux`、`build-desktop-macos` | ubuntu、macos | `packageReleaseDeb`、`packageReleaseDmg` |
 | `publish-ci` | ubuntu | master 推送：把四个包和 `update.json` 放到 `ci` 预发布上，清单推到 `updates` 分支 |
 | `release` | ubuntu | `v*` 标签：建 GitHub Release，同样发布清单 |
 | `notify-telegram` | ubuntu | 把签名 APK 和各平台的成败发到 Telegram；没配 secret 就跳过 |
@@ -299,8 +299,11 @@ WebDAV 上的一个文件，别的设备读回来合并。
 - **Windows 那个 job 会先拉 libmpv**（`scripts/fetch-libmpv.ps1`），拉到才有内置播放器。
   这一步是 `continue-on-error`：拉不到照样出 MSI，只是那个包退回外置播放器。
   `:composeApp:desktopTest` 也挂在这个 job 上，因为它是唯一已经在配置并构建 composeApp 的 runner。
-- **APK 是 release 变体，签名在单独的 job 里做**。`isMinifyEnabled` 故意关着：应用内嵌了扫描 / 刮削 / SQLite
-  这套 core，并依赖 kotlinx.serialization 的反射，没有一套整理过的 keep 规则，R8 会在运行时把它们裁掉。
+- **APK release 启用 R8 压缩、混淆和资源裁剪，桌面 release 包启用 ProGuard**。反射、JNI、服务加载器的
+  保留规则在 `composeApp/proguard-android.pro` 和 `composeApp/proguard-desktop.pro`。
+  每个平台的映射单独压缩归档，附源提交、版本及构建产物 SHA-256；Android 哈希对应签名前的 APK。
+  CI artifact 保留 90 天，当前 CI 预发布及正式标签 Release 同时附带映射 ZIP。诊断旧版本时须使用同次构建的映射。
+  签名在单独的 job 里做。
   签名用的四个 secret（`SIGNING_KEY_BASE64`、`ALIAS`、`KEY_STORE_PASSWORD`、`KEY_PASSWORD`）只在
   `sign-android` 里出现，密码经环境变量交给 `apksigner`；fork 来的 PR 拿不到它们，只会得到未签名的 APK。
 - **第三方 action 钉在提交哈希上**，workflow 的默认权限是只读，只有两个发布 job 自己申请写权限。
@@ -503,7 +506,7 @@ PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--
 ```bash
 ./gradlew :composeApp:run                        # 桌面端
 ./gradlew :composeApp:assembleDebug              # Android APK
-./gradlew :composeApp:packageMsi                 # 桌面安装包（Windows）
+./gradlew :composeApp:packageReleaseMsi                 # 桌面安装包（Windows）
 ```
 
 安装包里带的版本号不是文件名上那个人看的标签，而是 **`MAJOR.MINOR.PATCH`**，
@@ -560,7 +563,7 @@ docs/        架构说明与实测记录
 UP-TO-DATE，APK 里带的是旧代码。
 
 `core` 的两个 target 编译同一份源码。唯一真正有平台差异的是 SQL 驱动
-（JDBC / Android SQLite），它是注入进 `ServerContext` 的，所以既不需要 expect/actual，
+（桌面 JDBC / AndroidX 内置 SQLite，避免低版本系统不支持 UPSERT），它是注入进 `ServerContext` 的，所以既不需要 expect/actual，
 也不需要中间 source set。
 ```
 

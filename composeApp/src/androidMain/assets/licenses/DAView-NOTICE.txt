@@ -16,3 +16,11 @@ Media3 FFmpeg extension and the FFmpeg native libraries retain their
 Apache-2.0, LGPL-2.1-or-later and applicable permissive notices. See the
 ffmpeg-decoder sources and the licenses/ffmpeg directory in Android packages.
 Desktop libmpv builds have their own licenses and dependency notices.
+
+Android uses AndroidX SQLite bundled 2.6.1, Copyright The Android Open Source
+Project, under Apache-2.0. Its license is included at
+assets/licenses/sqlite/Apache-2.0.txt in the APK. The bundled
+SQLite engine is in the public domain. Upstream source and release information:
+https://android.googlesource.com/platform/frameworks/support/+/androidx-main/sqlite/
+https://developer.android.com/jetpack/androidx/releases/sqlite
+https://sqlite.org/copyright.html

@@ -53,9 +53,8 @@ kotlin {
         androidMain {
             kotlin.srcDir(core)
             dependencies {
-                // Typed binding for both statements and queries, which
-                // SQLiteDatabase.rawQuery's String[] arguments cannot express.
-                implementation(libs.androidx.sqlite.framework)
+                // API 26's platform SQLite predates the shared UPSERT queries.
+                implementation(libs.androidx.sqlite.bundled)
                 // slf4j-android is a 1.7-era binding that SLF4J 2 ignores, which
                 // left the server silent on the phone. slf4j-simple is a real 2.x
                 // provider and its stderr output lands in logcat.

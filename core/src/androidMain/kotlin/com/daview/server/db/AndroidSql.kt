@@ -1,102 +1,99 @@
 package com.daview.server.db
 
-import android.content.Context
-import android.database.Cursor
-import androidx.sqlite.db.SimpleSQLiteQuery
-import androidx.sqlite.db.SupportSQLiteDatabase
-import androidx.sqlite.db.SupportSQLiteOpenHelper
-import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
+import androidx.sqlite.SQLiteConnection
+import androidx.sqlite.SQLiteStatement
+import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import java.io.File
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 /**
- * [SqlDatabase] over Android's own SQLite.
+ * A bundled engine keeps the shared UPSERT queries working on API 26, whose
+ * system SQLite predates UPSERT. Existing SQLite files keep the same format.
  *
- * Goes through androidx.sqlite rather than SQLiteDatabase directly because
- * `rawQuery` only takes `String[]` arguments, which cannot express a bound null
- * or a real number; `SupportSQLiteQuery` binds by type, matching what JDBC does
- * on the other side.
- *
- * The schema, the queries and the row mapping are the shared ones — only the
- * driver differs.
+ * The native connection is not thread-safe. Hold one reentrant lock for the
+ * entire callback, including cursor consumption and transactions, so other
+ * threads cannot read uncommitted writes or close an active native statement.
  */
-class AndroidSqlDatabase(
-    context: Context,
-    dataDir: File,
-    fileName: String = "daview.db"
-) : SqlDatabase {
-
+class AndroidSqlDatabase(dataDir: File, fileName: String = "daview.db") : SqlDatabase {
     private val lock = ReentrantLock()
-
-    private val helper: SupportSQLiteOpenHelper = FrameworkSQLiteOpenHelperFactory().create(
-        SupportSQLiteOpenHelper.Configuration.builder(context)
-            .name(File(dataDir, fileName).absolutePath)
-            // Migrations are driven by the shared Database class, so the helper
-            // itself has nothing to do on create or upgrade.
-            .callback(object : SupportSQLiteOpenHelper.Callback(1) {
-                override fun onCreate(db: SupportSQLiteDatabase) = Unit
-                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
-            })
-            .build()
-    )
-
-    private val db: SupportSQLiteDatabase by lazy {
-        helper.writableDatabase.apply {
-            query(SimpleSQLiteQuery("PRAGMA journal_mode=WAL")).use { it.moveToFirst() }
-            execSQL("PRAGMA synchronous=NORMAL")
-            execSQL("PRAGMA foreign_keys=ON")
+    private var closed = false
+    private var transactionDepth = 0
+    private var rollbackOnly = false
+    private val db: SQLiteConnection = run {
+        check(dataDir.isDirectory || dataDir.mkdirs()) { "Cannot create database directory" }
+        val opened = BundledSQLiteDriver().open(File(dataDir, fileName).absolutePath)
+        try {
+            opened.execute("PRAGMA journal_mode=WAL")
+            opened.execute("PRAGMA synchronous=NORMAL")
+            opened.execute("PRAGMA foreign_keys=ON")
+            opened.execute("PRAGMA busy_timeout=10000")
+            opened
+        } catch (failure: Throwable) {
+            opened.close()
+            throw failure
         }
     }
+    private val connection = AndroidConnection(db)
 
-    private val connection by lazy { AndroidConnection(db) }
-
-    /**
-     * Deliberately unlocked. [AndroidStatement] is built per call and keeps its
-     * bindings to itself, and SQLiteDatabase is safe to use from several
-     * threads, so serialising reads here bought nothing and made the home
-     * screen's five questions wait for each other.
-     *
-     * This does not turn on write-ahead logging's connection pool, which is
-     * what would let the reads genuinely overlap. `synchronous` is a per
-     * connection setting with no platform API behind it, so a pool would leave
-     * it applied to whichever connection happened to run the PRAGMA — a trade
-     * worth making only with a device to measure it on.
-     */
-    override fun <T> read(block: (SqlConnection) -> T): T = block(connection)
+    override fun <T> read(block: (SqlConnection) -> T): T = lock.withLock {
+        check(!closed) { "Database is closed" }
+        block(connection)
+    }
 
     override fun <T> transaction(block: (SqlConnection) -> T): T = lock.withLock {
-        db.beginTransaction()
+        check(!closed) { "Database is closed" }
+        if (transactionDepth > 0) {
+            transactionDepth++
+            try {
+                return@withLock block(connection)
+            } catch (failure: Throwable) {
+                rollbackOnly = true
+                throw failure
+            } finally {
+                transactionDepth--
+            }
+        }
+        db.execute("BEGIN IMMEDIATE")
+        transactionDepth = 1
+        rollbackOnly = false
         try {
             val result = block(connection)
-            db.setTransactionSuccessful()
+            check(!rollbackOnly) { "A nested transaction failed" }
+            db.execute("COMMIT")
             result
+        } catch (failure: Throwable) {
+            runCatching { db.execute("ROLLBACK") }.exceptionOrNull()?.let(failure::addSuppressed)
+            throw failure
         } finally {
-            db.endTransaction()
+            transactionDepth = 0
+            rollbackOnly = false
         }
     }
 
-    override fun close() = lock.withLock { helper.close() }
+    override fun close() = lock.withLock {
+        check(lock.holdCount == 1) { "Cannot close a database inside its callback" }
+        if (!closed) {
+            db.close()
+            closed = true
+        }
+    }
 }
 
-private class AndroidConnection(private val db: SupportSQLiteDatabase) : SqlConnection {
+private fun SQLiteConnection.execute(sql: String) = prepare(sql).use {
+    while (it.step()) { /* Consume PRAGMA result rows as well as writes. */ }
+}
+
+private class AndroidConnection(private val db: SQLiteConnection) : SqlConnection {
     override fun statement(sql: String): SqlStatement = AndroidStatement(db, sql)
 }
 
-/**
- * Holds the bindings until execution, because Android needs a compiled
- * statement to write and a query object to read, and which one this is only
- * becomes clear when the caller asks.
- */
-private class AndroidStatement(
-    private val db: SupportSQLiteDatabase,
-    private val sql: String
-) : SqlStatement {
-
+private class AndroidStatement(private val db: SQLiteConnection, private val sql: String) : SqlStatement {
     private val bindings = ArrayList<Any?>()
     private val batch = ArrayList<Array<Any?>>()
 
     private fun put(index: Int, value: Any?) {
+        require(index > 0) { "SQL parameters are one-based" }
         while (bindings.size < index) bindings.add(null)
         bindings[index - 1] = value
     }
@@ -119,70 +116,73 @@ private class AndroidStatement(
         batch.clear()
     }
 
-    private fun apply(args: Array<Any?>): Int {
-        val statement = db.compileStatement(sql)
-        statement.use {
+    private fun prepare(args: Array<Any?>): SQLiteStatement {
+        val statement = db.prepare(sql)
+        try {
             args.forEachIndexed { index, value ->
-                val position = index + 1
                 when (value) {
-                    null -> it.bindNull(position)
-                    is Long -> it.bindLong(position, value)
-                    is Int -> it.bindLong(position, value.toLong())
-                    is Double -> it.bindDouble(position, value)
-                    is ByteArray -> it.bindBlob(position, value)
-                    else -> it.bindString(position, value.toString())
+                    null -> statement.bindNull(index + 1)
+                    is Long -> statement.bindLong(index + 1, value)
+                    is Double -> statement.bindDouble(index + 1, value)
+                    is String -> statement.bindText(index + 1, value)
+                    else -> error("Unsupported SQL binding")
                 }
             }
-            return when (sql.trimStart().take(6).uppercase()) {
-                "INSERT" -> if (it.executeInsert() >= 0) 1 else 0
-                "UPDATE", "DELETE" -> it.executeUpdateDelete()
-                else -> {
-                    it.execute()
-                    0
-                }
-            }
+            return statement
+        } catch (failure: Throwable) {
+            statement.close()
+            throw failure
         }
     }
 
-    override fun <T> useQuery(block: (SqlCursor) -> T): T {
-        val cursor = db.query(SimpleSQLiteQuery(sql, bindings.toTypedArray()))
-        return cursor.use { block(AndroidCursor(it)) }
+    private fun apply(args: Array<Any?>): Int {
+        prepare(args).use { while (it.step()) { /* Finish the statement. */ } }
+        // changes() excludes trigger writes and reports zero for ignored
+        // inserts. DDL and PRAGMAs must not return a previous write's count.
+        return when (sql.trimStart().take(6).uppercase()) {
+            "INSERT", "UPDATE", "DELETE", "REPLAC" -> db.prepare("SELECT changes()").use {
+                check(it.step())
+                it.getLong(0).toInt()
+            }
+            else -> 0
+        }
     }
+
+    override fun <T> useQuery(block: (SqlCursor) -> T): T =
+        prepare(bindings.toTypedArray()).use { block(AndroidCursor(it)) }
 
     override fun close() = Unit
 }
 
-private class AndroidCursor(private val cursor: Cursor) : SqlCursor {
+private class AndroidCursor(private val statement: SQLiteStatement) : SqlCursor {
+    private var exhausted = false
+    private val columns by lazy { statement.getColumnNames() }
 
-    override fun next(): Boolean = cursor.moveToNext()
+    override fun next(): Boolean {
+        if (exhausted) return false
+        return statement.step().also { if (!it) exhausted = true }
+    }
 
-    private fun index(column: String): Int = cursor.getColumnIndexOrThrow(column)
+    private fun index(column: String): Int = columns.indexOfFirst { it.equals(column, ignoreCase = true) }
+        .also { require(it >= 0) { "No such column: $column" } }
 
     override fun getString(column: String): String? =
-        index(column).let { if (cursor.isNull(it)) null else cursor.getString(it) }
+        index(column).let { if (statement.isNull(it)) null else statement.getText(it) }
 
-    override fun getLong(column: String): Long =
-        index(column).let { if (cursor.isNull(it)) 0L else cursor.getLong(it) }
-
+    override fun getLong(column: String): Long = getLongOrNull(column) ?: 0L
     override fun getLongOrNull(column: String): Long? =
-        index(column).let { if (cursor.isNull(it)) null else cursor.getLong(it) }
+        index(column).let { if (statement.isNull(it)) null else statement.getLong(it) }
 
-    override fun getInt(column: String): Int =
-        index(column).let { if (cursor.isNull(it)) 0 else cursor.getInt(it) }
-
-    override fun getIntOrNull(column: String): Int? =
-        index(column).let { if (cursor.isNull(it)) null else cursor.getInt(it) }
+    override fun getInt(column: String): Int = getIntOrNull(column) ?: 0
+    override fun getIntOrNull(column: String): Int? = getLongOrNull(column)?.toInt()
 
     override fun getDoubleOrNull(column: String): Double? =
-        index(column).let { if (cursor.isNull(it)) null else cursor.getDouble(it) }
+        index(column).let { if (statement.isNull(it)) null else statement.getDouble(it) }
 
-    // JDBC counts columns from 1; Android's Cursor counts from 0.
+    // The shared interface uses JDBC's one-based column positions.
     override fun getStringAt(index: Int): String? =
-        if (cursor.isNull(index - 1)) null else cursor.getString(index - 1)
-
+        if (statement.isNull(index - 1)) null else statement.getText(index - 1)
     override fun getLongAt(index: Int): Long =
-        if (cursor.isNull(index - 1)) 0L else cursor.getLong(index - 1)
-
-    override fun getIntAt(index: Int): Int =
-        if (cursor.isNull(index - 1)) 0 else cursor.getInt(index - 1)
+        if (statement.isNull(index - 1)) 0L else statement.getLong(index - 1)
+    override fun getIntAt(index: Int): Int = getLongAt(index).toInt()
 }

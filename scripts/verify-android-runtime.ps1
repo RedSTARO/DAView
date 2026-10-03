@@ -1,6 +1,8 @@
 param(
     [string]$OutputDirectory = "",
     [int]$Port = 5580,
+    [int]$ApiLevel = 36,
+    [string]$SystemImageDirectory = "",
     [switch]$ReleaseUiSmoke
 )
 
@@ -51,8 +53,10 @@ try {
         $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $candidate)
         try { $listener.Start() } finally { $listener.Stop() }
     }
-    $imageRelative = 'system-images/android-36/default/x86_64/'
-    if (-not (Test-Path -LiteralPath (Join-Path $sdk ($imageRelative + 'system.img')))) { throw 'Android 36 default x86_64 image is not installed.' }
+    $imageRelative = if ($SystemImageDirectory) { [IO.Path]::GetFullPath($SystemImageDirectory).Replace('\', '/') + '/' } else { "system-images/android-$ApiLevel/default/x86_64/" }
+    $imagePath = if ([IO.Path]::IsPathRooted($imageRelative)) { $imageRelative } else { Join-Path $sdk $imageRelative }
+    if (-not (Test-Path -LiteralPath (Join-Path $imagePath 'system.img'))) { throw "Android $ApiLevel default x86_64 image is not installed." }
+    $result.apiLevel = $ApiLevel
     $env:ANDROID_HOME = $sdk
     $tasks = @(':composeApp:assembleDebug', ':composeApp:assembleDebugAndroidTest')
     if ($ReleaseUiSmoke) { $tasks += ':composeApp:assembleRelease' }
@@ -65,7 +69,7 @@ try {
     if ($testApks.Count -ne 1) { throw 'Expected one instrumentation APK.' }
     $zip = [IO.Compression.ZipFile]::OpenRead($apk)
     try {
-        foreach ($name in @('DAView-GPL-3.0.txt', 'DAView-NOTICE.txt')) {
+        foreach ($name in @('DAView-GPL-3.0.txt', 'DAView-NOTICE.txt', 'sqlite/Apache-2.0.txt')) {
             $entry = $zip.GetEntry("assets/licenses/$name")
             if ($null -eq $entry) { throw "APK is missing $name" }
             $stream = $entry.Open()
@@ -125,10 +129,10 @@ hw.sdCard=no
 disk.dataPartition.size=2G
 image.sysdir.1=$imageRelative
 tag.id=default
-target=android-36
+target=android-$ApiLevel
 "@
     [IO.File]::WriteAllText((Join-Path $avd 'config.ini'), $config, [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText((Join-Path $avdRoot "$avdName.ini"), "avd.ini.encoding=UTF-8`npath=$avd`ntarget=android-36`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $avdRoot "$avdName.ini"), "avd.ini.encoding=UTF-8`npath=$avd`ntarget=android-$ApiLevel`n", [Text.UTF8Encoding]::new($false))
     $emulatorProcess = Start-Process -FilePath $emulator -ArgumentList @('-avd', $avdName, '-port', $Port, '-no-window', '-no-snapshot', '-no-audio', '-no-boot-anim', '-gpu', 'swiftshader_indirect') -WindowStyle Hidden -RedirectStandardOutput (Join-Path $OutputDirectory 'emulator.stdout.log') -RedirectStandardError (Join-Path $OutputDirectory 'emulator.stderr.log') -PassThru
     $result.emulatorProcessId = $emulatorProcess.Id
     Invoke-Tool $adb @('-s', $serial, 'wait-for-device') 'device-connect' 180000 | Out-Null

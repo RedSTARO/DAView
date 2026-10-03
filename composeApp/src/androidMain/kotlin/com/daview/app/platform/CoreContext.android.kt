@@ -23,7 +23,7 @@ private var instance: ServerContext? = null
 fun createCoreContext(): ServerContext = instance ?: run {
     val context = AndroidContextHolder.context
     val dataDir = File(context.filesDir, "daview").apply { mkdirs() }
-    ServerContext(dataDir.toPath(), AndroidSqlDatabase(context, dataDir)).also {
+    ServerContext(dataDir.toPath(), AndroidSqlDatabase(dataDir)).also {
         it.appVersion = BuildInfo.VERSION
         instance = it
     }

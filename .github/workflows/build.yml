@@ -213,11 +213,9 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # The release variant, unsigned. `isMinifyEnabled` stays off in the Gradle
-      # build on purpose: the app embeds the scanning/scraping/SQLite core and
-      # relies on kotlinx.serialization reflection, and R8 without a curated set
-      # of keep rules strips those at runtime. Signing is done as a separate step
-      # below, so this artifact is the input to signing, not a shippable APK.
+      # R8 shrinks and obfuscates release code with the checked-in keep rules.
+      # Preserve the mapping with the source revision and unsigned APK hash;
+      # signing remains a separate job with access to the signing secrets.
       - run: >-
           ./gradlew :composeApp:assembleRelease
           "-PdaviewVersion=${{ needs.test.outputs.version }}"
@@ -233,6 +231,23 @@ jobs:
         run: >-
           bash scripts/build-ffmpeg-decoder.sh --check-apk
           composeApp/build/outputs/apk/release/*-release-unsigned.apk
+
+      - name: 归档 Android R8 映射
+        run: >-
+          python scripts/archive-release-mapping.py
+          --platform android
+          --mapping composeApp/build/outputs/mapping/release/mapping.txt
+          --package-dir composeApp/build/outputs/apk/release
+          --revision "${{ github.sha }}"
+          --version "${{ needs.test.outputs.version }}"
+          --output "mapping-artifacts/DAView-mapping-android-${{ github.sha }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DAView-mapping-android
+          path: mapping-artifacts/DAView-mapping-android-*.zip
+          retention-days: 90
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
@@ -362,18 +377,35 @@ jobs:
       # Gradle `-PdaviewPackageVersion=1` plus `.0.85` as a second argument it
       # reads as a task name. Git Bash passes the same string through untouched,
       # so this is invisible everywhere except the one job that needs it.
-      - run: ./gradlew :composeApp:packageMsi "-PdaviewVersion=${{ needs.test.outputs.version }}" "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
+      - run: ./gradlew :composeApp:packageReleaseMsi "-PdaviewVersion=${{ needs.test.outputs.version }}" "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
       - name: 重命名 MSI
         run: |
-          $pkg = Get-ChildItem composeApp/build/compose/binaries/main/msi -Filter *.msi | Select-Object -First 1
+          $pkg = Get-ChildItem composeApp/build/compose/binaries/main-release/msi -Filter *.msi | Select-Object -First 1
           if (-not $pkg) { throw "MSI package was not produced." }
           Move-Item -LiteralPath $pkg.FullName -Destination (Join-Path $pkg.DirectoryName "DAView-$env:VERSION.msi")
+
+      - name: 归档 windows 混淆映射
+        run: >-
+          python scripts/archive-release-mapping.py
+          --platform windows
+          --mapping composeApp/build/compose/tmp/proguardReleaseJars/mapping.txt
+          --package-dir composeApp/build/compose/binaries/main-release/msi
+          --revision "${{ github.sha }}"
+          --version "${{ needs.test.outputs.version }}"
+          --output "mapping-artifacts/DAView-mapping-windows-${{ github.sha }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DAView-mapping-windows
+          path: mapping-artifacts/DAView-mapping-windows-*.zip
+          retention-days: 90
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: DAView-msi
-          path: composeApp/build/compose/binaries/main/msi/DAView-${{ needs.test.outputs.version }}.msi
+          path: composeApp/build/compose/binaries/main-release/msi/DAView-${{ needs.test.outputs.version }}.msi
           if-no-files-found: error
 
   # ─── Desktop · Linux ────────────────────────────────────────────────────────
@@ -393,18 +425,35 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew :composeApp:packageDeb "-PdaviewVersion=${{ needs.test.outputs.version }}" "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
+      - run: ./gradlew :composeApp:packageReleaseDeb "-PdaviewVersion=${{ needs.test.outputs.version }}" "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
       - name: 重命名 deb
         run: |
-          pkg=$(find composeApp/build/compose/binaries/main/deb -name '*.deb' -print -quit)
+          pkg=$(find composeApp/build/compose/binaries/main-release/deb -name '*.deb' -print -quit)
           test -n "$pkg"
           mv "$pkg" "$(dirname "$pkg")/DAView-${VERSION}.deb"
+
+      - name: 归档 linux 混淆映射
+        run: >-
+          python scripts/archive-release-mapping.py
+          --platform linux
+          --mapping composeApp/build/compose/tmp/proguardReleaseJars/mapping.txt
+          --package-dir composeApp/build/compose/binaries/main-release/deb
+          --revision "${{ github.sha }}"
+          --version "${{ needs.test.outputs.version }}"
+          --output "mapping-artifacts/DAView-mapping-linux-${{ github.sha }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DAView-mapping-linux
+          path: mapping-artifacts/DAView-mapping-linux-*.zip
+          retention-days: 90
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: DAView-deb
-          path: composeApp/build/compose/binaries/main/deb/DAView-${{ needs.test.outputs.version }}.deb
+          path: composeApp/build/compose/binaries/main-release/deb/DAView-${{ needs.test.outputs.version }}.deb
           if-no-files-found: error
 
   # ─── Desktop · macOS ────────────────────────────────────────────────────────
@@ -424,18 +473,35 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - run: ./gradlew :composeApp:packageDmg "-PdaviewVersion=${{ needs.test.outputs.version }}" "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
+      - run: ./gradlew :composeApp:packageReleaseDmg "-PdaviewVersion=${{ needs.test.outputs.version }}" "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
       - name: 重命名 dmg
         run: |
-          pkg=$(find composeApp/build/compose/binaries/main/dmg -name '*.dmg' -print -quit)
+          pkg=$(find composeApp/build/compose/binaries/main-release/dmg -name '*.dmg' -print -quit)
           test -n "$pkg"
           mv "$pkg" "$(dirname "$pkg")/DAView-${VERSION}.dmg"
+
+      - name: 归档 macos 混淆映射
+        run: >-
+          python scripts/archive-release-mapping.py
+          --platform macos
+          --mapping composeApp/build/compose/tmp/proguardReleaseJars/mapping.txt
+          --package-dir composeApp/build/compose/binaries/main-release/dmg
+          --revision "${{ github.sha }}"
+          --version "${{ needs.test.outputs.version }}"
+          --output "mapping-artifacts/DAView-mapping-macos-${{ github.sha }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DAView-mapping-macos
+          path: mapping-artifacts/DAView-mapping-macos-*.zip
+          retention-days: 90
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@v4
         with:
           name: DAView-dmg
-          path: composeApp/build/compose/binaries/main/dmg/DAView-${{ needs.test.outputs.version }}.dmg
+          path: composeApp/build/compose/binaries/main-release/dmg/DAView-${{ needs.test.outputs.version }}.dmg
           if-no-files-found: error
 
   # ─── CI 版本（每次 master 推送）─────────────────────────────────────────────
@@ -475,7 +541,7 @@ jobs:
 
       # The test report lands in dist/ too, and the unsigned APK is the input
       # to signing, not something anyone installs.
-      - name: 只留安装包
+      - name: 保留安装包和对应映射
         run: |
           rm -f dist/*unsigned*.apk
           find dist -type f ! -name 'DAView-*' -delete
@@ -696,6 +762,7 @@ jobs:
             dist/DAView-*.msi
             dist/DAView-*.dmg
             dist/update.json
+            dist/DAView-mapping-*.zip
           body: |
             🎉 **DAView ${{ needs.test.outputs.version }}**
 

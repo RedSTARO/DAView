@@ -247,9 +247,34 @@ android {
     }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // Build and tooling metadata nothing reads at run time. The coroutines
+        // debug probes are for an attached debugger, which a release has none of.
+        resources.excludes += listOf(
+            "/META-INF/*.version",
+            "/META-INF/*.kotlin_module",
+            "/kotlin-tooling-metadata.json",
+            "DebugProbesKt.bin"
+        )
+        // Native libraries compressed in the APK rather than stored for
+        // mapping in place: about half the size to download, extracted once at
+        // install. Every library is still built with 16 KB segment alignment,
+        // which is what 16 KB-page devices need of an extracted library.
+        jniLibs.useLegacyPackaging = true
     }
     buildTypes {
-        getByName("release") { isMinifyEnabled = false }
+        getByName("release") {
+            // Shrinking, optimisation and obfuscation. The APK was 24 MB, 17 of
+            // them dex — most of it Material's extended icon set and library
+            // code the app never calls. The rules that keep what is reached by
+            // name are in proguard-android.pro; the mapping file that turns an
+            // obfuscated stack trace back into names is kept by CI.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-android.pro"
+            )
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -319,6 +344,19 @@ compose.desktop {
             // references JNDI, so it needs java.naming even though nothing here
             // uses a JNDI lookup.
             modules("java.sql", "java.naming")
+        }
+
+        // What the packageRelease* tasks CI builds go through: ProGuard shrinks,
+        // optimises and obfuscates the app's jars before they are packaged —
+        // Material's extended icon set alone is tens of megabytes, of which the
+        // app uses a few dozen icons. proguard-desktop.pro keeps what is reached
+        // by name: libmpv's JNA interface, the SQLite driver, logback. CI keeps
+        // the mapping file next to each package.
+        buildTypes.release.proguard {
+            isEnabled.set(true)
+            optimize.set(true)
+            obfuscate.set(true)
+            configurationFiles.from(project.file("proguard-desktop.pro"))
         }
     }
 }

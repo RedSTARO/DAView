@@ -163,7 +163,7 @@ try {
     if ($apks.Count -ne 1) { throw 'Expected exactly one Android release APK' }
     $zip = [IO.Compression.ZipFile]::OpenRead($apks[0].FullName)
     try {
-        foreach ($name in @('DAView-GPL-3.0.txt','DAView-NOTICE.txt')) {
+        foreach ($name in @('DAView-GPL-3.0.txt','DAView-NOTICE.txt','sqlite/Apache-2.0.txt')) {
             $entry = $zip.GetEntry("assets/licenses/$name")
             if ($null -eq $entry) { throw "Release APK is missing $name" }
             $stream = $entry.Open()
@@ -173,11 +173,12 @@ try {
         }
         $abis = @('arm64-v8a','armeabi-v7a','x86','x86_64')
         $missingNative = @(foreach ($abi in $abis) {
-            foreach ($library in @('libffmpegJNI.so','libavcodec.so','libavutil.so','libswresample.so')) {
+            foreach ($library in @('libffmpegJNI.so','libavcodec.so','libavutil.so','libswresample.so','libsqliteJni.so')) {
                 if ($null -eq $zip.GetEntry("lib/$abi/$library")) { "lib/$abi/$library" }
             }
         })
-        $result.android = @{apk=$apks[0].FullName; bytes=$apks[0].Length; sha256=(Get-FileHash $apks[0].FullName).Hash; licensesVerified=$true; missingFfmpegLibraries=$missingNative}
+        $result.android = @{apk=$apks[0].FullName; bytes=$apks[0].Length; sha256=(Get-FileHash $apks[0].FullName).Hash; licensesVerified=$true; missingNativeLibraries=$missingNative}
+        if ($missingNative.Count -gt 0) { throw "Release APK is missing native libraries: $($missingNative -join ', ')" }
     } finally { $zip.Dispose() }
     $result.inputFilesUnchanged = ($null -eq (Compare-Object $before (Snapshot)))
     if (-not $result.inputFilesUnchanged) { throw 'Source files changed during verification' }

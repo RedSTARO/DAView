@@ -20,6 +20,7 @@
 | 播放生命周期 | 外部播放入口未清理旧会话；退出时切集请求仍写回；清理依赖已取消 UI scope | 统一请求生命周期，分离资源清理与 UI 生存期 | 桌面播放控制回归测试 |
 | 原生与平台状态 | mpv 销毁与其他原生调用并发；Android 生命周期捕获旧 PiP 状态 | 原生调用持有读锁、销毁独占；Android 到 ON_STOP 时暂停 | `MpvPlayerLifecycleTest`；Android 编译 |
 | 最低 Android 版本 | minSdk 26 的代码调用 API 33 的读取/URL 方法、API 34 的 Path.of | 用 API 26 可用的有界读取、编码名称重载和 Paths.get | `StreamsTest`、Android lint；[InputStream API](https://developer.android.com/sdk/api_diff/33/changes/java.io.InputStream)、[Path API](https://developer.android.com/reference/java/nio/file/Path) |
+| Android 数据库版本 | 系统 SQLite 随 Android 版本变化；API 26 的引擎不支持共享仓库使用的 UPSERT | 改用固定版本 AndroidX bundled SQLite；对整个事务/游标生命周期加锁；保留数据库格式与现有迁移 | `AndroidSqlOnDeviceTest` 7 项在 API 36 上通过；API 26 实机未验证；[Android SQLite 版本](https://developer.android.com/reference/android/database/sqlite/package-summary)、[UPSERT 引入版本](https://www.sqlite.org/releaselog/3_24_0.html) |
 | Android 备份 | 旧版备份只排除 config.json，仍收集含凭据的临时/恢复副本 | Android 11 及更早只备份数据库及其 WAL/SHM、界面首选项 | 备份规则检查、Android lint；未做系统备份/恢复实测 |
 | Android lint | 进度通知缺权限处理、Media3 opt-in 缺失、无用布局与源码不可见 BOM | 修正权限处理和 opt-in，替换无用布局，使用显式 Unicode 转义 | `:composeApp:lintDebug`，0 错误 |
 | Windows 全屏失焦 | AWT 独占全屏在切到其他窗口时最小化 | 当前显示器上的无边框全屏；保留主窗口和视频 HWND，退出时恢复 WINDOWPLACEMENT；关闭时保存进入全屏前的窗口设置 | `WindowsFullscreenTest`，含真实 libmpv 测试图案和焦点转移 |
@@ -46,6 +47,9 @@
 - `verify-android-runtime.ps1 -ReleaseUiSmoke` 新增 release 黑盒检查入口：先运行 debug 仪器测试，然后在同一独立 AVD 中移除测试应用，使用临时 QA 证书签名的 release 副本测试首次启动、无效配置拒绝、密码草稿保留和 FFmpeg 可用提示。不会使用正式签名密钥或发布 QA 安装包，结果待运行。
 - Android release 首轮在设备身份校验处中止：Windows adb 实际返回 CR-CR-LF，旧正则只允许一个 CR。已用保存的原始响应验证逐行 trim 的修正；每次运行采用唯一 AVD 名称，只有身份确认后才允许通过 adb 关闭设备。
 - 同步修复及 Android release 复验在 2026-10-04 01:42（Asia/Singapore）完成：核心 239 项全部通过；桌面 145 项无失败、1 项选择性跳过；Android 编译与 lint 通过。在独立 API 36 AVD 中，debug 仪器测试实际通过 23 项、跳过 1 项；QA 签名的 R8 release 包通过首次启动、无效配置拒绝、密码草稿保留和 FFmpeg 可用检查。结果见 `build/audit/sync-and-android-20261004-02/`。
+- 内置 SQLite 后的编译与测试已通过（2026-10-04 02:09）：核心 239 项、桌面 145 项无失败（桌面 1 项选择性跳过），Android 编译/仪器 APK 组装与 lint 通过。02:12 的发布验证中，普通及 ProGuard 桌面目录启动均通过，APK 许可检查发现 AAR 顶层 `META-INF` 许可不会自动进入 APK；已将固定版本 AAR 中的完整 Apache-2.0 文本加入显式 assets 资源，复验待运行。记录位于 `build/audit/bundled-sqlite-release-20261004-01/`。
+- 许可证修正后的发布与运行验证于 2026-10-04 02:16 完成：普通/ProGuard Windows 目录启动通过，APK 的项目及 SQLite 许可逐字节校验通过，四种 ABI 的 FFmpeg 和 SQLite 库齐全。API 36 仪器测试通过 30 项、跳过 1 项，含 7 项数据库用例（UPSERT、参数类型、回滚、并发隔离、平台旧库/WAL 迁移、关闭行为）；R8 release 首次启动、设置拒绝/草稿保留和 FFmpeg 加载检查通过。APK 8,720,636 字节，SHA-256 `4B1B3D2A0AC4C767235B0E58E42558430114726EAD75A2288FC4B76C67215B43`。报告见 `build/audit/bundled-sqlite-release-20261004-02/`。
+- 混淆映射归档脚本已用真实 R8 映射与 APK 验证 ZIP 内容、映射哈希及签名前产物标记；CI YAML 与四个平台的映射归档/标签发布路径通过静态检查。SQLite AAR 四种 ABI 的 ELF 加载段均为 16 KB 对齐。CI 远端整条流水线尚未运行，本轮未推送或发布。
 
 ## 尚未满足的验收项
 
@@ -54,7 +58,8 @@
 - Linux/macOS 安装包和两端从旧版升级：本轮尚无运行证据。
 - 离线旧数据：已发生的文件碰撞污染、远端同大小内容替换，无法仅凭长度自动发现。新路径分配和续传检查不能证明旧文件正确。
 - 同步并发：不支持条件写入的 WebDAV 仍无法保证两个设备同时 PUT 时不互相覆盖。后续拉取补传缺少/较旧行的回归测试已通过；同时间戳时保留本机值的既有冲突规则不变，也没有消除设备时钟偏差。
-- 发布配置：用户已授权将原有 `composeApp/build.gradle.kts` 和两份 ProGuard 规则一起验证并提交。R8 release 设置流程及 ProGuard 桌面目录启动已验证；CI 发布任务与映射文件归档仍需对齐。
+- 发布配置：用户授权的原有压缩/混淆配置已经过上述本机验证；CI 已切换到桌面 `packageRelease*`，各平台归档映射及来源/产物哈希。远端 CI、Linux/macOS 打包及运行仍无本轮证据，不能用 Windows 目录启动替代其验收。
+- Android 8 兼容：API 26 镜像下载命令被自动审批拦截（只返回 `blocked by policy`）；本机当前只有 API 36/36.1 镜像，最低版本设备的实际运行验收仍缺。验证器支持指定 API 和独立镜像目录，不将 API 36 结果当作 Android 8 实测。
 - 项目许可证：用户授权选择开源许可证后，DAView 自有代码已采用 `GPL-3.0-or-later`，根目录 `LICENSE` 为 GNU 官方完整文本。第三方声明继续适用。Windows 内置 libmpv 及其依赖的对应源码、构建信息和实际安装包中的许可材料仍需逐项验证；选定项目许可证并不自动关闭这些发布验收项。
 
 以上缺口关闭前，不能据单元测试通过宣称应用已达到生产级别。

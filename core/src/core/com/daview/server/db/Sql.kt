@@ -53,7 +53,7 @@ interface SqlCursor {
 
 /**
  * Owns the connection and the write lock. Implementations are per platform:
- * JDBC on the desktop and server, Android's own SQLite on the phone.
+ * JDBC on the desktop and server, bundled AndroidX SQLite on the phone.
  */
 interface SqlDatabase : AutoCloseable {
     fun <T> read(block: (SqlConnection) -> T): T

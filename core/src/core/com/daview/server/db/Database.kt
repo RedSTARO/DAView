@@ -5,7 +5,7 @@ package com.daview.server.db
  * up, inspected and moved with the rest of the server data directory.
  *
  * The connection itself comes from a [SqlDatabase], which is where the platform
- * difference lives: JDBC on the desktop and server, Android's own SQLite on the
+ * difference lives: JDBC on the desktop and server, bundled SQLite on the
  * phone. Everything above this line — schema, queries, row mapping — is shared.
  */
 class Database(private val sql: SqlDatabase) : AutoCloseable {
