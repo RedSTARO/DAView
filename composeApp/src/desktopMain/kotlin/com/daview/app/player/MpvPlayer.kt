@@ -3,6 +3,9 @@ package com.daview.app.player
 import com.sun.jna.Pointer
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 /**
  * One playback session, backed by libmpv rendering into a native window.
@@ -20,7 +23,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * rather than Compose widgets: nothing this app draws can appear above that
  * child window.
  */
-class MpvPlayer(private val listener: Listener) : AutoCloseable {
+class MpvPlayer internal constructor(
+    private val listener: Listener,
+    private val mpv: MpvLibrary
+) : AutoCloseable {
+
+    constructor(listener: Listener) : this(listener, MpvNative.library() ?: error("libmpv 未加载"))
 
     interface Listener {
         /** Every log line mpv emits at verbose level or above. */
@@ -46,13 +54,14 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         fun onClientMessage(name: String) {}
     }
 
-    private val mpv: MpvLibrary = MpvNative.library() ?: error("libmpv 未加载")
+    // A read lease covers native calls AND any returned native memory. The
+    // event pump keeps its lease through callbacks, which may re-enter us.
+    // Creation/initialization and destruction are exclusive. No raw handle
+    // escapes these leases, including on the asynchronous close path.
+    private val lifecycle = ReentrantReadWriteLock()
     private var ctx: Pointer? = null
+    private val opened = AtomicBoolean(false)
     private val closed = AtomicBoolean(false)
-    private val destroyPending = AtomicBoolean(false)
-
-    @Volatile
-    private var pump: Thread? = null
 
     /**
      * Creates the instance and hands it the window to draw into.
@@ -61,30 +70,35 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
      * `HWND` on Windows, an `NSView*` on macOS, an X11 window id on Linux.
      */
     fun open(surfaceHandle: Long, config: Config) {
-        val handle = mpv.mpv_create() ?: error("mpv_create 失败")
-        ctx = handle
-        // Past this point there is a native context and, shortly, a thread
-        // waiting on it. Neither is reachable from the caller, which only ever
-        // sees the exception — so a failure has to clean up after itself, or
-        // every failed attempt strands an mpv instance and a live thread.
-        // Initialising is where this really happens: forcing the NVIDIA adapter
-        // on a machine that has none fails right here.
-        try {
-            configure(surfaceHandle, config)
-        } catch (e: Throwable) {
-            close()
-            throw e
+        // Reject a second open before waiting for the pump's long-lived lease.
+        check(!closed.get() && opened.compareAndSet(false, true)) { "播放器已打开或已关闭" }
+        lifecycle.write {
+            check(!closed.get()) { "播放器已关闭" }
+            try {
+                val handle = mpv.mpv_create() ?: error("mpv_create 失败")
+                ctx = handle
+                configure(handle, surfaceHandle, config)
+                // Pre-initialization access is exclusive; the pump cannot take
+                // its read lease until this block finishes.
+                startPump()
+            } catch (e: Throwable) {
+                close()
+                throw e
+            }
         }
     }
 
-    private fun configure(surfaceHandle: Long, config: Config) {
-        val handle = ctx ?: return
+    /** Called only while open() owns the exclusive lifecycle lock. */
+    private fun configure(handle: Pointer, surfaceHandle: Long, config: Config) {
+        fun option(name: String, value: String) {
+            val rc = mpv.mpv_set_option_string(handle, name, value)
+            if (rc < 0) warn("选项 $name=$value 被拒绝: ${mpv.mpv_error_string(rc)}")
+        }
 
         // Before the options, not after: an option mpv rejects is reported by
         // mpv itself, and asking for its log afterwards discards exactly the
         // lines that say what went wrong.
         mpv.mpv_request_log_messages(handle, "v")
-        startPump(handle)
 
         // Options that must be in place before initialize; everything else is
         // set as a property afterwards, which is the same thing to mpv but
@@ -414,17 +428,20 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
 
     // ------------------------------------------------------------ plumbing
 
-    private fun option(name: String, value: String) {
-        val handle = ctx ?: return
-        val rc = mpv.mpv_set_option_string(handle, name, value)
-        if (rc < 0) warn("选项 $name=$value 被拒绝: ${mpv.mpv_error_string(rc)}")
+    private inline fun <T> withHandle(action: (Pointer) -> T): T? {
+        // Check again after locking: close can win while this caller waits for
+        // initialization. An already admitted call keeps its lease until done.
+        if (closed.get()) return null
+        return lifecycle.read {
+            if (closed.get()) null else ctx?.let(action)
+        }
     }
 
     private fun setProperty(name: String, value: String) {
-        val handle = ctx ?: return
-        if (closed.get()) return
-        val rc = mpv.mpv_set_property_string(handle, name, value)
-        if (rc < 0) warn("属性 $name=$value 被拒绝: ${mpv.mpv_error_string(rc)}")
+        withHandle { handle ->
+            val rc = mpv.mpv_set_property_string(handle, name, value)
+            if (rc < 0) warn("属性 $name=$value 被拒绝: ${mpv.mpv_error_string(rc)}")
+        }
     }
 
     /**
@@ -437,11 +454,9 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         runCatching { listener.onLog("daview", "warn", text) }
     }
 
-    private fun property(name: String): String? {
-        val handle = ctx ?: return null
-        if (closed.get()) return null
-        val pointer = mpv.mpv_get_property_string(handle, name) ?: return null
-        return try {
+    private fun property(name: String): String? = withHandle { handle ->
+        val pointer = mpv.mpv_get_property_string(handle, name) ?: return@withHandle null
+        try {
             pointer.getString(0)
         } finally {
             mpv.mpv_free(pointer)
@@ -453,39 +468,25 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
     }
 
     /** The same, for the callers that have something to do about a failure. */
-    private fun commandResult(vararg args: String): Int {
-        val handle = ctx ?: return ERROR_UNINITIALIZED
-        if (closed.get()) return ERROR_UNINITIALIZED
+    private fun commandResult(vararg args: String): Int = withHandle { handle ->
         // The array is NULL-terminated, which is what the trailing null is.
         val rc = mpv.mpv_command(handle, arrayOf(*args, null))
         // Commands fail for reasons that look like nothing at all from the
         // outside — `sub-add` before a file is loaded returns -12 and attaches
         // nothing — so a failure has to leave a trace somewhere.
         if (rc < 0) warn("命令 ${args.joinToString(" ")} 失败: ${mpv.mpv_error_string(rc)}")
-        return rc
-    }
+        rc
+    } ?: ERROR_UNINITIALIZED
 
-    private fun startPump(handle: Pointer) {
-        val thread = Thread({
-            try {
-                pumpEvents(handle)
-            } finally {
-                // Whoever gets here last owns the handle. close() may have given
-                // up waiting for this thread, in which case destroying it there
-                // would have freed a context this thread was still inside.
-                if (destroyPending.compareAndSet(true, false)) {
-                    runCatching { mpv.mpv_terminate_destroy(handle) }
-                }
-            }
-        }, "daview-mpv-events")
-        thread.isDaemon = true
-        pump = thread
-        thread.start()
+    private fun startPump() {
+        Thread({ withHandle { handle -> pumpEvents(handle) } }, "daview-mpv-events")
+            .apply { isDaemon = true }.start()
     }
 
     private fun pumpEvents(handle: Pointer) {
         while (!closed.get()) {
             val event = mpv.mpv_wait_event(handle, WAIT_TIMEOUT_SECONDS) ?: continue
+            if (closed.get()) return
             when (event.getInt(EVENT_ID_OFFSET)) {
                 EVENT_NONE -> Unit
 
@@ -540,37 +541,20 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
     }
 
     /**
-     * Asks mpv to quit and gives the handle up, without waiting for it.
-     *
-     * Tearing mpv down unloads the video output and destroys a D3D11 device,
-     * which takes long enough to be visible and is not something to do on the
-     * thread that draws the window — this is called from `onDispose`, on the
-     * UI thread. So the caller only pays for `quit`, and the waiting happens
-     * elsewhere.
-     *
-     * Destroying a handle another thread is inside `mpv_wait_event` on is
-     * undefined — a JVM crash with no Java stack — so the destroy is a claim
-     * both sides make and only one wins: whichever gets there once the event
-     * thread has actually stopped. If that thread outlives the wait, it
-     * destroys the handle itself on the way out rather than having it pulled
-     * out from under it; and if it never returns, the handle leaks, which
-     * beats freeing memory something is reading.
+     * Rejects new calls immediately, then retires the handle off the UI thread.
+     * The exclusive lock waits for initialization, native calls, returned data
+     * reads and the event pump's callbacks. The pump wakes on its finite timeout;
+     * no quit/wakeup call can race destruction. A stuck native call delays
+     * destruction rather than freeing memory it still owns. close() never takes
+     * the lock itself, so calling it from a listener cannot deadlock on its lease.
      */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        val handle = ctx ?: return
-        ctx = null
-        destroyPending.set(true)
-        runCatching { mpv.mpv_command(handle, arrayOf("quit", null)) }
-        runCatching { mpv.mpv_wakeup(handle) }
-
-        val thread = pump
         Thread({
-            runCatching { thread?.join(JOIN_TIMEOUT_MS) }
-            if (thread == null || !thread.isAlive) {
-                if (destroyPending.compareAndSet(true, false)) {
-                    runCatching { mpv.mpv_terminate_destroy(handle) }
-                }
+            lifecycle.write {
+                val handle = ctx ?: return@write
+                ctx = null
+                runCatching { mpv.mpv_terminate_destroy(handle) }
             }
         }, "daview-mpv-close").apply { isDaemon = true }.start()
     }
@@ -600,7 +584,6 @@ class MpvPlayer(private val listener: Listener) : AutoCloseable {
         /** mpv allows more, but above its own 100 the audio is being amplified. */
         const val MAX_VOLUME = 100
 
-        const val JOIN_TIMEOUT_MS = 2000L
         const val WAIT_TIMEOUT_SECONDS = 0.2
     }
 }

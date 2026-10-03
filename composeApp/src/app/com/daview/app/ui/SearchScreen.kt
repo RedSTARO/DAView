@@ -140,7 +140,7 @@ fun SearchScreen(state: AppState, playback: PlaybackController) {
                 EmptyState(title = "没有匹配的结果", description = "换个关键词试试：片名、原名、演员名或类型都可以。")
 
             else -> Box(Modifier.fillMaxSize()) {
-                BoxWithConstraints(Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxSize()) {
                     LazyVerticalGrid(
                         state = gridState,
                         columns = GridCells.Adaptive(minSize = 150.dp),

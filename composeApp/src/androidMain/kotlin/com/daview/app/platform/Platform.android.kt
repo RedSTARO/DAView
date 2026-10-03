@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import androidx.media3.common.util.UnstableApi
 
 @SuppressLint("StaticFieldLeak")
 object AndroidContextHolder {
@@ -23,6 +24,7 @@ actual object PlatformInfo {
     // Loads the native libraries on first use; a build made without them
     // answers false and simply plays no DTS or TrueHD.
     actual val hasFfmpegDecoders: Boolean
+        @androidx.annotation.OptIn(UnstableApi::class)
         get() = runCatching { androidx.media3.decoder.ffmpeg.FfmpegLibrary.isAvailable() }.getOrDefault(false)
 }
 

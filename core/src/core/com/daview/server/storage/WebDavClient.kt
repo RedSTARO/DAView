@@ -1,6 +1,7 @@
 package com.daview.server.storage
 
 import com.daview.server.config.StorageConfig
+import com.daview.server.io.readUpTo
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import okhttp3.MediaType.Companion.toMediaType
@@ -8,6 +9,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.URI
 import java.net.URLDecoder
@@ -40,7 +42,7 @@ fun interface DirectoryLister {
 }
 
 /**
- * Minimal WebDAV client built on the JDK HTTP client.
+ * Minimal WebDAV client built on OkHttp.
  *
  * Two behaviours of the 123pan endpoint shape this class:
  *  - `GET` on a file answers `302` with a signed, time-limited CDN link that
@@ -64,6 +66,13 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(180, TimeUnit.SECONDS)
         .callTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+
+    // Whole-file reads follow redirects using OkHttp's origin-aware credential
+    // handling. A Range request here could return only a prefix of a sync file.
+    private val fileHttp = http.newBuilder()
+        .followRedirects(true)
+        .followSslRedirects(true)
         .build()
 
     private val rootUri: URI = URI.create(config.url.trimEnd('/'))
@@ -113,7 +122,7 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
             if (!it.isSuccessful) {
                 throw WebDavException("WebDAV PROPFIND 失败: HTTP ${it.code}", it.code)
             }
-            return parseMultiStatus(it.body.string(), relativePath)
+            return parseMultiStatus(readBounded(it.body.byteStream(), LIST_LIMIT).toString(Charsets.UTF_8), relativePath)
         }
     }
 
@@ -131,16 +140,23 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
             runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
         }
         val doc = factory.newDocumentBuilder()
+            .apply { setEntityResolver { _, _ -> throw WebDavException("WebDAV 列表不允许外部 XML 实体") } }
             .parse(xml.byteInputStream(StandardCharsets.UTF_8))
+        if (doc.documentElement.localName != "multistatus" || doc.documentElement.namespaceURI != "DAV:") {
+            throw WebDavException("WebDAV 未返回有效的目录列表")
+        }
 
         val requested = normalise(requestedPath)
         val responses = doc.getElementsByTagNameNS("DAV:", "response")
         val out = ArrayList<DavEntry>(responses.length)
         for (i in 0 until responses.length) {
             val element = responses.item(i) as? Element ?: continue
-            val href = element.childText("href")?.trim() ?: continue
+            val href = element.childText("href")?.trim()?.takeIf { it.isNotEmpty() }
+                ?: throw WebDavException("WebDAV 目录项缺少路径")
             val relative = hrefToRelative(href)
-            if (normalise(relative) == requested) continue
+            element.childText("status")?.let { status ->
+                if (!status.contains(" 200")) throw WebDavException("WebDAV 目录项读取失败: $relative")
+            }
 
             val propstats = element.getElementsByTagNameNS("DAV:", "propstat")
             var isDir = false
@@ -148,17 +164,25 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
             var modified: String? = null
             var etag: String? = null
             var displayName: String? = null
+            var hasResourceType = false
             for (p in 0 until propstats.length) {
                 val propstat = propstats.item(p) as? Element ?: continue
                 val status = propstat.childText("status").orEmpty()
                 if (!status.contains(" 200")) continue
                 val prop = propstat.firstChild("prop") ?: continue
-                if (prop.firstChild("resourcetype")?.firstChild("collection") != null) isDir = true
+                prop.firstChild("resourcetype")?.let { type ->
+                    hasResourceType = true
+                    if (type.firstChild("collection") != null) isDir = true
+                }
                 prop.childText("getcontentlength")?.trim()?.toLongOrNull()?.let { size = it }
                 prop.childText("getlastmodified")?.let { modified = it }
                 prop.childText("getetag")?.let { etag = it.trim('"') }
                 prop.childText("displayname")?.takeIf { it.isNotBlank() }?.let { displayName = it }
             }
+            // Failed child properties do not establish whether it is a file
+            // or directory. Treating this as a listing would let scans prune it.
+            if (!hasResourceType) throw WebDavException("WebDAV 未能读取目录项类型: $relative")
+            if (normalise(relative) == requested) continue
             val name = displayName ?: relative.trimEnd('/').substringAfterLast('/')
             out += DavEntry(
                 name = name,
@@ -174,22 +198,29 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
 
     private fun hrefToRelative(href: String): String {
         val path = runCatching { URI.create(href).rawPath }.getOrNull() ?: href
-        val decoded = URLDecoder.decode(path, StandardCharsets.UTF_8)
-        val decodedRoot = URLDecoder.decode(rootPath, StandardCharsets.UTF_8)
-        return if (decodedRoot.isNotEmpty() && decoded.startsWith(decodedRoot)) {
+        val decoded = decodePath(path)
+        val decodedRoot = decodePath(rootPath)
+        return if (decodedRoot.isNotEmpty() && (decoded == decodedRoot || decoded.startsWith("$decodedRoot/"))) {
             decoded.removePrefix(decodedRoot)
         } else {
             decoded
         }
     }
 
+    // URLDecoder uses form semantics, where '+' means space; a DAV href is a
+    // URI path, so protect literal plus signs before decoding percent escapes.
+    private fun decodePath(path: String): String =
+        URLDecoder.decode(path.replace("+", "%2B"), StandardCharsets.UTF_8.name())
+
     private fun normalise(path: String) = "/" + path.trim('/')
 
     /** File size via `HEAD`, or null when the server does not answer with one. */
     fun size(relativePath: String): Long? {
         val request = request(absoluteUrl(relativePath)).head().build()
-        val response = runCatching { http.newCall(request).execute() }.getOrNull() ?: return null
-        return response.use { it.header("Content-Length")?.toLongOrNull() }
+        val response = runCatching { fileHttp.newCall(request).execute() }.getOrNull() ?: return null
+        return response.use {
+            if (it.isSuccessful) it.header("Content-Length")?.toLongOrNull()?.takeIf { size -> size >= 0 } else null
+        }
     }
 
     /**
@@ -203,7 +234,9 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
             .build()
         val response = runCatching { http.newCall(request).execute() }
             .getOrElse { throw WebDavException("解析直链失败: ${it.message}", cause = it) }
-        return response.use { if (it.code in 300..399) it.header("Location") else null }
+        return response.use {
+            if (it.code in REDIRECT_CODES) it.header("Location")?.let(it.request.url::resolve)?.toString() else null
+        }
     }
 
     /**
@@ -221,24 +254,38 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
      * and reuse it here, which removes a redirect round trip per read.
      */
     fun openRangeAt(url: String, start: Long, end: Long?, useAuth: Boolean): RangeStream {
+        require(start >= 0 && (end == null || end >= start)) { "字节区间无效" }
         val request = request(url, useAuth)
             .get()
             .header("Range", if (end == null) "bytes=$start-" else "bytes=$start-$end")
             .build()
 
-        val response = http.newCall(request).execute()
+        val response = fileHttp.newCall(request).execute()
         if (!response.isSuccessful) {
             val code = response.code
             runCatching { response.close() }
             throw WebDavException("读取字节区间失败: HTTP $code", code)
         }
-        val totalSize = response.header("Content-Range")?.substringAfter('/')?.toLongOrNull()
-            ?: response.header("Content-Length")?.toLongOrNull()
+        val range = response.header("Content-Range")?.let(CONTENT_RANGE::matchEntire)
+        val rangeStart = range?.groupValues?.get(1)?.toLongOrNull()
+        val rangeEnd = range?.groupValues?.get(2)?.toLongOrNull()
+        val rangeTotal = range?.groupValues?.get(3)?.toLongOrNull()
+        val invalidPartial = response.code == 206 &&
+            (rangeStart != start || rangeEnd == null || rangeEnd < start ||
+                (rangeTotal != null && rangeEnd >= rangeTotal))
+        if ((response.code != 200 && response.code != 206) ||
+            (response.code == 200 && start > 0) || invalidPartial) {
+            response.close()
+            throw WebDavException("服务器未返回请求的字节区间", response.code)
+        }
+        val totalSize = if (response.code == 206) rangeTotal else response.body.contentLength().takeIf { it >= 0 }
         return RangeStream(response.body.byteStream(), totalSize, response.code == 206, response)
     }
 
-    fun readFully(relativePath: String, limit: Long = 4L * 1024 * 1024): ByteArray =
-        openRange(relativePath, 0, limit - 1).use { it.stream.readNBytes(limit.toInt()) }
+    fun readFully(relativePath: String, limit: Long = 4L * 1024 * 1024): ByteArray {
+        val result = read(relativePath, limit)
+        return result.bytes ?: throw WebDavException(result.error ?: "文件不存在: $relativePath")
+    }
 
     fun probe(): List<DavEntry> = list("/")
 
@@ -264,7 +311,7 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
             if (it.isSuccessful) {
                 WriteResult(true, it.code, null)
             } else {
-                val detail = runCatching { it.body.string().take(200) }.getOrDefault("")
+                val detail = runCatching { it.body.byteStream().readUpTo(800).toString(Charsets.UTF_8).take(200) }.getOrDefault("")
                 WriteResult(false, it.code, "HTTP ${it.code}" + if (detail.isBlank()) "" else ": $detail")
             }
         }
@@ -290,24 +337,33 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
      * timeout as an empty share would overwrite what every other device wrote.
      */
     fun read(relativePath: String, limit: Long = 32L * 1024 * 1024): ReadResult {
-        val request = request(absoluteUrl(relativePath)).get().build()
-        val response = runCatching { http.newCall(request).execute() }
-            .getOrElse { return ReadResult(error = it.message ?: it::class.simpleName) }
-        response.use {
-            // A signed CDN redirect is how this gateway serves file bodies.
-            if (it.code in 300..399) {
-                val location = it.header("Location")
-                    ?: return ReadResult(error = "${it.code} 跳转但没有 Location")
-                return runCatching {
-                    ReadResult(
-                        bytes = openRangeAt(location, 0, limit - 1, useAuth = false)
-                            .use { range -> range.stream.readBytes() }
-                    )
-                }.getOrElse { cause -> ReadResult(error = cause.message ?: cause::class.simpleName) }
+        require(limit in 1 until Int.MAX_VALUE.toLong()) { "读取上限无效" }
+        return runCatching {
+            val request = request(absoluteUrl(relativePath)).get().build()
+            fileHttp.newCall(request).execute().use {
+                // A CDN 404 can mean an expired signed URL, not a missing DAV
+                // file. Only the original endpoint may establish absence.
+                if ((it.code == 404 || it.code == 410) && it.priorResponse == null) {
+                    return@use ReadResult(missing = true)
+                }
+                if (it.code != 200) return@use ReadResult(error = "HTTP ${it.code}")
+                if (it.body.contentLength() > limit) throw WebDavException("文件超过读取上限 ($limit 字节)")
+                ReadResult(bytes = readBounded(it.body.byteStream(), limit))
             }
-            if (it.code == 404 || it.code == 410) return ReadResult(missing = true)
-            if (!it.isSuccessful) return ReadResult(error = "HTTP ${it.code}")
-            return ReadResult(bytes = it.body.bytes())
+        }.getOrElse { ReadResult(error = it.message ?: it::class.simpleName) }
+    }
+
+    /** Reads at most limit + 1 bytes; never hands a truncated file to a caller. */
+    private fun readBounded(stream: InputStream, limit: Long): ByteArray {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var total = 0L
+        while (true) {
+            val count = stream.read(buffer, 0, minOf(buffer.size.toLong(), limit - total + 1).toInt())
+            if (count < 0) return output.toByteArray()
+            total += count
+            if (total > limit) throw WebDavException("文件超过读取上限 ($limit 字节)")
+            output.write(buffer, 0, count)
         }
     }
 
@@ -320,7 +376,7 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
     )
 
     private fun encodeSegment(segment: String): String =
-        java.net.URLEncoder.encode(segment, StandardCharsets.UTF_8)
+        java.net.URLEncoder.encode(segment, StandardCharsets.UTF_8.name())
             .replace("+", "%20")
             .replace("%2F", "/")
             .replace("*", "%2A")
@@ -340,6 +396,9 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
     }
 
     private companion object {
+        const val LIST_LIMIT = 32L * 1024 * 1024
+        val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
+        val CONTENT_RANGE = Regex("bytes (\\d+)-(\\d+)/(\\d+|\\*)", RegexOption.IGNORE_CASE)
         val XML_MEDIA_TYPE = "application/xml; charset=utf-8".toMediaType()
 
         val HARDENING = listOf(

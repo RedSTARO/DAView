@@ -1,20 +1,22 @@
 package com.daview.app.platform
 
 import android.Manifest
+import android.app.Notification
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 
 /**
  * The notification permission, asked for when a scan or a download starts.
  *
- * That is what the notification is for: it is the only thing between a long
- * scan and the process being reclaimed in the background. Asked on the very
- * first launch instead, the dialog arrived over a blank loading screen before
- * the app had shown anything, with nothing to say why it wanted it.
+ * This permission controls notification visibility. The services still have
+ * to enter the foreground with a notification when permission is denied.
  *
  * The launcher has to be registered while the activity is being created, so the
  * activity registers it and the request is made from wherever the scan starts.
@@ -36,6 +38,24 @@ object NotificationPermission {
         if (owner === activity) {
             owner = null
             launcher = null
+        }
+    }
+
+    /** Updates an existing foreground notification; never replaces startForeground(). */
+    internal fun updateForegroundNotification(context: Context, id: Int, notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) return
+
+        val manager = NotificationManagerCompat.from(context)
+        if (!manager.areNotificationsEnabled()) return
+        try {
+            manager.notify(id, notification)
+        } catch (e: SecurityException) {
+            // Permission can be revoked after the check. Skip this update and
+            // keep watching the work so the service can still stop when done.
+            Log.w("DAView", "Foreground notification update denied", e)
         }
     }
 

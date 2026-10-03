@@ -441,12 +441,13 @@ actual fun InternalPlayer(
         }
     }
 
-    // Leaving the app pauses the film — unless it went to the corner, which is
-    // the one case where leaving means "keep it running".
+    // Visible PiP reaches ON_PAUSE, not ON_STOP. Once stopped (including screen
+    // lock or dismissing PiP), playback must pause regardless of how this player
+    // was created. Do not capture the initial PiP state in this observer.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, player) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP && !inPictureInPicture) player.pause()
+            if (event == Lifecycle.Event.ON_STOP) player.pause()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }

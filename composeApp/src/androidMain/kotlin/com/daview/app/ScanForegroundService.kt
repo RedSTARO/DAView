@@ -11,7 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
+import com.daview.app.platform.NotificationPermission
 import com.daview.app.platform.createCoreContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,7 +69,8 @@ class ScanForegroundService : Service() {
             if (running.isEmpty()) break
             val first = running.first()
             val progress = if (first.total > 0) first.current to first.total else null
-            NotificationManagerCompat.from(this).notify(
+            NotificationPermission.updateForegroundNotification(
+                this,
                 NOTIFICATION_ID,
                 buildNotification(
                     title = if (running.size == 1) "正在扫描 ${first.libraryName}" else "正在扫描 ${running.size} 个媒体库",

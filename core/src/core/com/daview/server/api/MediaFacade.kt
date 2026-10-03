@@ -814,7 +814,7 @@ class MediaFacade(private val context: ServerContext) {
     suspend fun setOfflineDirectory(path: String?): OfflineSettingsDto = io {
         val chosen = path?.trim().orEmpty()
         if (chosen.isNotEmpty()) {
-            runCatching { context.offline.checkWritable(java.nio.file.Path.of(chosen)) }
+            runCatching { context.offline.checkWritable(java.nio.file.Paths.get(chosen)) }
                 .getOrElse { invalid("这个目录不能写入", it.message) }
         }
         context.updateConfig { it.copy(offlineDirectory = chosen) }

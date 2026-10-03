@@ -4,6 +4,7 @@ import org.slf4j.LoggerFactory
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.nio.file.Files
+import java.nio.file.Paths
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
@@ -67,7 +68,7 @@ class ImageCache(
     fun get(remoteUrl: String): Entry? {
         // Artwork the user picked themselves is already a file on this device.
         if (remoteUrl.startsWith(FILE_SCHEME)) {
-            val local = Path.of(remoteUrl.removePrefix(FILE_SCHEME))
+            val local = Paths.get(remoteUrl.removePrefix(FILE_SCHEME))
             if (!local.exists()) return null
             val ext = local.fileName.toString().substringAfterLast('.', "jpg").lowercase()
             return Entry(local, contentType(ext))
@@ -114,7 +115,7 @@ class ImageCache(
     }
 
     private fun write(file: Path, bytes: ByteArray, extension: String): Entry {
-        val tmp = Path.of("$file.tmp")
+        val tmp = Paths.get("$file.tmp")
         Files.write(tmp, bytes)
         Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         return Entry(file, contentType(extension))

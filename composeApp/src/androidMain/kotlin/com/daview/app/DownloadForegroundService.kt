@@ -11,7 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
+import com.daview.app.platform.NotificationPermission
 import com.daview.app.platform.createCoreContext
 import com.daview.shared.model.DownloadState
 import kotlinx.coroutines.CoroutineScope
@@ -75,7 +75,8 @@ class DownloadForegroundService : Service() {
             // The one moving, or the first in line while nothing is.
             val first = active.firstOrNull { it.state == DownloadState.RUNNING } ?: active.first()
             val waiting = first.state == DownloadState.QUEUED && first.note != null
-            NotificationManagerCompat.from(this).notify(
+            NotificationPermission.updateForegroundNotification(
+                this,
                 NOTIFICATION_ID,
                 buildNotification(
                     title = when {

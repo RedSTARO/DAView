@@ -38,6 +38,15 @@ class SyncUploadGuardTest {
     @Volatile
     private var getStatus = 500
 
+    @Volatile
+    private var getBody = ""
+
+    @Volatile
+    private var afterPut: (() -> Unit)? = null
+
+    @Volatile
+    private var declaredLength: Long? = null
+
     private val puts = ConcurrentLinkedQueue<String>()
 
     private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
@@ -55,10 +64,19 @@ class SyncUploadGuardTest {
                 "PUT" -> {
                     puts += it.requestURI.path
                     it.requestBody.readBytes()
+                    afterPut?.invoke()
                     it.sendResponseHeaders(201, -1)
                 }
 
-                "GET" -> it.sendResponseHeaders(getStatus, -1)
+                "GET" -> {
+                    if (declaredLength != null) it.sendResponseHeaders(getStatus, declaredLength!!)
+                    else if (getBody.isEmpty()) it.sendResponseHeaders(getStatus, -1)
+                    else {
+                        val bytes = getBody.toByteArray()
+                        it.sendResponseHeaders(getStatus, bytes.size.toLong())
+                        it.responseBody.write(bytes)
+                    }
+                }
                 else -> it.sendResponseHeaders(405, -1)
             }
         }
@@ -98,5 +116,57 @@ class SyncUploadGuardTest {
         val result = sync.upload()
         assertTrue(result.ok, result.message)
         assertEquals(listOf("/daview-sync.json"), puts.toList())
+    }
+
+    @Test
+    fun `a malformed remote file is preserved for recovery`() {
+        getStatus = 200
+        getBody = "{\"userData\":["
+        val result = sync.upload()
+        assertFalse(result.ok, result.message)
+        assertEquals(0, puts.size, "a truncated remote file must not be overwritten")
+    }
+
+    @Test
+    fun `a valid JSON gateway error is not an empty backup`() {
+        getStatus = 200
+        getBody = """{"error":"temporarily unavailable"}"""
+        assertFalse(sync.upload().ok)
+        assertEquals(0, puts.size)
+    }
+
+    @Test
+    fun `a sync file from a newer format is not overwritten by an older client`() {
+        getStatus = 200
+        getBody = """{"format":"${com.daview.shared.model.BACKUP_FORMAT}","version":2147483647}"""
+        val result = sync.upload()
+        assertFalse(result.ok, result.message)
+        assertEquals(0, puts.size)
+    }
+
+    @Test
+    fun `an oversized remote file is not overwritten`() {
+        getStatus = 200
+        declaredLength = 33L * 1024 * 1024
+        val result = sync.upload()
+        assertFalse(result.ok, result.message)
+        assertEquals(0, puts.size)
+    }
+
+    @Test
+    fun `an edit during upload is still uploaded on the next eligible tick`() {
+        getStatus = 404
+        afterPut = {
+            context.repository.restoreUserData(
+                "episode", com.daview.shared.model.UserDataDto(positionMs = 12_000), updatedAt = 100
+            )
+        }
+        assertTrue(sync.upload().ok)
+        afterPut = null
+        context.updateConfig {
+            it.copy(sync = it.sync.copy(enabled = true, lastUploadAt = null, lastPullAt = System.currentTimeMillis()))
+        }
+        sync.tick()
+        assertEquals(2, puts.size, "the completed PUT did not include the edit made while it was in flight")
     }
 }

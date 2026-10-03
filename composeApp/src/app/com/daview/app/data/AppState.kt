@@ -31,6 +31,7 @@ import com.daview.shared.api.DaViewJson
 import com.daview.shared.model.DownloadDto
 import com.daview.shared.model.DownloadState
 import com.daview.shared.model.ItemKind
+import com.daview.shared.model.ItemPage
 import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.PlayedState
@@ -46,9 +47,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -173,6 +178,27 @@ data class Confirmation(
     val action: () -> Unit
 )
 
+/** The reads used by the catalogue screens; writes still go through the facade. */
+internal interface CatalogReads {
+    suspend fun item(id: String): MediaItemDto
+    suspend fun children(id: String): List<MediaItemDto>
+    suspend fun nextEpisode(id: String): MediaItemDto?
+    suspend fun page(query: LibraryQuery, offset: Int, limit: Int): ItemPage
+    suspend fun genres(libraryId: String): List<String>
+    suspend fun years(libraryId: String): List<Int>
+}
+
+internal data class LibraryQuery(val libraryId: String, val view: LibraryView, val search: String)
+
+/** Best-effort reads must not turn cancellation into a successful empty result. */
+internal suspend fun <T> catchingOperation(block: suspend () -> T): Result<T> = try {
+    Result.success(block())
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    Result.failure(e)
+}
+
 /**
  * Single mutable holder for the whole client. The app is small enough that a
  * per-screen ViewModel layer would add indirection without buying anything, so
@@ -182,9 +208,30 @@ data class Confirmation(
  * nothing to authenticate against and no address to get wrong — the app opens
  * on the home screen.
  */
-class AppState(private val scope: CoroutineScope) {
+class AppState internal constructor(
+    private val scope: CoroutineScope,
+    private val settings: SettingsStore,
+    reads: CatalogReads? = null
+) {
+    constructor(scope: CoroutineScope) : this(scope, createSettingsStore())
 
-    private val settings: SettingsStore = createSettingsStore()
+    private val catalog = reads ?: object : CatalogReads {
+        override suspend fun item(id: String) = library.item(id, links)
+        override suspend fun children(id: String) = library.children(id, links)
+        override suspend fun nextEpisode(id: String) = library.nextEpisode(id, links)
+        override suspend fun genres(libraryId: String) = library.libraryGenres(libraryId)
+        override suspend fun years(libraryId: String) = library.libraryYears(libraryId)
+        override suspend fun page(query: LibraryQuery, offset: Int, limit: Int): ItemPage = with(query) {
+            library.items(
+                links, libraryId = libraryId, topLevelOnly = true,
+                search = search.takeIf { it.isNotBlank() },
+                favorite = true.takeIf { view.onlyFavourite }, played = false.takeIf { view.onlyUnwatched },
+                inProgress = view.inProgress, genre = view.genre,
+                yearFrom = view.decade, yearTo = view.decade?.plus(9),
+                sort = view.sort, descending = view.descending, limit = limit, offset = offset
+            )
+        }
+    }
 
     /** Everything that only exists once the library has been opened. */
     private class Opened(val core: ServerContext) {
@@ -512,13 +559,33 @@ class AppState(private val scope: CoroutineScope) {
     var libraryDecades by mutableStateOf<List<Int>>(emptyList())
         private set
     private var vocabularyOf: String? = null
+    private var vocabularyGeneration = 0L
+    private var vocabularyJob: Job? = null
 
     private fun loadVocabulary(libraryId: String) {
         if (vocabularyOf == libraryId) return
+        val generation = ++vocabularyGeneration
+        vocabularyJob?.cancel()
         vocabularyOf = libraryId
-        run {
-            libraryGenres = library.libraryGenres(libraryId)
-            libraryDecades = library.libraryYears(libraryId).map { it / 10 * 10 }.distinct()
+        libraryGenres = emptyList()
+        libraryDecades = emptyList()
+        vocabularyJob = scope.launch {
+            try {
+                val genres = catalog.genres(libraryId)
+                val decades = catalog.years(libraryId).map { it / 10 * 10 }.distinct()
+                currentCoroutineContext().ensureActive()
+                if (generation == vocabularyGeneration) {
+                    libraryGenres = genres
+                    libraryDecades = decades
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (generation == vocabularyGeneration) {
+                    vocabularyOf = null
+                    notify(describe(e))
+                }
+            }
         }
     }
 
@@ -733,6 +800,7 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     private fun onEnter(screen: Screen, returning: Boolean) {
+        if (screen !is Screen.Detail) invalidateDetail()
         when (screen) {
             is Screen.Home -> refreshHome()
             is Screen.Library -> loadLibrary(
@@ -761,7 +829,7 @@ class AppState(private val scope: CoroutineScope) {
     fun open() {
         if (opened != null) return
         scope.launch {
-            val context = runCatching { withContext(Dispatchers.IO) { createCoreContext() } }
+            val context = catchingOperation { withContext(Dispatchers.IO) { createCoreContext() } }
                 .getOrElse {
                     startupError = it.message ?: "无法打开媒体库"
                     return@launch
@@ -772,7 +840,7 @@ class AppState(private val scope: CoroutineScope) {
             // desktop is never gated.
             context.offline.transferGate = { !downloadWifiOnly || isUnmeteredNetwork() }
             context.offline.transferGateReason = "等待 Wi-Fi"
-            runCatching {
+            catchingOperation {
                 serverInfo = library.info()
                 libraries = library.libraries()
             }
@@ -923,9 +991,19 @@ class AppState(private val scope: CoroutineScope) {
     }
 
     private var libraryJob: Job? = null
+    private var libraryMoreJob: Job? = null
+    private var libraryGeneration = 0L
+    private var libraryQuery: LibraryQuery? = null
+    private var libraryAppendMutex = Mutex()
 
     fun loadLibrary(libraryId: String, mode: LoadMode = LoadMode.FRESH) {
+        val generation = ++libraryGeneration
         libraryJob?.cancel()
+        libraryMoreJob?.cancel()
+        libraryLoadingMore = false
+        libraryAppendMutex = Mutex()
+        val query = LibraryQuery(libraryId, viewOf(libraryId), searchOf(libraryId))
+        libraryQuery = query
         libraryError = null
         loadVocabulary(libraryId)
         val sameLibrary = libraryItemsOf == libraryId
@@ -940,12 +1018,13 @@ class AppState(private val scope: CoroutineScope) {
         // it and the grid does not shrink back to the first page under the user.
         val keep = if (mode == LoadMode.REFRESH && sameLibrary) libraryItems.size.coerceAtLeast(PAGE_SIZE) else PAGE_SIZE
         libraryJob = scope.launch {
-            val me = coroutineContext[Job]
             try {
                 val collected = ArrayList<MediaItemDto>()
                 var total: Int
                 do {
-                    val page = libraryPage(libraryId, offset = collected.size, limit = minOf(500, keep - collected.size))
+                    val page = catalog.page(query, offset = collected.size, limit = minOf(500, keep - collected.size))
+                    currentCoroutineContext().ensureActive()
+                    if (generation != libraryGeneration) return@launch
                     collected += page.items
                     total = page.total
                 } while (collected.size < keep && collected.size < total && page.items.isNotEmpty())
@@ -959,11 +1038,11 @@ class AppState(private val scope: CoroutineScope) {
                 // Kept on screen with a retry rather than only flashed past in a
                 // snackbar: a library that cannot be read used to spin forever,
                 // and after a few seconds even the message was gone.
-                libraryError = describe(e)
+                if (generation == libraryGeneration && isActive) libraryError = describe(e)
             } finally {
                 // A newer load may have replaced this one; only the current one
                 // gets to say the page has stopped loading.
-                if (libraryJob === me) {
+                if (generation == libraryGeneration) {
                     libraryLoading = false
                     libraryRefreshing = false
                 }
@@ -983,32 +1062,56 @@ class AppState(private val scope: CoroutineScope) {
         if (libraryLoadingMore || libraryLoading || libraryRefreshing) return
         if (libraryItemsOf != libraryId) return
         if (libraryItems.size >= libraryTotal) return
+        val query = libraryQuery?.takeIf { it.libraryId == libraryId } ?: return
+        val generation = libraryGeneration
+        val mutex = libraryAppendMutex
         libraryLoadingMore = true
-        run {
+        libraryMoreJob = scope.launch {
             try {
-                val page = libraryPage(libraryId, offset = libraryItems.size)
-                // Guard against the page having moved under us — a re-sort or a
-                // filter change while this was in flight.
-                if (libraryItemsOf == libraryId) {
-                    libraryItems = libraryItems + page.items.filter { new -> libraryItems.none { it.id == new.id } }
-                    libraryTotal = page.total
-                }
+                appendLibraryPage(query, generation, mutex, PAGE_SIZE)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (generation == libraryGeneration && isActive) notify(describe(e))
             } finally {
-                libraryLoadingMore = false
+                if (generation == libraryGeneration) libraryLoadingMore = false
             }
         }
     }
+
+    private suspend fun appendLibraryPage(query: LibraryQuery, generation: Long, mutex: Mutex, limit: Int): Boolean =
+        mutex.withLock {
+            if (generation != libraryGeneration || libraryItemsOf != query.libraryId ||
+                libraryLoading || libraryRefreshing || libraryItems.size >= libraryTotal
+            ) return@withLock false
+            // Letter jumps and automatic pagination share the offset and the lock.
+            val offset = libraryItems.size
+            val page = catalog.page(query, offset, limit)
+            currentCoroutineContext().ensureActive()
+            if (generation != libraryGeneration || libraryItemsOf != query.libraryId) return@withLock false
+            val ids = libraryItems.mapTo(HashSet()) { it.id }
+            val added = page.items.filter { ids.add(it.id) }
+            libraryItems = libraryItems + added
+            libraryTotal = page.total
+            added.isNotEmpty()
+        }
 
     /**
      * Makes sure the entry at [position] is loaded, so a jump can land on it.
      * Returns once it is, or when there is nothing more to load.
      */
     suspend fun ensureLibraryLoaded(libraryId: String, position: Int) {
-        while (libraryItemsOf == libraryId && libraryItems.size <= position && libraryItems.size < libraryTotal) {
-            val page = libraryPage(libraryId, offset = libraryItems.size, limit = 500)
-            if (page.items.isEmpty()) return
-            libraryItems = libraryItems + page.items
-            libraryTotal = page.total
+        val query = libraryQuery?.takeIf { it.libraryId == libraryId } ?: return
+        val generation = libraryGeneration
+        val mutex = libraryAppendMutex
+        try {
+            while (generation == libraryGeneration && libraryItemsOf == libraryId && libraryItems.size <= position) {
+                if (!appendLibraryPage(query, generation, mutex, 500)) return
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (generation == libraryGeneration && currentCoroutineContext().isActive) notify(describe(e))
         }
     }
 
@@ -1026,28 +1129,6 @@ class AppState(private val scope: CoroutineScope) {
             yearFrom = view.decade,
             yearTo = view.decade?.plus(9),
             descending = view.descending
-        )
-    }
-
-    private suspend fun libraryPage(libraryId: String, offset: Int, limit: Int = PAGE_SIZE) = viewOf(libraryId).let { view ->
-        library.items(
-            links,
-            libraryId = libraryId,
-            // Series and stand-alone films together, ordered as one list. Asking
-            // for a kind meant a series library ran two queries with two limits
-            // and the films inside it were pinned to the end.
-            topLevelOnly = true,
-            search = searchOf(libraryId).takeIf { it.isNotBlank() },
-            favorite = true.takeIf { view.onlyFavourite },
-            played = false.takeIf { view.onlyUnwatched },
-            inProgress = view.inProgress,
-            genre = view.genre,
-            yearFrom = view.decade,
-            yearTo = view.decade?.plus(9),
-            sort = view.sort,
-            descending = view.descending,
-            limit = limit.coerceAtLeast(1),
-            offset = offset
         )
     }
 
@@ -1094,7 +1175,18 @@ class AppState(private val scope: CoroutineScope) {
 
     // ------------------------------------------------------------ detail
 
-    fun loadDetail(itemId: String, quiet: Boolean = false) = scope.launch {
+    private var detailGeneration = 0L
+    private var detailJob: Job? = null
+
+    private fun invalidateDetail(): Long {
+        ++detailGeneration
+        detailJob?.cancel()
+        detailLoading = false
+        return detailGeneration
+    }
+
+    fun loadDetail(itemId: String, quiet: Boolean = false): Job {
+        val generation = invalidateDetail()
         detailLoading = true
         detailError = null
         // Cleared so the page does not open showing the entry looked at before
@@ -1106,46 +1198,66 @@ class AppState(private val scope: CoroutineScope) {
             detailSeasonId = null
             detailNextUp = null
         }
-        try {
-            val item = library.item(itemId, links)
-            val children = if (item.kind == ItemKind.SERIES || item.kind == ItemKind.SEASON) {
-                library.children(itemId, links)
-            } else emptyList()
-            val nextUp = if (item.kind == ItemKind.SERIES || item.kind == ItemKind.SEASON) {
-                runCatching { library.nextEpisode(itemId, links) }.getOrNull()
-            } else null
-            val seasons = children.filter { it.kind == ItemKind.SEASON }
-            // The season that was selected stays selected when the page is only
-            // being refreshed; otherwise the one the viewer is working through,
-            // which is where the next episode lives. It used to be the first
-            // season every time, including on the way back from the player.
-            val seasonId = when {
-                item.kind == ItemKind.EPISODE -> item.parentId
-                detailItem?.id == itemId && seasons.any { it.id == detailSeasonId } -> detailSeasonId
-                seasonChoices[itemId]?.let { chosen -> seasons.any { it.id == chosen } } == true -> seasonChoices[itemId]
-                else -> seasons.firstOrNull { it.id == nextUp?.parentId }?.id ?: seasons.firstOrNull()?.id
+        val selectedSeason = detailSeasonId
+        return scope.launch {
+            try {
+                val item = catalog.item(itemId)
+                val children = if (item.kind == ItemKind.SERIES || item.kind == ItemKind.SEASON) {
+                    catalog.children(itemId)
+                } else emptyList()
+                val nextUp = if (item.kind == ItemKind.SERIES || item.kind == ItemKind.SEASON) {
+                    catchingOperation { catalog.nextEpisode(itemId) }.getOrNull()
+                } else null
+                val seasons = children.filter { it.kind == ItemKind.SEASON }
+                // The season that was selected stays selected when the page is only
+                // being refreshed; otherwise the one the viewer is working through,
+                // which is where the next episode lives. It used to be the first
+                // season every time, including on the way back from the player.
+                val seasonId = when {
+                    item.kind == ItemKind.EPISODE -> item.parentId
+                    seasons.any { it.id == selectedSeason } -> selectedSeason
+                    seasonChoices[itemId]?.let { chosen -> seasons.any { it.id == chosen } } == true -> seasonChoices[itemId]
+                    else -> seasons.firstOrNull { it.id == nextUp?.parentId }?.id ?: seasons.firstOrNull()?.id
+                }
+                val episodes = seasonId?.let { catalog.children(it) } ?: emptyList()
+                currentCoroutineContext().ensureActive()
+                if (generation != detailGeneration) return@launch
+                detailItem = item
+                detailChildren = children
+                detailNextUp = nextUp
+                detailSeasonId = seasonId
+                detailEpisodes = episodes
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Kept on the page with a retry. It used to be a snackbar over a
+                // blank screen, with a retry button wired to an id already cleared.
+                if (generation == detailGeneration && isActive) {
+                    if (quiet && detailItem?.id == itemId) notify(describe(e)) else detailError = describe(e)
+                }
+            } finally {
+                if (generation == detailGeneration) detailLoading = false
             }
-            val episodes = seasonId?.let { library.children(it, links) } ?: emptyList()
-            detailItem = item
-            detailChildren = children
-            detailNextUp = nextUp
-            detailSeasonId = seasonId
-            detailEpisodes = episodes
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            // Kept on the page with a retry. It used to be a snackbar over a
-            // blank screen, with a retry button wired to an id already cleared.
-            if (quiet && detailItem?.id == itemId) notify(describe(e)) else detailError = describe(e)
-        } finally {
-            detailLoading = false
-        }
+        }.also { detailJob = it }
     }
 
-    fun selectSeason(seasonId: String) = run {
-        detailItem?.id?.let { seasonChoices[it] = seasonId }
+    fun selectSeason(seasonId: String) {
+        val itemId = detailItem?.id ?: return
+        val generation = invalidateDetail()
+        seasonChoices[itemId] = seasonId
         detailSeasonId = seasonId
-        detailEpisodes = library.children(seasonId, links)
+        detailEpisodes = emptyList()
+        detailJob = scope.launch {
+            try {
+                val episodes = catalog.children(seasonId)
+                currentCoroutineContext().ensureActive()
+                if (generation == detailGeneration && detailItem?.id == itemId) detailEpisodes = episodes
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (generation == detailGeneration && isActive) notify(describe(e))
+            }
+        }
     }
 
     /**
@@ -1301,14 +1413,7 @@ class AppState(private val scope: CoroutineScope) {
         detailChildren = detailChildren.withFresh()
         detailEpisodes = detailEpisodes.withFresh()
 
-        detailItem?.id?.let { openId ->
-            detailItem = library.item(openId, links)
-            if (detailChildren.isNotEmpty()) detailChildren = library.children(openId, links)
-            detailSeasonId?.let { detailEpisodes = library.children(it, links) }
-            detailItem?.takeIf { it.kind == ItemKind.SERIES || it.kind == ItemKind.SEASON }?.let {
-                detailNextUp = runCatching { library.nextEpisode(openId, links) }.getOrNull()
-            }
-        }
+        (current as? Screen.Detail)?.let { loadDetail(it.itemId, quiet = true) }
         // Items in a library that is not the one on screen still need their
         // new state when the page is reached, which the refresh on entry does.
         (current as? Screen.Library)?.let { screen ->
@@ -1533,8 +1638,8 @@ class AppState(private val scope: CoroutineScope) {
         if (downloadPoll?.isActive == true) return
         downloadPoll = scope.launch {
             while (isActive) {
-                downloads = runCatching { library.downloads() }.getOrDefault(downloads)
-                downloadedBytes = runCatching { library.downloadedBytes() }.getOrDefault(downloadedBytes)
+                downloads = catchingOperation { library.downloads() }.getOrDefault(downloads)
+                downloadedBytes = catchingOperation { library.downloadedBytes() }.getOrDefault(downloadedBytes)
                 if (downloads.none { it.active }) return@launch
                 // Bytes move every second; a queue held for Wi-Fi does not.
                 delay(if (downloads.any { it.state == DownloadState.RUNNING }) 1500 else 5000)
@@ -1692,7 +1797,7 @@ class AppState(private val scope: CoroutineScope) {
         scanPoll = scope.launch {
             var sawRunning = false
             while (isActive) {
-                scanStatus = runCatching { library.scanStatus() }.getOrDefault(scanStatus)
+                scanStatus = catchingOperation { library.scanStatus() }.getOrDefault(scanStatus)
                 if (scanStatus.any { it.running }) sawRunning = true
                 if (scanStatus.none { it.running }) {
                     refreshLibraries()
@@ -1724,7 +1829,7 @@ class AppState(private val scope: CoroutineScope) {
         // Let the first screen read and paint before the walk competes for the disk.
         delay(STARTUP_SCAN_DELAY_MS)
         if (serverInfo?.storageConfigured != true || libraries.isEmpty()) return@launch
-        val queued = runCatching { library.scanAll(automatic = true) }.getOrDefault(emptyList())
+        val queued = catchingOperation { library.scanAll(automatic = true) }.getOrDefault(emptyList())
         if (queued.isNotEmpty()) pollScanStatus()
     }
 
@@ -1774,7 +1879,7 @@ class AppState(private val scope: CoroutineScope) {
             update = UpdateState.Checking
             val service = core.updates
             val source = updateUrl(updateSource.trim().ifBlank { DEFAULT_UPDATE_SOURCE })
-            val manifest = runCatching { withContext(Dispatchers.IO) { service.fetchManifest(source) } }
+            val manifest = catchingOperation { withContext(Dispatchers.IO) { service.fetchManifest(source) } }
                 .getOrElse { e ->
                     update = if (manual) UpdateState.Failed(e.message ?: "检查更新失败") else UpdateState.Idle
                     return@launch
@@ -1801,7 +1906,7 @@ class AppState(private val scope: CoroutineScope) {
             update = UpdateState.Downloading(manifest, asset, received = 0, total = asset.size)
             val name = asset.name
                 ?: asset.url.substringAfterLast('/').substringBefore('?').ifBlank { "DAView-${manifest.version}" }
-            val result = runCatching {
+            val result = catchingOperation {
                 withContext(Dispatchers.IO) {
                     core.updates.download(asset.copy(url = updateUrl(asset.url)), name) { received, total ->
                         update = UpdateState.Downloading(manifest, asset, received, total)

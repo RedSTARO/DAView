@@ -43,7 +43,7 @@ class EmbeddedAss(header: String) {
      * Returns whether it was new.
      */
     fun add(sample: String, startMs: Long): Boolean {
-        val line = sample.trim().removePrefix("﻿")
+        val line = sample.trim().removePrefix("\uFEFF")
         if (!line.startsWith(DIALOGUE, ignoreCase = true)) return false
         val fields = line.substring(DIALOGUE.length)
         val readOrder = fields.split(',', limit = 4).getOrNull(2)?.trim()?.toIntOrNull() ?: return false

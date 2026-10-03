@@ -3,6 +3,7 @@ package com.daview.server.config
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
+import java.nio.file.Paths
 import java.nio.file.Path
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -153,9 +154,9 @@ class ConfigStore(val dataDir: Path) {
         private val log = org.slf4j.LoggerFactory.getLogger(ConfigStore::class.java)
 
         fun defaultDataDir(): Path {
-            System.getenv("DAVIEW_DATA")?.takeIf { it.isNotBlank() }?.let { return Path.of(it) }
+            System.getenv("DAVIEW_DATA")?.takeIf { it.isNotBlank() }?.let { return Paths.get(it) }
             val local = System.getenv("LOCALAPPDATA")
-            return if (local != null) Path.of(local, "DAView") else Path.of(System.getProperty("user.home"), ".daview")
+            return if (local != null) Paths.get(local, "DAView") else Paths.get(System.getProperty("user.home"), ".daview")
         }
     }
 }

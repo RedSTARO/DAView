@@ -13,8 +13,10 @@ import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.file.Files
+import java.nio.file.Paths
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlin.io.path.createDirectories
@@ -98,7 +100,7 @@ class OfflineLibrary(
 
     /** Where downloads are written right now. */
     fun directory(): Path =
-        configuredDirectory()?.takeIf { it.isNotBlank() }?.let { Path.of(it) } ?: defaultDir
+        configuredDirectory()?.takeIf { it.isNotBlank() }?.let { Paths.get(it) } ?: defaultDir
 
     fun defaultDirectory(): Path = defaultDir
 
@@ -120,7 +122,7 @@ class OfflineLibrary(
         repository.downloadFilesForPath(mediaPath)
             .asSequence()
             .filter { it.state == DownloadState.DONE }
-            .map { Path.of(it.file) }
+            .map { Paths.get(it.file) }
             .firstOrNull { it.exists() }
 
     fun all(): List<DownloadDto> = repository.downloads().map { row ->
@@ -144,6 +146,7 @@ class OfflineLibrary(
      * one an earlier version of the app never fetched. Then only that is
      * fetched, and the video is left alone.
      */
+    @Synchronized
     fun start(itemId: String) {
         val item = repository.item(itemId) ?: return
         if (!item.isPlayable) return
@@ -159,9 +162,12 @@ class OfflineLibrary(
 
         cancelled -= itemId
         val known = rows.associateBy { it.mediaPath }
-        val videoTarget = known[mediaPath]?.file?.let(Path::of) ?: targetFor(mediaPath)
-        val taken = HashSet<String>()
-        taken += videoTarget.toString()
+        // Reserve existing rows before choosing names, including subtitles not
+        // yet visited below. Keep allocation and saving under the same lock so
+        // two callers cannot both claim the same destination.
+        val taken = reservedFiles()
+        val videoTarget = known[mediaPath]?.file?.let(Paths::get)
+            ?: allocateTarget(targetFor(mediaPath), taken)
 
         val files = wanted.map { w ->
             val row = known[w.path]
@@ -177,7 +183,7 @@ class OfflineLibrary(
                 row.isWhole() -> row
                 // Failed last time, or left half way: tried again from where it got to.
                 else -> row.copy(state = DownloadState.QUEUED, error = null)
-            }.also { taken += it.file }
+            }
         }
 
         repository.saveDownload(
@@ -345,7 +351,7 @@ class OfflineLibrary(
      * is not mistaken for a whole one; it takes its real name on the last byte.
      */
     private fun fetch(itemId: String, file: DownloadFileRow): Outcome {
-        val target = Path.of(file.file)
+        val target = Paths.get(file.file)
         val partial = partialOf(target)
         target.parent?.createDirectories()
         // A copy left under its final name — an earlier version wrote straight
@@ -353,28 +359,34 @@ class OfflineLibrary(
         if (target.exists() && !partial.exists()) Files.move(target, partial, StandardCopyOption.REPLACE_EXISTING)
 
         var written = if (partial.exists()) partial.fileSize() else 0L
-        val base = repository.downloadFiles(itemId)
+        val files = repository.downloadFiles(itemId)
+        val base = files
             .filter { it.mediaPath != file.mediaPath }
             .sumOf { onDisk(it) }
         progress[itemId] = base + written
 
-        var total = file.totalBytes.takeIf { it > 0 }
+        // A previous attempt in this same run may have learned a newer size
+        // before pausing at the network gate. Do not reuse the loop's stale row.
+        val current = files.firstOrNull { it.mediaPath == file.mediaPath } ?: file
+        var total = current.totalBytes.takeIf { it > 0 }
             ?: runCatching { source.fileSize(file.mediaPath) }.getOrNull()
             ?: 0L
+        var totalKnown = total > 0
         repository.saveDownloadFile(file.copy(state = DownloadState.RUNNING, totalBytes = total, downloadedBytes = written))
         if (total > 0) repository.refreshDownloadTotal(itemId)
 
-        if (total > 0 && written >= total) {
-            complete(itemId, file, partial, target, written, total)
-            return Outcome.DONE
+        if (totalKnown && written > total) {
+            throw IOException("部分文件超出预期大小：$written / $total 字节")
         }
 
         val range = try {
             source.openRange(file.mediaPath, written, null)
         } catch (e: WebDavException) {
-            // Asked for the byte after the last one: the share says there is
-            // nothing past the partial file, so it was the whole file.
-            if (e.status == 416 && written > 0) {
+            // 416 also means the partial is too large. Only an independently
+            // confirmed exact length makes this a completed transfer.
+            if (e.status == 416 && written > 0 &&
+                runCatching { source.fileSize(file.mediaPath) }.getOrNull() == written
+            ) {
                 complete(itemId, file, partial, target, written, written)
                 return Outcome.DONE
             }
@@ -383,12 +395,19 @@ class OfflineLibrary(
 
         var outcome = Outcome.DONE
         range.use { stream ->
-            if (total <= 0) {
-                stream.totalSize?.let {
-                    total = it
-                    repository.saveDownloadFile(file.copy(state = DownloadState.RUNNING, totalBytes = total, downloadedBytes = written))
-                    repository.refreshDownloadTotal(itemId)
+            // RangeSource implementations other than WebDAV must obey this too;
+            // appending a full response would splice two copies of the file.
+            if (written > 0 && !stream.partial) {
+                throw IOException("续传响应不是部分内容，已保留原部分文件")
+            }
+            stream.totalSize?.let { actual ->
+                if (actual < written || (written > 0 && totalKnown && actual != total)) {
+                    throw IOException("续传文件大小不一致：已下载 $written，预期 $total，响应 $actual 字节")
                 }
+                total = actual
+                totalKnown = true
+                repository.saveDownloadFile(file.copy(state = DownloadState.RUNNING, totalBytes = total, downloadedBytes = written))
+                repository.refreshDownloadTotal(itemId)
             }
             RandomAccessFile(partial.toFile(), "rw").use { out ->
                 out.seek(written)
@@ -405,6 +424,9 @@ class OfflineLibrary(
                     }
                     val read = stream.stream.read(buffer)
                     if (read <= 0) break
+                    if (totalKnown && read.toLong() > total - written) {
+                        throw IOException("下载响应超出预期大小：$total 字节")
+                    }
                     out.write(buffer, 0, read)
                     written += read
                     progress[itemId] = base + written
@@ -423,7 +445,7 @@ class OfflineLibrary(
             persist(itemId, file, written, total, base)
             return outcome
         }
-        if (total > 0 && written < total) {
+        if (totalKnown && written != total) {
             persist(itemId, file, written, total, base)
             throw IllegalStateException("下载中断：$written / $total 字节")
         }
@@ -477,11 +499,16 @@ class OfflineLibrary(
     }
 
     /** Drops every file and row of a download that was cancelled or removed. */
+    @Synchronized
     private fun forget(itemId: String) {
+        // Older versions could give two downloads the same file. Removing one
+        // must leave bytes still referenced by the other, including .part files.
+        val retained = reservedFiles(excludingItemId = itemId)
         repository.downloadFiles(itemId).forEach { row ->
-            val target = Path.of(row.file)
-            runCatching { partialOf(target).deleteIfExists() }
-            runCatching { target.deleteIfExists() }
+            val target = Paths.get(row.file)
+            val partial = partialOf(target)
+            if (pathKey(partial) !in retained) runCatching { partial.deleteIfExists() }
+            if (pathKey(target) !in retained) runCatching { target.deleteIfExists() }
             pruneEmptyDirectories(target.parent)
         }
         repository.deleteDownload(itemId)
@@ -542,11 +569,11 @@ class OfflineLibrary(
     }
 
     private fun DownloadFileRow.isWhole(): Boolean =
-        state == DownloadState.DONE && Path.of(file).exists()
+        state == DownloadState.DONE && Paths.get(file).exists()
 
     /** Bytes of a file that are on disk, finished or not. */
     private fun onDisk(row: DownloadFileRow): Long {
-        val target = Path.of(row.file)
+        val target = Paths.get(row.file)
         if (row.state == DownloadState.DONE) {
             return runCatching { target.fileSize() }.getOrDefault(row.downloadedBytes)
         }
@@ -558,12 +585,13 @@ class OfflineLibrary(
         }
     }
 
-    private fun partialOf(target: Path): Path = Path.of(target.toString() + PART_SUFFIX)
+    private fun partialOf(target: Path): Path = Paths.get(target.toString() + PART_SUFFIX)
 
     /**
      * Where a media path lands: the share's own folders, mirrored under the
      * download directory, with each name made safe for the file system here.
-     * Readable in a file manager, and unique because the share path is.
+     * This is only a preferred name: sanitizing and case folding can collapse
+     * distinct share paths, so new files must go through [allocateTarget].
      */
     private fun targetFor(mediaPath: String): Path =
         mediaPath.trim('/').split('/').filter { it.isNotBlank() }
@@ -574,18 +602,44 @@ class OfflineLibrary(
      * (a `Subs/` folder, say), under its own name: that is where every player
      * looks for one, and the name is what ties it to the video.
      */
-    private fun sidecarTargetFor(videoTarget: Path, subtitlePath: String, taken: Set<String>): String {
+    private fun sidecarTargetFor(videoTarget: Path, subtitlePath: String, taken: MutableSet<String>): String {
         val dir = videoTarget.parent ?: directory()
         val name = safeName(subtitlePath.substringAfterLast('/'))
-        var candidate = dir.resolve(name)
-        var n = 2
-        while (candidate.toString() in taken) {
-            val stem = name.substringBeforeLast('.')
-            val ext = name.substringAfterLast('.', "")
-            candidate = dir.resolve(if (ext.isEmpty()) "$stem.$n" else "$stem.$n.$ext")
-            n++
+        return allocateTarget(dir.resolve(name), taken).toString()
+    }
+
+    /** Compare conservatively on every platform, including case-sensitive hosts. */
+    private fun pathKey(path: Path): String =
+        path.toAbsolutePath().normalize().toString().lowercase(Locale.ROOT)
+
+    private fun reserveFile(target: Path, taken: MutableSet<String>) {
+        taken += pathKey(target)
+        taken += pathKey(partialOf(target))
+    }
+
+    private fun reservedFiles(excludingItemId: String? = null): MutableSet<String> {
+        val taken = HashSet<String>()
+        repository.downloads().filter { it.itemId != excludingItemId }.forEach { download ->
+            repository.downloadFiles(download.itemId).forEach { reserveFile(Paths.get(it.file), taken) }
         }
-        return candidate.toString()
+        return taken
+    }
+
+    /** Existing rows resume at their saved paths; new rows never adopt unrelated bytes. */
+    private fun allocateTarget(preferred: Path, taken: MutableSet<String>): Path {
+        val name = preferred.fileName.toString()
+        val stem = name.substringBeforeLast('.')
+        val ext = name.substringAfterLast('.', "").let { if (it.isEmpty()) "" else ".$it" }
+        var candidate = preferred
+        var n = 2
+        while (pathKey(candidate) in taken || pathKey(partialOf(candidate)) in taken ||
+            candidate.exists() || partialOf(candidate).exists()
+        ) {
+            val suffix = ".${n++}$ext"
+            candidate = preferred.resolveSibling(stem.take((MAX_NAME - suffix.length).coerceAtLeast(1)) + suffix)
+        }
+        reserveFile(candidate, taken)
+        return candidate
     }
 
     override fun close() {

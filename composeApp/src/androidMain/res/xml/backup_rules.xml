@@ -3,11 +3,12 @@
      of data_extraction_rules. There is no way here to say "only if encrypted",
      so config.json, with the WebDAV password and the scraper keys in plain
      text, stays on the device: after a restore the credentials are typed in
-     again, and the library and the watch history are already there. -->
+     again, and the library and the watch history are already there.
+     Include only the catalogue and UI preferences: excluding config.json by
+     name still backed up config.json.tmp and config.json.unreadable-* copies. -->
 <full-backup-content>
-    <exclude domain="file" path="daview/config.json" />
-    <exclude domain="file" path="daview/offline/" />
-    <exclude domain="file" path="daview/cache/" />
-    <exclude domain="file" path="daview/updates/" />
-    <exclude domain="external" path="." />
+    <include domain="file" path="daview/daview.db" />
+    <include domain="file" path="daview/daview.db-wal" />
+    <include domain="file" path="daview/daview.db-shm" />
+    <include domain="sharedpref" path="daview.xml" />
 </full-backup-content>

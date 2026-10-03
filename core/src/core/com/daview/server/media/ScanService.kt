@@ -26,7 +26,8 @@ class ScanService(
         Thread(runnable, "daview-scan").apply { isDaemon = true }
     }
     private val progress = ConcurrentHashMap<String, ScanProgressDto>()
-    private val cancelled = ConcurrentHashMap.newKeySet<String>()
+    private val cancellations = ConcurrentHashMap<String, Cancellation>()
+    private val submissionLock = Any()
 
     fun status(): List<ScanProgressDto> = progress.values.sortedBy { it.libraryName }
 
@@ -39,16 +40,30 @@ class ScanService(
      *
      * There is no safe point to interrupt a thread that is mid-request to the
      * storage or mid-write to SQLite, so the flag is read where progress is
-     * reported — which is every folder, every scrape and every probe.
+     * reported, and polled by the probe coordinator while readers are blocked.
      */
     fun cancel(libraryId: String) {
-        if (isRunning(libraryId)) cancelled += libraryId
+        synchronized(submissionLock) {
+            if (isRunning(libraryId)) cancellations[libraryId]?.cancel()
+        }
     }
 
     private class ScanCancelled : RuntimeException("已取消")
 
-    private fun checkCancelled(libraryId: String) {
-        if (libraryId in cancelled) throw ScanCancelled()
+    /** One token per submitted scan; cancelling and committing share a lock. */
+    internal class Cancellation {
+        @Volatile private var cancelled = false
+
+        fun cancel() = synchronized(this) { cancelled = true }
+
+        fun checkCancelled() {
+            if (cancelled) throw ScanCancelled()
+        }
+
+        fun <T> whileActive(action: () -> T): T = synchronized(this) {
+            checkCancelled()
+            action()
+        }
     }
 
     /**
@@ -56,8 +71,8 @@ class ScanService(
      * app runs on start-up — so the interface can stay quiet about it unless
      * it turns something up.
      */
-    fun submit(library: LibraryDto, mode: ScanMode, automatic: Boolean = false): ScanProgressDto {
-        if (isRunning(library.id)) return progress.getValue(library.id)
+    fun submit(library: LibraryDto, mode: ScanMode, automatic: Boolean = false): ScanProgressDto = synchronized(submissionLock) {
+        if (isRunning(library.id)) return@synchronized progress.getValue(library.id)
         val initial = ScanProgressDto(
             libraryId = library.id,
             libraryName = library.name,
@@ -69,27 +84,25 @@ class ScanService(
             message = if (mode == ScanMode.MISSING) "仅刮削未刮削的条目" else "",
             automatic = automatic
         )
+        val cancellation = Cancellation()
+        cancellations[library.id] = cancellation
         progress[library.id] = initial
-        executor.submit { runScan(library, mode) }
-        return initial
+        executor.submit { runScan(library, mode, cancellation) }
+        initial
     }
 
     private fun update(libraryId: String, phase: String, current: Int, total: Int, message: String) {
-        checkCancelled(libraryId)
-        progress[libraryId] = progress.getValue(libraryId).copy(
-            phase = phase, current = current, total = total, message = message, running = true
-        )
+        cancellations.getValue(libraryId).whileActive {
+            progress[libraryId] = progress.getValue(libraryId).copy(
+                phase = phase, current = current, total = total, message = message, running = true
+            )
+        }
     }
 
-    private fun runScan(library: LibraryDto, mode: ScanMode) {
-        val dav = davProvider()
-        if (dav == null) {
-            progress[library.id] = progress.getValue(library.id).copy(
-                running = false, phase = "error", error = "WebDAV 未配置", finishedAt = System.currentTimeMillis()
-            )
-            return
-        }
+    private fun runScan(library: LibraryDto, mode: ScanMode, cancellation: Cancellation) {
         try {
+            cancellation.checkCancelled()
+            val dav = davProvider() ?: error("WebDAV 未配置")
             val config = configProvider()
             val scraper = config.scraper.copy(
                 // Blank means "whatever the app is set to". Libraries used to
@@ -125,20 +138,22 @@ class ScanService(
             }
 
             if (mode != ScanMode.MISSING) {
-                streams.probeMissing(library.id, PROBE_BUDGET) { current, total, message ->
+                streams.probeMissing(library.id, PROBE_BUDGET, cancellation = cancellation) { current, total, message ->
                     update(library.id, "probing", current, total, message)
                 }
             }
 
-            progress[library.id] = progress.getValue(library.id).copy(
-                phase = "done",
-                running = false,
-                message = doneMessage(result),
-                newTitles = result?.newTitles ?: 0,
-                newEpisodes = result?.newEpisodes ?: 0,
-                removed = result?.removed ?: 0,
-                finishedAt = System.currentTimeMillis()
-            )
+            cancellation.whileActive {
+                progress[library.id] = progress.getValue(library.id).copy(
+                    phase = "done",
+                    running = false,
+                    message = doneMessage(result),
+                    newTitles = result?.newTitles ?: 0,
+                    newEpisodes = result?.newEpisodes ?: 0,
+                    removed = result?.removed ?: 0,
+                    finishedAt = System.currentTimeMillis()
+                )
+            }
         } catch (cancel: ScanCancelled) {
             log.info("库 {} 的扫描已取消", library.name)
             progress[library.id] = progress.getValue(library.id).copy(
@@ -152,7 +167,7 @@ class ScanService(
                 finishedAt = System.currentTimeMillis()
             )
         } finally {
-            cancelled -= library.id
+            cancellations.remove(library.id, cancellation)
         }
     }
 

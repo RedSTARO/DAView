@@ -16,6 +16,7 @@ import com.daview.shared.model.StreamType
 import java.io.ByteArrayInputStream
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Locale
 import kotlin.io.path.createDirectories
 import kotlin.io.path.createTempDirectory
 import kotlin.io.path.exists
@@ -27,6 +28,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -56,11 +58,13 @@ class OfflineLibraryTest {
         val files = HashMap<String, ByteArray>()
         val failing = HashSet<String>()
         val requests = ArrayList<Pair<String, Long>>()
+        var rangeOverride: ((String, Long, Long?) -> WebDavClient.RangeStream)? = null
 
         override fun fileSize(path: String): Long? = files[path]?.size?.toLong()
 
         override fun openRange(path: String, start: Long, end: Long?): WebDavClient.RangeStream {
             synchronized(requests) { requests += path to start }
+            rangeOverride?.let { return it(path, start, end) }
             val bytes = files[path]?.takeIf { path !in failing }
                 ?: throw WebDavException("读取字节区间失败: HTTP 404", 404)
             if (start >= bytes.size) throw WebDavException("读取字节区间失败: HTTP 416", 416)
@@ -98,6 +102,16 @@ class OfflineLibraryTest {
 
     private fun store(vararg items: MediaItemDto) = repository.upsertItems(items.map { ItemRecord(dto = it) })
 
+    private fun rememberVideo(itemId: String, path: String, target: Path, state: DownloadState, size: Long, downloaded: Long) {
+        repository.saveDownload(
+            DownloadDto(itemId, itemId, state, totalBytes = size, downloadedBytes = downloaded),
+            file = target.toString(), mediaPath = path
+        )
+        repository.saveDownloadFile(
+            Repository.DownloadFileRow(itemId, path, target.toString(), DOWNLOAD_KIND_VIDEO, state, size, downloaded)
+        )
+    }
+
     private fun share() {
         source.files[videoPath] = video
         source.files[subtitleBeside] = besideBytes
@@ -115,6 +129,8 @@ class OfflineLibraryTest {
     }
 
     private fun awaitDone(itemId: String) = await(itemId) { it?.state == DownloadState.DONE }!!
+
+    private fun awaitFailed(itemId: String) = await(itemId) { it?.state == DownloadState.FAILED }!!
 
     private val videoTarget: Path
         get() = dir.resolve("offline").resolve("Ani").resolve("Show (2020)").resolve("Season 01")
@@ -179,6 +195,8 @@ class OfflineLibraryTest {
         val partial = Path.of(videoTarget.toString() + OfflineLibrary.PART_SUFFIX)
         partial.parent.createDirectories()
         partial.writeBytes(video.copyOfRange(0, 100_000))
+        // A real interrupted transfer has a persisted owner for its partial file.
+        rememberVideo("ep1", videoPath, videoTarget, DownloadState.FAILED, video.size.toLong(), 100_000L)
 
         offline.start("ep1")
         awaitDone("ep1")
@@ -186,6 +204,156 @@ class OfflineLibraryTest {
         assertEquals(listOf(100_000L), source.requestsFor(videoPath), "asked only for the range after the partial file")
         assertContentEquals(video, videoTarget.readBytes())
         assertFalse(partial.exists())
+    }
+
+    @Test
+    fun `resuming preserves a registered legacy destination outside the default layout`() {
+        share()
+        store(episode(subtitles = emptyList()))
+        val legacy = dir.resolve("old-downloads/kept-name.mkv")
+        val partial = Path.of(legacy.toString() + OfflineLibrary.PART_SUFFIX)
+        partial.parent.createDirectories()
+        partial.writeBytes(video.copyOfRange(0, 100_000))
+        rememberVideo("ep1", videoPath, legacy, DownloadState.RUNNING, video.size.toLong(), 100_000L)
+
+        assertEquals(1, offline.resumePending())
+        awaitDone("ep1")
+        assertEquals(legacy, offline.localFile(videoPath))
+        assertEquals(listOf(100_000L), source.requestsFor(videoPath))
+        assertContentEquals(video, legacy.readBytes())
+        assertFalse(partial.exists())
+        assertFalse(videoTarget.exists())
+    }
+
+    @Test
+    fun `a full response to a resume request is rejected without appending`() {
+        share()
+        store(episode(subtitles = emptyList()))
+        val partial = Path.of(videoTarget.toString() + OfflineLibrary.PART_SUFFIX)
+        partial.parent.createDirectories()
+        val prefix = video.copyOfRange(0, 100_000)
+        partial.writeBytes(prefix)
+        rememberVideo("ep1", videoPath, videoTarget, DownloadState.FAILED, video.size.toLong(), prefix.size.toLong())
+        source.rangeOverride = { _, _, _ ->
+            WebDavClient.RangeStream(ByteArrayInputStream(video), totalSize = video.size.toLong(), partial = false)
+        }
+
+        offline.start("ep1")
+        awaitFailed("ep1")
+        assertEquals(listOf(100_000L), source.requestsFor(videoPath))
+        assertContentEquals(prefix, partial.readBytes())
+        assertFalse(videoTarget.exists())
+        assertNull(offline.localFile(videoPath))
+    }
+
+    @Test
+    fun `an oversized partial is not marked complete`() {
+        share()
+        store(episode(subtitles = emptyList()))
+        val partial = Path.of(videoTarget.toString() + OfflineLibrary.PART_SUFFIX)
+        partial.parent.createDirectories()
+        val oversized = video + byteArrayOf(42)
+        partial.writeBytes(oversized)
+        rememberVideo("ep1", videoPath, videoTarget, DownloadState.FAILED, video.size.toLong(), oversized.size.toLong())
+
+        offline.start("ep1")
+        awaitFailed("ep1")
+        assertContentEquals(oversized, partial.readBytes())
+        assertFalse(videoTarget.exists())
+        assertNull(offline.localFile(videoPath))
+    }
+
+    @Test
+    fun `a longer source is not considered complete at the old recorded length`() {
+        share()
+        store(episode(subtitles = emptyList()))
+        val partial = Path.of(videoTarget.toString() + OfflineLibrary.PART_SUFFIX)
+        partial.parent.createDirectories()
+        val prefix = video.copyOfRange(0, 100_000)
+        partial.writeBytes(prefix)
+        rememberVideo("ep1", videoPath, videoTarget, DownloadState.FAILED, prefix.size.toLong(), prefix.size.toLong())
+
+        offline.start("ep1")
+        awaitFailed("ep1")
+        assertEquals(listOf(100_000L), source.requestsFor(videoPath))
+        assertContentEquals(prefix, partial.readBytes())
+        assertFalse(videoTarget.exists())
+    }
+
+    @Test
+    fun `response bytes beyond the declared length are not accepted as a finished file`() {
+        share()
+        store(episode(subtitles = emptyList()))
+        source.rangeOverride = { _, _, _ ->
+            WebDavClient.RangeStream(
+                ByteArrayInputStream(video + byteArrayOf(42)), totalSize = video.size.toLong(), partial = false
+            )
+        }
+        offline.start("ep1")
+        awaitFailed("ep1")
+
+        assertFalse(videoTarget.exists())
+        assertNull(offline.localFile(videoPath))
+        val bytes = Path.of(videoTarget.toString() + OfflineLibrary.PART_SUFFIX).readBytes()
+        assertTrue(bytes.size <= video.size)
+        assertContentEquals(video.copyOfRange(0, bytes.size), bytes)
+    }
+
+    @Test
+    fun `416 without a confirmed length does not promote a partial file`() {
+        store(episode(subtitles = emptyList()))
+        val partial = Path.of(videoTarget.toString() + OfflineLibrary.PART_SUFFIX)
+        partial.parent.createDirectories()
+        partial.writeBytes(video)
+        rememberVideo("ep1", videoPath, videoTarget, DownloadState.RUNNING, 0L, video.size.toLong())
+        // No size is available, and 416 alone cannot distinguish complete from oversized.
+        source.rangeOverride = { _, _, _ -> throw WebDavException("out of range", 416) }
+        offline.start("ep1")
+        awaitFailed("ep1")
+        assertContentEquals(video, partial.readBytes())
+        assertFalse(videoTarget.exists())
+    }
+
+    @Test
+    fun `a complete registered partial is promoted after its source length is confirmed`() {
+        share()
+        store(episode(subtitles = emptyList()))
+        val partial = Path.of(videoTarget.toString() + OfflineLibrary.PART_SUFFIX)
+        partial.parent.createDirectories()
+        partial.writeBytes(video)
+        rememberVideo("ep1", videoPath, videoTarget, DownloadState.RUNNING, video.size.toLong(), video.size.toLong())
+        offline.start("ep1")
+        awaitDone("ep1")
+        assertEquals(listOf(video.size.toLong()), source.requestsFor(videoPath))
+        assertContentEquals(video, videoTarget.readBytes())
+        assertFalse(partial.exists())
+    }
+
+    @Test
+    fun `resuming after a network pause uses the size learned by the first response`() {
+        share()
+        store(episode(subtitles = emptyList()).copy(sizeBytes = 1L))
+        source.rangeOverride = { _, start, _ ->
+            val input = object : ByteArrayInputStream(video.copyOfRange(start.toInt(), video.size)) {
+                override fun read(b: ByteArray, off: Int, len: Int): Int {
+                    val read = super.read(b, off, len)
+                    if (start == 0L && read > 0) offline.transferGate = { false }
+                    return read
+                }
+            }
+            WebDavClient.RangeStream(input, totalSize = video.size.toLong(), partial = start > 0)
+        }
+        offline.start("ep1")
+        await("ep1") { it?.state == DownloadState.QUEUED && it.note == offline.transferGateReason }
+        val partial = Path.of(videoTarget.toString() + OfflineLibrary.PART_SUFFIX)
+        val received = Files.size(partial)
+        assertTrue(received in 1 until video.size.toLong())
+        assertEquals(video.size.toLong(), repository.downloadFiles("ep1").single().totalBytes)
+
+        offline.transferGate = { true }
+        awaitDone("ep1")
+        assertEquals(listOf(0L, received), source.requestsFor(videoPath))
+        assertContentEquals(video, videoTarget.readBytes())
     }
 
     @Test
@@ -299,6 +467,139 @@ class OfflineLibraryTest {
         assertFalse(subtitle.exists())
         assertFalse(dir.resolve("offline").resolve("Ani").exists())
         assertEquals(0L, offline.usedBytes())
+    }
+
+    private fun assertSeparateDownloads(firstPath: String, secondPath: String) {
+        // Equal lengths reproduce the old fast path that marked the second
+        // download DONE without fetching even a byte of its own content.
+        val firstBytes = ByteArray(4096) { 1 }
+        val secondBytes = ByteArray(4096) { 2 }
+        source.files[firstPath] = firstBytes
+        source.files[secondPath] = secondBytes
+        store(
+            episode("first", emptyList()).copy(path = firstPath, sizeBytes = firstBytes.size.toLong()),
+            episode("second", emptyList()).copy(path = secondPath, sizeBytes = secondBytes.size.toLong())
+        )
+        offline.start("first")
+        awaitDone("first")
+        offline.start("second")
+        awaitDone("second")
+
+        val first = assertNotNull(offline.localFile(firstPath))
+        val second = assertNotNull(offline.localFile(secondPath))
+        assertNotEquals(first.toString().lowercase(Locale.ROOT), second.toString().lowercase(Locale.ROOT))
+        assertFalse(Files.isSameFile(first, second))
+        assertContentEquals(firstBytes, first.readBytes())
+        assertContentEquals(secondBytes, second.readBytes())
+        assertEquals(listOf(0L), source.requestsFor(secondPath))
+
+        // The first worker has exited before the single executor starts the second.
+        offline.remove("first")
+        await("first") { it == null }
+        assertFalse(first.exists())
+        assertTrue(repository.downloadFiles("first").isEmpty())
+        assertTrue(offline.isComplete("second"))
+        assertContentEquals(secondBytes, assertNotNull(offline.localFile(secondPath)).readBytes())
+    }
+
+    @Test
+    fun `sanitized video names do not share bytes or deletion`() {
+        assertSeparateDownloads("/Movies/a:b.mkv", "/Movies/a_b.mkv")
+    }
+
+    @Test
+    fun `video names differing only in case stay isolated on every host`() {
+        assertSeparateDownloads("/Movies/Film.mkv", "/movies/film.mkv")
+    }
+
+    @Test
+    fun `colliding directory names do not make videos share a destination`() {
+        assertSeparateDownloads("/Movies/A:B/Film.mkv", "/Movies/A_B/Film.mkv")
+    }
+
+    @Test
+    fun `subtitle names are reserved ignoring case and sanitized characters`() {
+        val paths = listOf("/Subs/a:b.ass", "/Subs/a_b.ass", "/Subs/A_B.ass")
+        source.files[videoPath] = video
+        val contents = paths.mapIndexed { index, path ->
+            ByteArray(128) { index.toByte() }.also { source.files[path] = it }
+        }
+        store(episode(subtitles = paths))
+        offline.start("ep1")
+        awaitDone("ep1")
+
+        val locals = paths.map { assertNotNull(offline.localFile(it)) }
+        assertEquals(3, locals.map { it.toString().lowercase(Locale.ROOT) }.toSet().size)
+        locals.forEachIndexed { index, local ->
+            assertContentEquals(contents[index], local.readBytes())
+            assertEquals(listOf(0L), source.requestsFor(paths[index]))
+        }
+    }
+
+    @Test
+    fun `subtitles from different downloads do not share bytes or deletion`() {
+        val firstSub = "/Subs/First/en.ass"
+        val secondSub = "/Subs/Second/en.ass"
+        val secondVideo = videoPath.replace("S01E01", "S01E02")
+        source.files[videoPath] = video
+        source.files[secondVideo] = video
+        source.files[firstSub] = "first".toByteArray()
+        source.files[secondSub] = "other".toByteArray()
+        store(episode("first", listOf(firstSub)), episode("second", listOf(secondSub)).copy(path = secondVideo))
+        offline.start("first")
+        awaitDone("first")
+        offline.start("second")
+        awaitDone("second")
+
+        val first = assertNotNull(offline.localFile(firstSub))
+        val second = assertNotNull(offline.localFile(secondSub))
+        assertNotEquals(first, second)
+        assertContentEquals(source.files.getValue(firstSub), first.readBytes())
+        assertContentEquals(source.files.getValue(secondSub), second.readBytes())
+        offline.remove("first")
+        await("first") { it == null }
+        assertFalse(first.exists())
+        assertTrue(offline.isComplete("second"))
+        assertContentEquals(source.files.getValue(secondSub), second.readBytes())
+    }
+
+    @Test
+    fun `new downloads do not adopt unregistered files or partial bytes`() {
+        share()
+        store(episode(subtitles = emptyList()))
+        videoTarget.parent.createDirectories()
+        val unrelated = ByteArray(video.size) { 42 }
+        val partial = Path.of(videoTarget.toString() + OfflineLibrary.PART_SUFFIX)
+        videoTarget.writeBytes(unrelated)
+        partial.writeBytes(unrelated)
+        offline.start("ep1")
+        awaitDone("ep1")
+
+        val downloaded = assertNotNull(offline.localFile(videoPath))
+        assertNotEquals(videoTarget, downloaded)
+        assertContentEquals(video, downloaded.readBytes())
+        assertContentEquals(unrelated, videoTarget.readBytes())
+        assertContentEquals(unrelated, partial.readBytes())
+        assertEquals(listOf(0L), source.requestsFor(videoPath))
+    }
+
+    @Test
+    fun `removing a legacy shared target keeps the other download intact`() {
+        val firstPath = "/Movies/a:b.mkv"
+        val secondPath = "/Movies/a_b.mkv"
+        val shared = dir.resolve("offline/Movies/a_b.mkv")
+        shared.parent.createDirectories()
+        shared.writeBytes(video)
+        rememberVideo("first", firstPath, shared, DownloadState.DONE, video.size.toLong(), video.size.toLong())
+        rememberVideo("second", secondPath, shared, DownloadState.DONE, video.size.toLong(), video.size.toLong())
+
+        offline.remove("first")
+        assertNull(repository.download("first"))
+        assertNotNull(repository.download("second"))
+        assertContentEquals(video, assertNotNull(offline.localFile(secondPath)).readBytes())
+
+        offline.remove("second")
+        assertFalse(shared.exists(), "the last owner releases the file")
     }
 
     @Test

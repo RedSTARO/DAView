@@ -213,8 +213,9 @@ class Scanner(
             } catch (t: Throwable) {
                 log.warn("扫描 {} 失败", root.path, t)
                 warnings += "${root.name}: ${t.message}"
-                // What was known under it stays; one failed round trip must not
-                // empty a folder.
+                // Child listings must propagate failures here too. No part of
+                // this root is written until its complete tree has been read;
+                // an incomplete result cannot safely drive the deletion diff.
                 before?.forEach { seen += it.id }
                 return emptyList()
             }
@@ -469,25 +470,23 @@ class Scanner(
         // spin-off (`iPartment (2009)/iPartment The Movie (2018)`). Treat it as a
         // movie attached to the series rather than mangling it into a season.
         otherFolders.forEach { nested ->
-            runCatching {
-                val nestedChildren = dav.list(nested.path)
-                val nestedVideos = nestedChildren.filter {
-                    !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name)
-                }
-                val nestedSubs = nestedChildren.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
-                if (nestedVideos.isEmpty()) return@runCatching
+            val nestedChildren = dav.list(nested.path)
+            val nestedVideos = nestedChildren.filter {
+                !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name)
+            }
+            val nestedSubs = nestedChildren.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
+            if (nestedVideos.isEmpty()) return@forEach
 
-                val looksEpisodic = nestedVideos.any { NameParser.parseEpisode(it.name, null)?.season != null }
-                if (looksEpisodic) {
-                    out += seasonWithEpisodes(library, seriesId, info.title, nested, 1, now).records
-                } else {
-                    val main = nestedVideos.maxByOrNull { it.size ?: 0 }!!
-                    out += movieFromFile(
-                        library, main, nestedSubs, parentId = seriesId, now = now,
-                        override = NameParser.parseTitle(nested.name)
-                    )
-                }
-            }.onFailure { log.warn("嵌套目录 {} 扫描失败", nested.path, it) }
+            val looksEpisodic = nestedVideos.any { NameParser.parseEpisode(it.name, null)?.season != null }
+            if (looksEpisodic) {
+                out += seasonWithEpisodes(library, seriesId, info.title, nested, 1, now).records
+            } else {
+                val main = nestedVideos.maxByOrNull { it.size ?: 0 }!!
+                out += movieFromFile(
+                    library, main, nestedSubs, parentId = seriesId, now = now,
+                    override = NameParser.parseTitle(nested.name)
+                )
+            }
         }
 
         return out
@@ -571,13 +570,11 @@ class Scanner(
 
         val found = mutableListOf<Pair<DavEntry, List<DavEntry>>>()
         folders.distinctBy { it.path }.forEach { folder ->
-            runCatching {
-                val entries = dav.list(folder.path)
-                val subtitles = entries.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
-                entries.filter {
-                    !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name)
-                }.forEach { found += it to subtitles }
-            }.onFailure { log.warn("特典目录 {} 扫描失败", folder.path, it) }
+            val entries = dav.list(folder.path)
+            val subtitles = entries.filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
+            entries.filter {
+                !it.isDirectory && NameParser.isVideoFile(it.name) && !NameParser.isJunkFile(it.name)
+            }.forEach { found += it to subtitles }
         }
         if (found.isEmpty()) return emptyList()
 
@@ -729,7 +726,7 @@ class Scanner(
     private fun nestedSubtitles(children: List<DavEntry>): List<DavEntry> =
         children.filter { it.isDirectory && NameParser.isSubtitleFolder(it.name) }
             .flatMap { folder ->
-                runCatching { dav.list(folder.path) }.getOrDefault(emptyList())
+                dav.list(folder.path)
                     .filter { !it.isDirectory && NameParser.isSubtitleFile(it.name) }
             }
 

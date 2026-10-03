@@ -5,6 +5,7 @@ import androidx.media3.common.C
 import androidx.media3.common.DataReader
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.ExperimentalApi
 import androidx.media3.common.util.ParsableByteArray
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -56,6 +57,7 @@ class EmbeddedAssExtractors(
 
     // DefaultMediaSourceFactory tells its extractors factory how subtitles are
     // to be handled; what it says has to hold for the tracks that pass through.
+    @androidx.annotation.OptIn(ExperimentalApi::class)
     override fun experimentalSetTextTrackTranscodingEnabled(enabled: Boolean): ExtractorsFactory {
         parseDuringExtraction = enabled
         defaults.experimentalSetTextTrackTranscodingEnabled(enabled)
@@ -68,6 +70,7 @@ class EmbeddedAssExtractors(
         return this
     }
 
+    @androidx.annotation.OptIn(ExperimentalApi::class)
     override fun experimentalSetCodecsToParseWithinGopSampleDependencies(codecFlags: Int): ExtractorsFactory {
         defaults.experimentalSetCodecsToParseWithinGopSampleDependencies(codecFlags)
         return this

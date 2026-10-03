@@ -2,6 +2,7 @@ package com.daview.app.player
 
 import android.net.Uri
 import androidx.media3.common.C
+import androidx.media3.common.util.ExperimentalApi
 import androidx.media3.common.util.TimestampAdjuster
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.extractor.Extractor
@@ -47,6 +48,7 @@ class BluRayExtractors(private val delegate: ExtractorsFactory) : ExtractorsFact
     // DefaultMediaSourceFactory tells its extractors factory how subtitles are
     // to be handled; a disc's subtitles have to be handled the same way as a
     // file's, or the player would get them in a form it did not ask for.
+    @androidx.annotation.OptIn(ExperimentalApi::class)
     override fun experimentalSetTextTrackTranscodingEnabled(enabled: Boolean): ExtractorsFactory {
         parseDuringExtraction = enabled
         delegate.experimentalSetTextTrackTranscodingEnabled(enabled)
@@ -59,6 +61,7 @@ class BluRayExtractors(private val delegate: ExtractorsFactory) : ExtractorsFact
         return this
     }
 
+    @androidx.annotation.OptIn(ExperimentalApi::class)
     override fun experimentalSetCodecsToParseWithinGopSampleDependencies(codecFlags: Int): ExtractorsFactory {
         delegate.experimentalSetCodecsToParseWithinGopSampleDependencies(codecFlags)
         return this

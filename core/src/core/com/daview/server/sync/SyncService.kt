@@ -6,10 +6,15 @@ import com.daview.server.api.applyBackup
 import com.daview.server.api.buildBackup
 import com.daview.server.storage.WebDavClient
 import com.daview.shared.api.DaViewJson
+import com.daview.shared.model.BACKUP_FORMAT
 import com.daview.shared.model.BackupFileDto
 import com.daview.shared.model.BackupSummaryDto
 import com.daview.shared.model.SyncResultDto
 import org.slf4j.LoggerFactory
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -70,7 +75,7 @@ class SyncService(
      * The upload fingerprint (newest timestamp + row count) means no call site
      * has to remember to notify this service when progress is written.
      */
-    private fun tick() {
+    internal fun tick() {
         // Nothing may escape: a scheduled task that throws once is never run
         // again, and the sync would stop for the rest of the process's life
         // with the switch still showing on.
@@ -125,10 +130,13 @@ class SyncService(
                 // Replacing a file we could not read would discard whatever the
                 // other devices put in it, so this upload does not happen.
                 is Merge.Unreachable -> return fail("读取云端同步文件失败，已跳过这次上传: ${merged.reason}")
-                // Garbled is different: nothing can be salvaged from it, and
-                // writing valid content over it is the repair.
-                is Merge.Unreadable -> log.warn("云端同步文件无法解析，将被覆盖: {}", merged.reason)
+                // A parse/apply failure can be a newer file format or locally
+                // unsupported data. Keep the remote copy available for recovery.
+                is Merge.Unreadable -> return fail("云端同步文件无法合并，已保留原文件并跳过上传: ${merged.reason}")
             }
+            // Capture before serialisation. A local edit during PUT was not in
+            // these bytes and must remain eligible for the next upload.
+            val fingerprint = context.repository.syncFingerprint()
             val bytes = buildBackup(context, SYNC_SECTIONS).toByteArray(Charsets.UTF_8)
 
             val result = dav.put(path, bytes)
@@ -147,7 +155,7 @@ class SyncService(
             }
 
             storageWritable = true
-            uploadedFingerprint = context.repository.syncFingerprint()
+            uploadedFingerprint = fingerprint
             context.updateConfig { it.copy(sync = it.sync.copy(lastUploadAt = now, lastError = null)) }
             if (!automatic) log.info("同步已上传 {} 字节到 {}", bytes.size, path)
             return SyncResultDto(
@@ -194,16 +202,21 @@ class SyncService(
      * Reads the file and merges it into the local database.
      *
      * The three failure shapes are kept apart because [upload] treats them
-     * differently: a file that is absent or garbled can be replaced, while one
-     * that could not be read must not be — that would trade a network blip for
-     * every row the other devices wrote.
+     * differently: an absent file can be created; an unreadable, unsupported
+     * or unreachable file must stay intact for a later retry or recovery.
      */
     private fun mergeRemote(dav: WebDavClient, path: String): Merge {
         val read = dav.read(path)
         read.error?.let { return Merge.Unreachable(it) }
         val raw = read.bytes ?: return Merge.Missing
         val backup = runCatching {
-            DaViewJson.decodeFromString(BackupFileDto.serializer(), raw.decodeToString())
+            val document = DaViewJson.parseToJsonElement(raw.decodeToString()) as? JsonObject
+                ?: error("不是 DAView 同步文件")
+            // Defaults on the DTO serve old optional fields, not identification.
+            // A gateway's {"error": ...} must not become an empty valid backup.
+            require((document["format"] as? JsonPrimitive)?.contentOrNull == BACKUP_FORMAT &&
+                (document["version"] as? JsonPrimitive)?.intOrNull != null) { "不是 DAView 同步文件" }
+            DaViewJson.decodeFromJsonElement(BackupFileDto.serializer(), document)
         }.getOrElse { return Merge.Unreadable(it.message ?: it::class.simpleName ?: "未知错误") }
 
         val summary = runCatching { applyBackup(context, backup, mergeUserDataByTimestamp = true, machineLocal = true) }

@@ -88,7 +88,7 @@ class AssScript(
             var legacyStyles = false
 
             for (rawLine in text.lineSequence()) {
-                val line = rawLine.trim().removePrefix("﻿")
+                val line = rawLine.trim().removePrefix("\uFEFF")
                 if (line.isEmpty() || line.startsWith(";") || line.startsWith("!:")) continue
                 if (line.startsWith("[")) {
                     section = line.trim('[', ']').lowercase()

@@ -1,6 +1,7 @@
 package com.daview.server.library
 
 import com.daview.server.db.Database
+import com.daview.server.db.ItemRecord
 import com.daview.server.db.JdbcSqlDatabase
 import com.daview.server.db.Repository
 import com.daview.server.storage.DavEntry
@@ -86,6 +87,24 @@ class ScannerWalkTest {
     private val ep1 = "/Ani/Show (2020)/Season 01/Show - S01E01.mkv"
     private val ep2 = "/Ani/Show (2020)/Season 01/Show - S01E02.mkv"
 
+    private fun withMetadata(path: String): ItemRecord {
+        val record = assertNotNull(repository.itemRecord(id(path)))
+        repository.upsertItem(record.copy(
+            dto = record.dto.copy(
+                name = "Manually identified title",
+                overview = "Saved metadata",
+                posterUrl = "file:custom-poster.jpg",
+                runtimeMs = 123_000L,
+                mediaStreams = listOf(MediaStreamDto(index = 1, type = StreamType.AUDIO, codec = "aac")) +
+                    record.dto.mediaStreams
+            ),
+            dateModified = 456L,
+            scrapedAt = 123L,
+            probedAt = 456L
+        ))
+        return assertNotNull(repository.itemRecord(id(path)))
+    }
+
     @Test
     fun `the first walk counts titles, not their episodes`() {
         tree.file(ep1)
@@ -168,6 +187,84 @@ class ScannerWalkTest {
         assertEquals(0, walked.result.removed)
         assertNotNull(repository.item(id(ep1)))
         assertEquals(1, walked.result.warnings.size)
+    }
+
+    @Test
+    fun `a failed specials listing preserves metadata while other roots still update`() {
+        val special = "/Ani/Show (2020)/Extras/Bonus.mkv"
+        val other1 = "/Ani/Other (2021)/Season 01/Other - S01E01.mkv"
+        val other2 = "/Ani/Other (2021)/Season 01/Other - S01E02.mkv"
+        tree.file(ep1)
+        tree.file(special)
+        tree.file(other1)
+        walk()
+        val before = withMetadata(special)
+        val season = assertNotNull(repository.itemRecord(before.dto.parentId!!))
+
+        tree.file(ep2)
+        tree.file(other2)
+        tree.remove(other1)
+        tree.failing += special.substringBeforeLast('/')
+        val failed = walk()
+
+        assertEquals(before, repository.itemRecord(id(special)))
+        assertEquals(season, repository.itemRecord(season.dto.id))
+        assertNull(repository.item(id(ep2)), "an incomplete root is not partially written")
+        assertNotNull(repository.item(id(other2)), "another root can still gain episodes")
+        assertNull(repository.item(id(other1)), "a complete root can still remove missing episodes")
+        assertEquals(1, failed.result.removed)
+        assertEquals(1, failed.result.warnings.size)
+
+        tree.failing.clear()
+        val recovered = walk()
+        assertNotNull(repository.item(id(ep2)))
+        assertEquals(before.dto.name, repository.item(id(special))?.name)
+        assertEquals(before.scrapedAt, repository.itemRecord(id(special))?.scrapedAt)
+        assertTrue(recovered.result.warnings.isEmpty())
+    }
+
+    @Test
+    fun `a failed nested movie listing preserves metadata but a confirmed removal still deletes it`() {
+        val movie = "/Ani/Show (2020)/The Movie (2022)/The Movie.mkv"
+        tree.file(ep1)
+        tree.file(movie)
+        walk()
+        val before = withMetadata(movie)
+
+        tree.failing += movie.substringBeforeLast('/')
+        val failed = walk()
+        assertEquals(before, repository.itemRecord(id(movie)))
+        assertEquals(0, failed.result.removed)
+        assertEquals(1, failed.result.warnings.size)
+
+        tree.failing.clear()
+        tree.remove(movie)
+        val removed = walk()
+        assertNull(repository.item(id(movie)))
+        assertEquals(1, removed.result.removed)
+        assertTrue(removed.result.warnings.isEmpty())
+    }
+
+    @Test
+    fun `a failed subtitle folder leaves external tracks and probe metadata intact`() {
+        val subtitle = "/Ani/Show (2020)/Season 01/Subs/Show - S01E01.zh-Hans.ass"
+        tree.file(ep1)
+        tree.file(subtitle)
+        walk()
+        val before = withMetadata(ep1)
+        assertEquals(listOf(subtitle), before.dto.mediaStreams.filter { it.isExternal }.map { it.externalPath })
+
+        tree.failing += subtitle.substringBeforeLast('/')
+        val failed = walk()
+        assertEquals(before, repository.itemRecord(id(ep1)))
+        assertEquals(1, failed.result.warnings.size)
+
+        tree.failing.clear()
+        tree.remove(subtitle)
+        walk()
+        val recovered = assertNotNull(repository.itemRecord(id(ep1)))
+        assertEquals(before.probedAt, recovered.probedAt)
+        assertEquals(before.dto.mediaStreams.filterNot { it.isExternal }, recovered.dto.mediaStreams)
     }
 
     @Test

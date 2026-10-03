@@ -2,6 +2,7 @@ package com.daview.server.scraper
 
 import com.daview.server.config.ScraperConfig
 import com.daview.server.db.Repository
+import com.daview.server.io.readUpTo
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MetadataProvider
 import com.daview.shared.model.PersonDto
@@ -136,7 +137,10 @@ abstract class HttpScraper(protected val repository: Repository?) {
     ): JsonElementOrNull {
         cacheKey?.let { key ->
             repository?.cacheGet(key, cacheMaxAgeMs)?.let {
-                return JsonElementOrNull(runCatching { json.parseToJsonElement(it) }.getOrNull())
+                runCatching { json.parseToJsonElement(it) }.getOrNull()
+                    ?.takeIf { parsed -> parsed is JsonObject || parsed is JsonArray }?.let { cached ->
+                    return JsonElementOrNull(cached)
+                }
             }
         }
         val builder = Request.Builder()
@@ -147,18 +151,24 @@ abstract class HttpScraper(protected val repository: Repository?) {
         headers.forEach { (k, v) -> builder.header(k, v) }
         val response = runCatching { http.newCall(builder.build()).execute() }
             .getOrElse {
-                log.warn("请求 {} 失败: {}", url, it.message)
+                log.warn("请求 {} 失败: {}", builder.build().url.redact(), it::class.simpleName)
                 return JsonElementOrNull(null)
             }
-        val body = response.use {
+        val body = runCatching { response.use {
             if (!it.isSuccessful) {
-                log.warn("请求 {} 返回 HTTP {}", url, it.code)
+                log.warn("请求 {} 返回 HTTP {}", builder.build().url.redact(), it.code)
                 return JsonElementOrNull(null)
             }
-            it.body.string()
+            readJsonBody(it)
+        } }.getOrElse {
+            log.warn("读取 {} 失败: {}", builder.build().url.redact(), it::class.simpleName)
+            return JsonElementOrNull(null)
         }
+        val parsed = runCatching { json.parseToJsonElement(body) }.getOrNull()
+            ?.takeIf { it is JsonObject || it is JsonArray }
+            ?: return JsonElementOrNull(null)
         cacheKey?.let { repository?.cachePut(it, body) }
-        return JsonElementOrNull(runCatching { json.parseToJsonElement(body) }.getOrNull())
+        return JsonElementOrNull(parsed)
     }
 
     protected fun postJson(
@@ -174,20 +184,31 @@ abstract class HttpScraper(protected val repository: Repository?) {
         headers.forEach { (k, v) -> builder.header(k, v) }
         val response = runCatching { http.newCall(builder.build()).execute() }
             .getOrElse {
-                log.warn("请求 {} 失败: {}", url, it.message)
+                log.warn("请求 {} 失败: {}", builder.build().url.redact(), it::class.simpleName)
                 return JsonElementOrNull(null)
             }
-        return response.use {
+        return runCatching { response.use {
             if (!it.isSuccessful) {
-                log.warn("请求 {} 返回 HTTP {}", url, it.code)
+                log.warn("请求 {} 返回 HTTP {}", builder.build().url.redact(), it.code)
                 JsonElementOrNull(null)
             } else {
-                JsonElementOrNull(runCatching { json.parseToJsonElement(it.body.string()) }.getOrNull())
+                JsonElementOrNull(json.parseToJsonElement(readJsonBody(it)))
             }
+        } }.getOrElse {
+            log.warn("读取 {} 失败: {}", builder.build().url.redact(), it::class.simpleName)
+            JsonElementOrNull(null)
         }
     }
 
-    protected fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8)
+    private fun readJsonBody(response: okhttp3.Response): String {
+        val limit = 8 * 1024 * 1024
+        require(response.body.contentLength() <= limit) { "元数据响应过大" }
+        val bytes = response.body.byteStream().readUpTo(limit + 1)
+        require(bytes.size <= limit) { "元数据响应过大" }
+        return bytes.toString(Charsets.UTF_8)
+    }
+
+    protected fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8.name())
 
     class JsonElementOrNull(val element: kotlinx.serialization.json.JsonElement?) {
         val obj: JsonObject? get() = element as? JsonObject

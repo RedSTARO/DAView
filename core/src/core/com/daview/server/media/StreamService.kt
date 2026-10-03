@@ -2,6 +2,7 @@ package com.daview.server.media
 
 import com.daview.server.db.ItemRecord
 import com.daview.server.db.Repository
+import com.daview.server.io.readUpTo
 import com.daview.server.library.MkvProbe
 import com.daview.server.library.Mp4Probe
 import com.daview.server.library.TsProbe
@@ -9,7 +10,14 @@ import com.daview.server.storage.WebDavClient
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.MediaStreamDto
 import org.slf4j.LoggerFactory
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorCompletionService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Everything that needs to touch the actual media bytes: resolving playable
@@ -148,7 +156,7 @@ class StreamService(
             } else {
                 dav().openRange(path, start, start + length - 1)
             }
-            stream.use { it.stream.readNBytes(length) }
+            stream.use { it.stream.readUpTo(length) }
         }
     }
 
@@ -158,12 +166,32 @@ class StreamService(
      * preserved.
      */
     fun probeItem(item: MediaItemDto, force: Boolean = false): MediaItemDto {
-        val path = item.path ?: return item
-        val record = repository.itemRecord(item.id) ?: return item
-        if (!force && record.probedAt != null) return item
+        val result = readProbe(item, force)
+        result.record?.let(repository::upsertItem)
+        return result.item
+    }
+
+    /** Workers only read; the scan coordinator decides whether a result may be stored. */
+    private data class ProbeResult(val item: MediaItemDto, val record: ItemRecord? = null)
+
+    private fun readProbe(
+        item: MediaItemDto,
+        force: Boolean = false,
+        checkActive: () -> Unit = {}
+    ): ProbeResult {
+        checkActive()
+        val path = item.path ?: return ProbeResult(item)
+        val record = repository.itemRecord(item.id) ?: return ProbeResult(item)
+        if (!force && record.probedAt != null) return ProbeResult(item)
 
         val now = System.currentTimeMillis()
-        val reader = rangeReader(path)
+        checkActive()
+        val source = rangeReader(path)
+        checkActive()
+        val reader = MkvProbe.RangeReader { start, length ->
+            checkActive()
+            source.read(start, length).also { checkActive() }
+        }
         var failure: Throwable? = null
         val probed: Pair<Long?, List<MediaStreamDto>>? = when {
             MkvProbe.isMatroska(path) -> runCatching { MkvProbe.probe(reader) }
@@ -187,6 +215,9 @@ class StreamService(
 
             else -> null
         }
+        // Container parsers catch malformed input and I/O errors. Cancellation
+        // and deadlines must still win even if a parser swallowed the signal.
+        checkActive()
 
         if (probed == null) {
             // A read that failed — on the network, or answered with an error
@@ -195,8 +226,7 @@ class StreamService(
             // Left unstamped, it is tried again on the next scan or the next
             // time it is opened, as chapters are.
             val unread = failure is java.io.IOException || failure is com.daview.server.storage.WebDavException
-            if (!unread) repository.upsertItem(record.copy(probedAt = now))
-            return item
+            return ProbeResult(item, if (unread) null else record.copy(probedAt = now))
         }
 
         val (durationMs, embedded) = probed
@@ -205,8 +235,7 @@ class StreamService(
             runtimeMs = durationMs ?: item.runtimeMs,
             mediaStreams = embedded + external
         )
-        repository.upsertItem(record.copy(dto = updated, probedAt = now))
-        return updated
+        return ProbeResult(updated, record.copy(dto = updated, probedAt = now))
     }
 
     /**
@@ -251,12 +280,6 @@ class StreamService(
     }
 
     /**
-     * Probes pending files with a small amount of concurrency. Each probe is a
-     * handful of short range reads over the network, so the work is latency
-     * bound and a few parallel readers cut wall-clock time dramatically without
-     * putting real load on the storage backend.
-     */
-    /**
      * Plain platform threads rather than virtual ones: Android has no virtual
      * threads, and the pool is bounded by [parallelism] anyway.
      */
@@ -265,38 +288,93 @@ class StreamService(
     }
 
     fun probeMissing(libraryId: String, limit: Int, parallelism: Int = 6, onProgress: (Int, Int, String) -> Unit) {
+        probeMissing(libraryId, limit, parallelism, ScanService.Cancellation(), onProgress = onProgress)
+    }
+
+    /**
+     * At most [parallelism] probes are in flight. Results, writes and callbacks
+     * are consumed on the calling thread, including failures from callbacks.
+     * The deadline covers this whole batch, not each file separately.
+     */
+    internal fun probeMissing(
+        libraryId: String,
+        limit: Int,
+        parallelism: Int = 6,
+        cancellation: ScanService.Cancellation,
+        timeoutMillis: Long = PROBE_DEADLINE_MS,
+        nanoTime: () -> Long = System::nanoTime,
+        onProgress: (Int, Int, String) -> Unit
+    ) {
+        require(timeoutMillis >= 0) { "timeoutMillis must not be negative" }
+        val started = nanoTime()
+        val budget = TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+        val stopped = AtomicBoolean()
+        fun remainingNanos() = budget - (nanoTime() - started)
+        fun checkActive() {
+            cancellation.checkCancelled()
+            if (stopped.get()) throw CancellationException("探测已停止")
+            if (Thread.currentThread().isInterrupted) throw InterruptedException("探测已中断")
+            if (remainingNanos() <= 0) throw TimeoutException("媒体探测超时")
+        }
+
+        checkActive()
         val pending = repository.itemsNeedingProbe(libraryId, limit)
+        checkActive()
         if (pending.isEmpty()) return
-        val done = java.util.concurrent.atomic.AtomicInteger()
-        val gate = java.util.concurrent.Semaphore(parallelism.coerceAtLeast(1))
-        val threads = pending.map { item ->
-            probeThreadFactory.newThread {
-                gate.acquire()
-                try {
-                    runCatching { probeItem(item) }
-                    onProgress(done.incrementAndGet(), pending.size, item.name)
-                } finally {
-                    gate.release()
+
+        val workers = minOf(parallelism.coerceAtLeast(1), pending.size)
+        val executor = Executors.newFixedThreadPool(workers, probeThreadFactory)
+        val completed = ExecutorCompletionService<Pair<MediaItemDto, Result<ProbeResult>>>(executor)
+        val inFlight = HashSet<Future<Pair<MediaItemDto, Result<ProbeResult>>>>()
+        var next = 0
+        var done = 0
+        fun submitNext() = cancellation.whileActive {
+            checkActive()
+            val item = pending[next++]
+            inFlight += completed.submit(java.util.concurrent.Callable {
+                checkActive()
+                item to runCatching { readProbe(item, checkActive = ::checkActive) }
+            })
+        }
+
+        try {
+            repeat(workers) { submitNext() }
+            while (inFlight.isNotEmpty()) {
+                checkActive()
+                // Poll even if every reader is blocked: cancellation cannot
+                // depend on a network request completing or on a callback.
+                val ready = completed.poll(
+                    minOf(remainingNanos().coerceAtLeast(1), TimeUnit.MILLISECONDS.toNanos(PROBE_POLL_MS)),
+                    TimeUnit.NANOSECONDS
+                ) ?: continue
+                inFlight -= ready
+                checkActive()
+                val (item, outcome) = ready.get()
+                cancellation.whileActive {
+                    checkActive()
+                    outcome.getOrNull()?.record?.let(repository::upsertItem)
                 }
+                outcome.exceptionOrNull()?.let { log.warn("探测 {} 失败: {}", item.path, it.message) }
+                checkActive()
+                onProgress(++done, pending.size, item.name)
+                checkActive()
+                if (next < pending.size) submitNext()
             }
-        }
-        threads.forEach { it.start() }
-        // A single unreadable file must never stall a library scan, so each
-        // probe gets a deadline and anything still running is abandoned.
-        val deadline = System.currentTimeMillis() + PROBE_DEADLINE_MS
-        threads.forEach { thread ->
-            val remaining = deadline - System.currentTimeMillis()
-            if (remaining <= 0) return@forEach
-            runCatching { thread.join(remaining) }
-        }
-        threads.filter { it.isAlive }.forEach {
-            log.warn("探测线程超时，已放弃: {}", it.name)
-            runCatching { it.interrupt() }
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw interrupted
+        } finally {
+            // Readers may ignore interruption. They have no write path, and
+            // this per-batch flag also prevents their subsequent range reads.
+            stopped.set(true)
+            inFlight.forEach { it.cancel(true) }
+            executor.shutdownNow()
         }
     }
 
     private companion object {
         const val DIRECT_URL_TTL_MS = 30L * 60 * 1000
         const val PROBE_DEADLINE_MS = 15L * 60 * 1000
+        const val PROBE_POLL_MS = 50L
     }
 }
