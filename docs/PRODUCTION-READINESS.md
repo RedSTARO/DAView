@@ -24,42 +24,40 @@
 | Android 备份 | 旧版备份只排除 config.json，仍收集含凭据的临时/恢复副本 | Android 11 及更早只备份数据库及其 WAL/SHM、界面首选项 | 备份规则检查、Android lint；未做系统备份/恢复实测 |
 | Android lint | 进度通知缺权限处理、Media3 opt-in 缺失、无用布局与源码不可见 BOM | 修正权限处理和 opt-in，替换无用布局，使用显式 Unicode 转义 | `:composeApp:lintDebug`，0 错误 |
 | Windows 全屏失焦 | AWT 独占全屏在切到其他窗口时最小化 | 当前显示器上的无边框全屏；保留主窗口和视频 HWND，退出时恢复 WINDOWPLACEMENT；关闭时保存进入全屏前的窗口设置 | `WindowsFullscreenTest`，含真实 libmpv 测试图案和焦点转移 |
+| Windows 播放引擎发布 | 每次抓取最新版且不核对摘要，下载失败仍生成缺少内置引擎的 MSI | 固定已测引擎的归档与 DLL 摘要；验证后原子替换；CI 失败即阻止打包；随包保留构建来源与 mpv 许可 | 4 项下载/替换保护检查通过；两套 Windows 分发目录的 DLL 摘要、来源与许可文件逐字节校验及启动通过 |
 | 配置保存与恢复 | 错误 URL 先持久化再构造客户端，下次启动失败；损坏配置备份失败后仍允许覆盖；保存失败时密码草稿被清空 | 先验证并构造客户端再保存；旧错误地址可在设置中修复；原配置未成功保留则禁止覆盖；只在成功保存后清除本次提交的密码/密钥 | `StorageSettingsTest`、`ConfigStoreTest`，已通过 |
 
-## 验证状态
+## 当前验证证据
 
-- 最后验证在 2026-10-03 22:19（Asia/Singapore）完成，Gradle 退出码为 0，验证期间输入文件哈希保持一致。
-- `:core:jvmTest`：223 项，0 失败、0 错误、0 跳过；`:composeApp:desktopTest`：142 项，0 失败、0 错误、0 跳过，包含状态层竞态及 mpv 原生接口替身测试。
-- `:composeApp:compileDebugKotlinAndroid`、`:composeApp:assembleDebugAndroidTest` 成功。**组装仪器测试 APK 不等于运行真机测试。**
-- `:core:lintDebug`：0 问题；`:composeApp:lintDebug`：0 错误、12 警告。警告涉及 PiP 过渡建议、冗余 SDK 判断/资源目录、Modifier 参数顺序和 KTX 建议；未通过屏蔽规则或基线文件隐藏错误。
-- 验证由 `scripts/verify-production.ps1` 启动的一个 Gradle 进程执行。可复核本机 `build/audit/production-20261003-final/` 下的 `gradle.log`、`inputs.sha256` 和 `result.json`。脚本只有在 Gradle 成功且验证期间源文件未变化时才标记 `verified=true`。
-- 本轮开始时没有可连接的后台回调通道：当前 Windows CLI 没有 `queue`，其 daemon 管理只支持 Unix，桌面 App Server 使用现有进程的 stdio。后台验证不会创建定时轮询或尝试接管该进程。
-- Android 运行验收在 2026-10-03 22:32（Asia/Singapore）完成：独立 Android 36 x86_64 AVD 中仪器测试报告 `OK (24 tests)`，应用启动后仍存活；已查看首页截图及 UI 树，显示“还没有媒体库”和进入设置的操作入口。APK 中 GPL 与 NOTICE 均与源码副本逐字节相同。日志和截图在 `build/audit/android-20261003-runtime-01/`，测试设备已关闭，原模拟器用户数据未被使用。
-- 首次运行的报告采用非原始输出，不能依据脚本记录的 `skipped=0` 断言所有用例都执行了；其中可选 `e07.ass` 素材确实未安装。脚本现增加 `am instrument -r` 并计数成功、忽略和 assumption failure，后续运行可报告准确跳过数。
-- 可选的 `e07.ass` 真实字幕参考用例在缺少文件时改为 JUnit assumption 跳过，避免空执行被计为通过。
-- 全屏专项验证在 2026-10-03 22:47（Asia/Singapore）完成：桌面 145 项测试，0 失败、0 错误、0 跳过。新增 3 项 Windows 测试验证句柄不重建、恢复原窗口、释放已销毁窗口；显式启用的真实 libmpv 用例让另一个窗口取得焦点，并检查播放进度继续前进、窗口未最小化、退出全屏后原最大化状态及普通窗口矩形恢复。运行产物在本机 `build/audit/fullscreen-focus-02/`。首次运行未配置测试 DLL 路径，实际播放用例未运行；以上数字对应修正路径后的成功运行。
-- 发布产物验收入口为 `scripts/verify-release-artifacts.ps1`：生成当前构建配置的普通/ProGuard Windows 分发目录和 Android release APK；逐字节检查许可资源，并用隔离的 core 数据目录启动两个桌面分发目录，检查窗口、数据库和文件日志。它不安装 MSI、不使用真实存储凭据、不推送或发布。FFmpeg ABI 文件列表单独报告；APK 安装及混淆后的 Android 播放行为仍需运行验收。
-- 首次发布构建的三个任务均成功，但启动校验因 `Process.MainWindowHandle` 返回 0 中止；隔离数据库和日志已创建，现有证据不足以认定应用没有窗口。验证器改为枚举仅属于本次启动及其子进程的可见 AWT 窗口，并保存启动器 stdout/stderr，待重验。
-- 配置修复的最终核心验证在 2026-10-03 23:37（Asia/Singapore）完成：229 项全部通过，无跳过，core lint 无问题（`build/audit/configuration-final-20261003-04/`）。此前同组改动的桌面 145 项无失败、1 项选择性跳过，Android 编译/仪器 APK 组装及应用 lint 已通过（`configuration-release-20261003-02/tests/`）。新增方括号路径用例源于独立 Java 程序复现，HTTP URL 转 URI 改用 `HttpUrl.toUri()` 以避免合法路径被再次拒绝。
-- 第二次组合验证在测试结束后中断，原进程已消失，发布步骤没有最终记录；不计为发布验证成功，也没有凭缺失记录重复启动原任务。
-- 发布产物验证在 2026-10-04 00:44（Asia/Singapore）完成：普通及 ProGuard Windows 分发目录都显示可见的 `SunAwtFrame`，创建隔离数据库并初始化日志；两套分发目录的项目许可文件校验通过。Android release APK 为 6,203,356 字节，四种 ABI 的 16 个 FFmpeg 库齐全，项目许可文件校验通过。Gradle 退出码 0，输入哈希未变化。结果见 `build/audit/release-artifacts-20261004-04/`；这是目录启动及包内容检查，不是 MSI 安装/升级或完整播放验收。
-- 验证器自身的两次误判已修正：`.NET Process.MainWindowHandle` 不足以识别启动器子进程/有 owner 的窗口；Logback 打开日志写入时，读取端须允许 `FileShare.ReadWrite`。未把这两次检测失败报告为应用启动失败。
-- `verify-android-runtime.ps1 -ReleaseUiSmoke` 新增 release 黑盒检查入口：先运行 debug 仪器测试，然后在同一独立 AVD 中移除测试应用，使用临时 QA 证书签名的 release 副本测试首次启动、无效配置拒绝、密码草稿保留和 FFmpeg 可用提示。不会使用正式签名密钥或发布 QA 安装包，结果待运行。
-- Android release 首轮在设备身份校验处中止：Windows adb 实际返回 CR-CR-LF，旧正则只允许一个 CR。已用保存的原始响应验证逐行 trim 的修正；每次运行采用唯一 AVD 名称，只有身份确认后才允许通过 adb 关闭设备。
-- 同步修复及 Android release 复验在 2026-10-04 01:42（Asia/Singapore）完成：核心 239 项全部通过；桌面 145 项无失败、1 项选择性跳过；Android 编译与 lint 通过。在独立 API 36 AVD 中，debug 仪器测试实际通过 23 项、跳过 1 项；QA 签名的 R8 release 包通过首次启动、无效配置拒绝、密码草稿保留和 FFmpeg 可用检查。结果见 `build/audit/sync-and-android-20261004-02/`。
-- 内置 SQLite 后的编译与测试已通过（2026-10-04 02:09）：核心 239 项、桌面 145 项无失败（桌面 1 项选择性跳过），Android 编译/仪器 APK 组装与 lint 通过。02:12 的发布验证中，普通及 ProGuard 桌面目录启动均通过，APK 许可检查发现 AAR 顶层 `META-INF` 许可不会自动进入 APK；已将固定版本 AAR 中的完整 Apache-2.0 文本加入显式 assets 资源，复验待运行。记录位于 `build/audit/bundled-sqlite-release-20261004-01/`。
-- 许可证修正后的发布与运行验证于 2026-10-04 02:16 完成：普通/ProGuard Windows 目录启动通过，APK 的项目及 SQLite 许可逐字节校验通过，四种 ABI 的 FFmpeg 和 SQLite 库齐全。API 36 仪器测试通过 30 项、跳过 1 项，含 7 项数据库用例（UPSERT、参数类型、回滚、并发隔离、平台旧库/WAL 迁移、关闭行为）；R8 release 首次启动、设置拒绝/草稿保留和 FFmpeg 加载检查通过。APK 8,720,636 字节，SHA-256 `4B1B3D2A0AC4C767235B0E58E42558430114726EAD75A2288FC4B76C67215B43`。报告见 `build/audit/bundled-sqlite-release-20261004-02/`。
-- 混淆映射归档脚本已用真实 R8 映射与 APK 验证 ZIP 内容、映射哈希及签名前产物标记；CI YAML 与四个平台的映射归档/标签发布路径通过静态检查。SQLite AAR 四种 ABI 的 ELF 加载段均为 16 KB 对齐。CI 远端整条流水线尚未运行，本轮未推送或发布。
+截至 2026-10-04 02:29（Asia/Singapore），下表是本轮已完成的验证范围。报告保存在本机 `build/audit/`，不提交大型运行产物。测试数中的跳过不计为实际通过。
+
+| 范围 | 结果与边界 | 本机证据目录 |
+| --- | --- | --- |
+| 核心、桌面及 Android 静态检查 | 核心 239 项全部通过；桌面 145 项无失败、1 项真实播放器用例按选择跳过；Android 编译及仪器 APK 组装通过；core lint 0 问题，应用 lint 0 错误、12 警告 | `bundled-sqlite-release-20261004-01/tests/` |
+| Windows 全屏失焦专项 | 显式启用真实 libmpv，145 项桌面测试全部通过、无跳过；焦点转移后播放进度继续、未最小化，退出全屏恢复原窗口状态与矩形 | `fullscreen-focus-02/` |
+| Android 仪器测试 | 独立 API 36 x86_64 AVD：30 项实际通过、1 项缺少外部字幕素材而跳过；包含 7 项新数据库测试，覆盖 UPSERT、绑定类型、回滚、并发隔离、平台旧库/WAL 迁移与关闭行为 | `bundled-sqlite-release-20261004-02/android-release/` |
+| Android R8 release 运行 | 使用临时 QA 证书签名的副本通过首次启动、无效存储配置拒绝、失败后的密码草稿保留、FFmpeg 可用检查；未使用正式密钥，未发布 QA 包 | 同上 |
+| Android release 包内容 | APK 8,720,636 字节；项目及 SQLite 许可逐字节匹配；四种 ABI 的 16 个 FFmpeg 库和 4 个 SQLite 库齐全。SHA-256：`4B1B3D2A0AC4C767235B0E58E42558430114726EAD75A2288FC4B76C67215B43` | `bundled-sqlite-release-20261004-02/release-artifacts/` |
+| 固定 libmpv 下载及替换 | 4 项检查通过：损坏归档拒绝、解出 DLL 摘要不符拒绝、失败不覆盖原 DLL、成功及重复安装保持正确 DLL 和来源记录 | `fetch-mpv-be8580ca8a2e4b10b81128a114a3b35b/` |
+| Windows 分发目录 | 普通/ProGuard 两套目录均出现可见 AWT 窗口，初始化隔离数据库和日志；包内 DLL 摘要、构建来源 JSON、项目及 mpv 许可文件均匹配；Gradle 退出码 0，验证期间源文件哈希未变 | `pinned-mpv-release-20261004-01/` |
+| CI 与映射归档 | CI YAML 和四平台映射/发布路径通过静态检查；用真实 R8 映射与 APK 验证归档 ZIP、映射哈希和签名前产物标记。远端 CI 尚未执行 | `mapping-archive-check/` |
+
+固定 libmpv 是上游 `20260903` 构建，归档摘要已与发布元数据核对；解出的 DLL 与此前全屏失焦验收使用的 DLL 完全一致，SHA-256 为 `673e6397920ab64a9c5b3a618f7f16d38854efe72b58665f1f84e4e873b763a4`。mpv 与构建脚本提交分别为 `69e63f425a531f814431fba12750bdb3721357f2`、`cd1edc11dc6887a50f705717619d879f5a93a488`。SQLite AAR 四种 ABI 的 ELF 加载段均已核对为 16 KB 对齐（`sqlite-api/native-alignment.json`）。
+
+验证器修正也有实际失败证据：窗口检测改用所属进程树的可见 AWT 窗口；Logback 活跃日志使用共享读取；Android 设备名按行 trim 处理 CR-CR-LF，并核对唯一 AVD 身份后才允许关闭；可选字幕测试以 assumption 正确报告跳过；AAR 顶层许可未自动进入 APK，已改为显式 assets 并复验。没有把检测脚本失败当作应用失败，也没有把缺少结果或测试 APK 组装当作运行通过。
+
+`verify-production.ps1` 检查源码输入是否在测试期间变化；`verify-release-artifacts.ps1` 检查包内容和隔离启动；`verify-android-runtime.ps1 -ReleaseUiSmoke` 运行独立 AVD 与 release 黑盒检查。后台任务将结果写入 JSON。本环境的 Windows CLI 没有 `queue`，daemon 仅支持 Unix，现有 App Server 是不可接管的 stdio，无法配置完成后回调当前会话；未设置定时轮询。本轮没有推送或发布。
 
 ## 尚未满足的验收项
 
-- Android 真机：目前 `adb devices -l` 没有连接设备。模拟器测试另行执行；后台/前台切换、锁屏、画中画、配置重建、通知拒绝和前台服务超时仍需运行验收。
-- 桌面真实播放器：源码构建的真实 libmpv 全屏失焦测试已通过；这不能证明安装包、HDR、全部显示驱动及播放控制浮层都通过。分发目录启动检查另行执行，MSI 安装及升级仍需验收。
+- Android 真机：目前 `adb devices -l` 没有连接设备。上述模拟器基础测试已完成；后台/前台切换、锁屏、画中画、配置重建、通知拒绝和前台服务超时仍需运行验收。
+- 桌面真实播放器：源码构建的真实 libmpv 全屏失焦测试已通过；这不能证明安装包、HDR、全部显示驱动及播放控制浮层都通过。上述分发目录启动检查已完成，MSI 安装及升级仍需验收。
 - Linux/macOS 安装包和两端从旧版升级：本轮尚无运行证据。
 - 离线旧数据：已发生的文件碰撞污染、远端同大小内容替换，无法仅凭长度自动发现。新路径分配和续传检查不能证明旧文件正确。
 - 同步并发：不支持条件写入的 WebDAV 仍无法保证两个设备同时 PUT 时不互相覆盖。后续拉取补传缺少/较旧行的回归测试已通过；同时间戳时保留本机值的既有冲突规则不变，也没有消除设备时钟偏差。
 - 发布配置：用户授权的原有压缩/混淆配置已经过上述本机验证；CI 已切换到桌面 `packageRelease*`，各平台归档映射及来源/产物哈希。远端 CI、Linux/macOS 打包及运行仍无本轮证据，不能用 Windows 目录启动替代其验收。
 - Android 8 兼容：API 26 镜像下载命令被自动审批拦截（只返回 `blocked by policy`）；本机当前只有 API 36/36.1 镜像，最低版本设备的实际运行验收仍缺。验证器支持指定 API 和独立镜像目录，不将 API 36 结果当作 Android 8 实测。
 - 项目许可证：用户授权选择开源许可证后，DAView 自有代码已采用 `GPL-3.0-or-later`，根目录 `LICENSE` 为 GNU 官方完整文本。第三方声明继续适用。Windows 内置 libmpv 及其依赖的对应源码、构建信息和实际安装包中的许可材料仍需逐项验证；选定项目许可证并不自动关闭这些发布验收项。
+- libmpv 归档长期保留：上游工作流会清理旧 GitHub release，CI 缓存也不是永久镜像；当前已固定的归档仍可获取，但后续失效会明确阻止构建。未擅自向项目 Release 上传副本。`mpv-dev` 归档没有依赖源码/完整通知，构建脚本也引用浮动分支；已经补入 mpv 自身 Copyright/GPL 文本及准确来源记录，这些仍不足以证明全部对应源码材料已齐全。
 
 以上缺口关闭前，不能据单元测试通过宣称应用已达到生产级别。

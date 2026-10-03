@@ -1,4 +1,4 @@
-param([string]$OutputDirectory = "")
+param([string]$OutputDirectory = "", [switch]$DesktopOnly)
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -12,7 +12,9 @@ if (Test-Path -LiteralPath (Join-Path $OutputDirectory 'result.json')) { throw '
 $env:ANDROID_HOME = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { Join-Path $env:LOCALAPPDATA 'Android/Sdk' }
 $started = [DateTimeOffset]::UtcNow
 $result = [ordered]@{startedAt=$started.ToString('o'); verified=$false; error=$null; desktop=@(); android=$null}
-$tasks = @(':composeApp:createDistributable', ':composeApp:createReleaseDistributable', ':composeApp:assembleRelease')
+$tasks = @(':composeApp:createDistributable', ':composeApp:createReleaseDistributable')
+if (-not $DesktopOnly) { $tasks += ':composeApp:assembleRelease' }
+$result.scope = if ($DesktopOnly) { 'windows-desktop' } else { 'windows-desktop-and-android' }
 
 # A jpackage launcher can own a second process, and Process.MainWindowHandle
 # ignores owned windows. Inspect visible AWT frames belonging only to this
@@ -97,6 +99,21 @@ function Smoke-Desktop([string]$variant) {
     Verify-Copies (Join-Path $directory 'app/resources')
     $mpv = Join-Path $directory 'app/resources/libmpv-2.dll'
     if (-not (Test-Path -LiteralPath $mpv)) { throw "Missing packaged libmpv: $variant" }
+    $pin = Get-Content -LiteralPath (Join-Path $repo 'scripts/libmpv-windows.json') -Raw | ConvertFrom-Json
+    if ((Get-Item -LiteralPath $mpv).Length -ne $pin.dllSize -or (Get-FileHash -LiteralPath $mpv).Hash -ne $pin.dllSha256) {
+        throw "Packaged libmpv differs from the tested pin: $variant"
+    }
+    $provenance = Join-Path $directory 'app/resources/libmpv-build.json'
+    if ((Get-FileHash -LiteralPath $provenance).Hash -ne (Get-FileHash -LiteralPath (Join-Path $repo 'scripts/libmpv-windows.json')).Hash) {
+        throw "Packaged libmpv provenance differs from the pin: $variant"
+    }
+    foreach ($name in @('Copyright','LICENSE.GPL','SOURCES.txt')) {
+        $packaged = Join-Path $directory "app/resources/licenses/mpv/$name"
+        $source = Join-Path $repo "composeApp/nativeResources/windows/licenses/mpv/$name"
+        if ((Get-FileHash -LiteralPath $packaged).Hash -ne (Get-FileHash -LiteralPath $source).Hash) {
+            throw "Packaged mpv notice differs: $variant/$name"
+        }
+    }
     $data = Join-Path $OutputDirectory "data-$variant"
     $info = [Diagnostics.ProcessStartInfo]::new($exe)
     $info.UseShellExecute = $false
@@ -133,7 +150,7 @@ function Smoke-Desktop([string]$variant) {
         $reader = [IO.StreamReader]::new($logStream, [Text.Encoding]::UTF8)
         try { $logged = $reader.ReadToEnd() } finally { $reader.Dispose() }
         if ($logged -match '(?m)\bERROR\b|uncaught exception|NoClassDefFoundError|NoSuchMethodError') { throw "$variant startup log contains errors" }
-        return @{variant=$variant; launcher=$exe; startupPassed=$true; licensesVerified=$true; databaseBytes=(Get-Item $database).Length; log=$log}
+        return @{variant=$variant; launcher=$exe; startupPassed=$true; licensesVerified=$true; mpvSha256=$pin.dllSha256; databaseBytes=(Get-Item $database).Length; log=$log}
     } finally {
         # Closing the test process directly avoids writing window preferences
         # into the desktop user's real UI settings node on the normal quit path.
@@ -158,28 +175,30 @@ try {
         $result.desktop += Smoke-Desktop $variant
     }
 
-    Write-Phase 'android-apk'
-    $apks = @(Get-ChildItem 'composeApp/build/outputs/apk/release' -Filter '*.apk')
-    if ($apks.Count -ne 1) { throw 'Expected exactly one Android release APK' }
-    $zip = [IO.Compression.ZipFile]::OpenRead($apks[0].FullName)
-    try {
-        foreach ($name in @('DAView-GPL-3.0.txt','DAView-NOTICE.txt','sqlite/Apache-2.0.txt')) {
-            $entry = $zip.GetEntry("assets/licenses/$name")
-            if ($null -eq $entry) { throw "Release APK is missing $name" }
-            $stream = $entry.Open()
-            try { $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)) }
-            finally { $stream.Dispose() }
-            if ($actual -ne (Get-FileHash -LiteralPath "composeApp/src/androidMain/assets/licenses/$name").Hash) { throw "Release APK license differs: $name" }
-        }
-        $abis = @('arm64-v8a','armeabi-v7a','x86','x86_64')
-        $missingNative = @(foreach ($abi in $abis) {
-            foreach ($library in @('libffmpegJNI.so','libavcodec.so','libavutil.so','libswresample.so','libsqliteJni.so')) {
-                if ($null -eq $zip.GetEntry("lib/$abi/$library")) { "lib/$abi/$library" }
+    if (-not $DesktopOnly) {
+        Write-Phase 'android-apk'
+        $apks = @(Get-ChildItem 'composeApp/build/outputs/apk/release' -Filter '*.apk')
+        if ($apks.Count -ne 1) { throw 'Expected exactly one Android release APK' }
+        $zip = [IO.Compression.ZipFile]::OpenRead($apks[0].FullName)
+        try {
+            foreach ($name in @('DAView-GPL-3.0.txt','DAView-NOTICE.txt','sqlite/Apache-2.0.txt')) {
+                $entry = $zip.GetEntry("assets/licenses/$name")
+                if ($null -eq $entry) { throw "Release APK is missing $name" }
+                $stream = $entry.Open()
+                try { $actual = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)) }
+                finally { $stream.Dispose() }
+                if ($actual -ne (Get-FileHash -LiteralPath "composeApp/src/androidMain/assets/licenses/$name").Hash) { throw "Release APK license differs: $name" }
             }
-        })
-        $result.android = @{apk=$apks[0].FullName; bytes=$apks[0].Length; sha256=(Get-FileHash $apks[0].FullName).Hash; licensesVerified=$true; missingNativeLibraries=$missingNative}
-        if ($missingNative.Count -gt 0) { throw "Release APK is missing native libraries: $($missingNative -join ', ')" }
-    } finally { $zip.Dispose() }
+            $abis = @('arm64-v8a','armeabi-v7a','x86','x86_64')
+            $missingNative = @(foreach ($abi in $abis) {
+                foreach ($library in @('libffmpegJNI.so','libavcodec.so','libavutil.so','libswresample.so','libsqliteJni.so')) {
+                    if ($null -eq $zip.GetEntry("lib/$abi/$library")) { "lib/$abi/$library" }
+                }
+            })
+            $result.android = @{apk=$apks[0].FullName; bytes=$apks[0].Length; sha256=(Get-FileHash $apks[0].FullName).Hash; licensesVerified=$true; missingNativeLibraries=$missingNative}
+            if ($missingNative.Count -gt 0) { throw "Release APK is missing native libraries: $($missingNative -join ', ')" }
+        } finally { $zip.Dispose() }
+    }
     $result.inputFilesUnchanged = ($null -eq (Compare-Object $before (Snapshot)))
     if (-not $result.inputFilesUnchanged) { throw 'Source files changed during verification' }
     $result.verified = $true

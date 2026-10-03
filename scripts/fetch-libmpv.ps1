@@ -1,67 +1,97 @@
 <#
 .SYNOPSIS
-Puts libmpv where the desktop build expects it: composeApp/nativeResources/windows/libmpv-2.dll
-
+Fetch the pinned Windows libmpv, verifying both the archive and extracted DLL.
 .DESCRIPTION
-The in-app player on the desktop is libmpv. The DLL is ~115 MB, so it is not in
-git; this fetches it from shinchiro's Windows builds, which are the ones mpv.io
-points at for Windows.
-
-The build must be a git-master one, not a numbered release. RTX Video HDR needs
-two commits that landed after 0.41.0: without them mpv sets the driver extension
-but never retags the frame as HDR10 or moves the surface to a 10-bit format, and
-the feature silently does nothing. shinchiro tracks master, so any recent release
-here is fine.
-
-Needs 7-Zip on PATH (GitHub's windows runners ship it).
+The pin is scripts/libmpv-windows.json. Update it deliberately after playback
+validation. A successful build must not silently substitute a new engine.
+ArchivePath allows an offline, hash-checked copy; OutputDirectory is useful
+for isolated validation. The default cache is build/native-cache.
 #>
 [CmdletBinding()]
 param(
-    # Pin a release tag (e.g. 20260903) instead of taking the latest.
-    [string]$Tag = "latest",
-    # x86_64 works everywhere; x86_64-v3 needs AVX2.
-    [string]$Arch = "x86_64"
+    [string]$PinFile = (Join-Path $PSScriptRoot 'libmpv-windows.json'),
+    [string]$ArchivePath = '',
+    [string]$OutputDirectory = ''
 )
 
-$ErrorActionPreference = "Stop"
-
+$ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$target = Join-Path $repoRoot "composeApp\nativeResources\windows"
-New-Item -ItemType Directory -Force -Path $target | Out-Null
-
-$api = if ($Tag -eq "latest") {
-    "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest"
-} else {
-    "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/tags/$Tag"
+$pin = Get-Content -LiteralPath $PinFile -Raw | ConvertFrom-Json
+if ($pin.repository -ne 'shinchiro/mpv-winbuild-cmake' -or
+    $pin.tag -notmatch '^\d{8}$' -or $pin.architecture -ne 'x86_64' -or
+    $pin.archive -notmatch '^mpv-dev-x86_64-\d{8}-git-[0-9a-f]+\.7z$' -or
+    $pin.archiveSha256 -notmatch '^[0-9a-f]{64}$' -or $pin.dllSha256 -notmatch '^[0-9a-f]{64}$' -or
+    $pin.archiveSize -le 0 -or $pin.dllSize -le 0) {
+    throw 'Invalid libmpv pin. Use an explicit release, archive name and SHA-256 digests.'
 }
 
-Write-Host "querying $api"
-$headers = @{ "User-Agent" = "DAView-build" }
-if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN" }
-$release = Invoke-RestMethod -Uri $api -Headers $headers
-
-# mpv-dev-<arch>-<date>-git-<sha>.7z holds libmpv-2.dll, the import library and
-# the headers. The player archive of the same date holds mpv.exe instead.
-$asset = $release.assets |
-    Where-Object { $_.name -like "mpv-dev-$Arch-*.7z" -and $_.name -notlike "mpv-dev-$Arch-v*" } |
-    Select-Object -First 1
-if (-not $asset) { throw "no mpv-dev-$Arch asset in release $($release.tag_name)" }
-
-Write-Host "downloading $($asset.name) ($([math]::Round($asset.size/1MB,1)) MB) from $($release.tag_name)"
-$archive = Join-Path ([System.IO.Path]::GetTempPath()) $asset.name
-# Deliberately not $headers: GitHub redirects the asset to a signed
-# githubusercontent URL that rejects a request still carrying a bearer token,
-# and Windows PowerShell 5.1 does not strip it across the redirect the way
-# PowerShell 7 does. The token is only useful for the API call above anyway.
-Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archive -Headers @{ "User-Agent" = "DAView-build" }
-
-if (-not (Get-Command 7z -ErrorAction SilentlyContinue)) {
-    throw "7z is not on PATH; install 7-Zip or extract $archive into $target by hand"
+function Assert-PinnedFile([string]$Path, [long]$Size, [string]$Sha256) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Pinned file is missing: $Path" }
+    if ((Get-Item -LiteralPath $Path).Length -ne $Size -or
+        (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ne $Sha256) {
+        throw "Pinned file failed size/SHA-256 verification: $Path"
+    }
 }
-& 7z e -y -o"$target" "$archive" "libmpv-2.dll" | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "7z failed with $LASTEXITCODE" }
 
-$dll = Join-Path $target "libmpv-2.dll"
-if (-not (Test-Path $dll)) { throw "libmpv-2.dll was not extracted" }
-Remove-Item $archive -Force
-Write-Host ("{0}  {1:N1} MB" -f $dll, ((Get-Item $dll).Length / 1MB))
+$cache = Join-Path $repoRoot 'build/native-cache'
+[IO.Directory]::CreateDirectory($cache) | Out-Null
+if (-not $ArchivePath) {
+    $ArchivePath = Join-Path $cache $pin.archive
+    if (-not (Test-Path -LiteralPath $ArchivePath)) {
+        $download = Join-Path $cache ('.download-' + [Guid]::NewGuid().ToString('N'))
+        try {
+            $url = "https://github.com/$($pin.repository)/releases/download/$($pin.tag)/$($pin.archive)"
+            Write-Host "Downloading pinned libmpv $($pin.tag)"
+            # Public release assets need no token. Do not forward credentials
+            # to GitHub's redirected download host.
+            Invoke-WebRequest -Uri $url -OutFile $download -TimeoutSec 300 -Headers @{ 'User-Agent'='DAView-build' }
+            Assert-PinnedFile $download $pin.archiveSize $pin.archiveSha256
+            Move-Item -LiteralPath $download -Destination $ArchivePath
+        } finally {
+            if (Test-Path -LiteralPath $download) { Remove-Item -LiteralPath $download -Force }
+        }
+    }
+}
+$ArchivePath = [IO.Path]::GetFullPath($ArchivePath)
+# A corrupted cache fails too; it is never mistaken for a successful fetch.
+Assert-PinnedFile $ArchivePath $pin.archiveSize $pin.archiveSha256
+
+if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repoRoot 'composeApp/nativeResources/windows' }
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+$staging = Join-Path $cache ('.extract-' + [Guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($staging) | Out-Null
+$stagedDll = Join-Path $staging 'libmpv-2.dll'
+$candidate = $null
+$provenanceCandidate = $null
+try {
+    $sevenZip = Get-Command 7z -ErrorAction SilentlyContinue
+    $tar = Get-Command tar -ErrorAction SilentlyContinue
+    if ($sevenZip) {
+        & $sevenZip.Source e -y "-o$staging" $ArchivePath 'libmpv-2.dll' | Out-Null
+    } elseif ($tar) {
+        & $tar.Source -xf $ArchivePath -C $staging 'libmpv-2.dll'
+    } else { throw 'Extraction needs 7-Zip or Windows tar on PATH.' }
+    if ($LASTEXITCODE -ne 0) { throw "libmpv extraction failed with $LASTEXITCODE" }
+    Assert-PinnedFile $stagedDll $pin.dllSize $pin.dllSha256
+
+    # Do not touch an installed copy until both verifications succeed. Stage
+    # replacement files on the destination volume so the DLL swap is atomic.
+    [IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
+    $candidate = Join-Path $OutputDirectory ('libmpv-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $provenanceCandidate = Join-Path $OutputDirectory ('libmpv-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    Copy-Item -LiteralPath $stagedDll -Destination $candidate
+    Assert-PinnedFile $candidate $pin.dllSize $pin.dllSha256
+    [IO.File]::WriteAllText($provenanceCandidate, [IO.File]::ReadAllText([IO.Path]::GetFullPath($PinFile)), [Text.UTF8Encoding]::new($false))
+    foreach ($pair in @(@($candidate, (Join-Path $OutputDirectory 'libmpv-2.dll')), @($provenanceCandidate, (Join-Path $OutputDirectory 'libmpv-build.json')))) {
+        if (Test-Path -LiteralPath $pair[1]) { [IO.File]::Replace($pair[0], $pair[1], [NullString]::Value) }
+        else { [IO.File]::Move($pair[0], $pair[1]) }
+    }
+    Write-Host "Verified libmpv $($pin.tag), DLL SHA-256 $($pin.dllSha256)"
+} finally {
+    # Only exact files created by this invocation are removed; no recursive
+    # cleanup of a caller-supplied directory or existing DLL is performed.
+    foreach ($temporary in @($candidate, $provenanceCandidate, $stagedDll)) {
+        if ($temporary -and (Test-Path -LiteralPath $temporary)) { Remove-Item -LiteralPath $temporary -Force }
+    }
+    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging }
+}

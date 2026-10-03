@@ -1,0 +1,27 @@
+Windows libmpv provenance
+
+Binary build: shinchiro/mpv-winbuild-cmake, release 20260903, x86_64
+mpv source commit: 69e63f425a531f814431fba12750bdb3721357f2
+Build scripts commit: cd1edc11dc6887a50f705717619d879f5a93a488
+
+The package's app/resources/libmpv-build.json records the exact archive and DLL
+SHA-256 values. The pin in the DAView source is scripts/libmpv-windows.json.
+
+mpv source:
+https://github.com/mpv-player/mpv/tree/69e63f425a531f814431fba12750bdb3721357f2
+Build scripts and dependency recipes:
+https://github.com/shinchiro/mpv-winbuild-cmake/tree/cd1edc11dc6887a50f705717619d879f5a93a488
+Upstream build run:
+https://github.com/shinchiro/mpv-winbuild-cmake/actions/runs/33697571182
+Binary release:
+https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20260903
+
+Copyright and LICENSE.GPL in this directory are unchanged copies from the mpv
+source commit above. The project's own GPLv3 text is also in ../DAView-GPL-3.0.txt.
+The engine and its linked dependencies keep their individual license terms.
+
+This file records provenance. It is not a complete corresponding-source bundle:
+the dependency recipes include moving upstream branches, and the dev archive
+does not include all dependency sources, revisions, or notices. Complete source
+and notice materials for this binary remain an open distribution requirement
+in docs/PRODUCTION-READINESS.md in the DAView source tree.

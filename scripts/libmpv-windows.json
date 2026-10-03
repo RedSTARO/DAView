@@ -1,0 +1,13 @@
+{
+  "repository": "shinchiro/mpv-winbuild-cmake",
+  "tag": "20260903",
+  "architecture": "x86_64",
+  "archive": "mpv-dev-x86_64-20260903-git-69e63f425a.7z",
+  "archiveSize": 31363218,
+  "archiveSha256": "fac135c68a35b7639e39d72c0c365104edbaebdea39a0dfdd8c36e8c8e80faef",
+  "dllSize": 120342528,
+  "dllSha256": "673e6397920ab64a9c5b3a618f7f16d38854efe72b58665f1f84e4e873b763a4",
+  "mpvCommit": "69e63f425a531f814431fba12750bdb3721357f2",
+  "buildScriptsCommit": "cd1edc11dc6887a50f705717619d879f5a93a488",
+  "upstreamBuildRun": "https://github.com/shinchiro/mpv-winbuild-cmake/actions/runs/33697571182"
+}

@@ -10,3 +10,4 @@
 /composeApp/src/androidMain/assets/licenses/** text eol=lf
 /composeApp/nativeResources/common/licenses/** text eol=lf
 composeApp/src/androidMain/assets/licenses/sqlite/Apache-2.0.txt text eol=lf
+composeApp/nativeResources/windows/licenses/mpv/* text eol=lf
