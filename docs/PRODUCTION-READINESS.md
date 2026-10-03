@@ -31,14 +31,16 @@
 - `:core:lintDebug`：0 问题；`:composeApp:lintDebug`：0 错误、12 警告。警告涉及 PiP 过渡建议、冗余 SDK 判断/资源目录、Modifier 参数顺序和 KTX 建议；未通过屏蔽规则或基线文件隐藏错误。
 - 验证由 `scripts/verify-production.ps1` 启动的一个 Gradle 进程执行。可复核本机 `build/audit/production-20261003-final/` 下的 `gradle.log`、`inputs.sha256` 和 `result.json`。脚本只有在 Gradle 成功且验证期间源文件未变化时才标记 `verified=true`。
 - 本轮开始时没有可连接的后台回调通道：当前 Windows CLI 没有 `queue`，其 daemon 管理只支持 Unix，桌面 App Server 使用现有进程的 stdio。后台验证不会创建定时轮询或尝试接管该进程。
-- Android 运行验收入口为 `scripts/verify-android-runtime.ps1`：用本机已有 Android 36 x86_64 系统镜像建立独立 AVD，不读取或复制现有模拟器的用户数据。脚本校验 APK 中许可证文本、运行仪器测试、启动应用、保存首页截图/UI 树和 logcat，结束后关闭该测试设备。结果待本轮运行后核验。
+- Android 运行验收在 2026-10-03 22:32（Asia/Singapore）完成：独立 Android 36 x86_64 AVD 中仪器测试报告 `OK (24 tests)`，应用启动后仍存活；已查看首页截图及 UI 树，显示“还没有媒体库”和进入设置的操作入口。APK 中 GPL 与 NOTICE 均与源码副本逐字节相同。日志和截图在 `build/audit/android-20261003-runtime-01/`，测试设备已关闭，原模拟器用户数据未被使用。
+- 首次运行的报告采用非原始输出，不能依据脚本记录的 `skipped=0` 断言所有用例都执行了；其中可选 `e07.ass` 素材确实未安装。脚本现增加 `am instrument -r` 并计数成功、忽略和 assumption failure，后续运行可报告准确跳过数。
 - 可选的 `e07.ass` 真实字幕参考用例在缺少文件时改为 JUnit assumption 跳过，避免空执行被计为通过。
 - 全屏专项验证在 2026-10-03 22:47（Asia/Singapore）完成：桌面 145 项测试，0 失败、0 错误、0 跳过。新增 3 项 Windows 测试验证句柄不重建、恢复原窗口、释放已销毁窗口；显式启用的真实 libmpv 用例让另一个窗口取得焦点，并检查播放进度继续前进、窗口未最小化、退出全屏后原最大化状态及普通窗口矩形恢复。运行产物在本机 `build/audit/fullscreen-focus-02/`。首次运行未配置测试 DLL 路径，实际播放用例未运行；以上数字对应修正路径后的成功运行。
+- 发布产物验收入口为 `scripts/verify-release-artifacts.ps1`：生成当前构建配置的普通/ProGuard Windows 分发目录和 Android release APK；逐字节检查许可资源，并用隔离的 core 数据目录启动两个桌面分发目录，检查窗口、数据库和文件日志。它不安装 MSI、不使用真实存储凭据、不推送或发布。FFmpeg ABI 文件列表单独报告；APK 安装及混淆后的 Android 播放行为仍需运行验收。
 
 ## 尚未满足的验收项
 
 - Android 真机：目前 `adb devices -l` 没有连接设备。模拟器测试另行执行；后台/前台切换、锁屏、画中画、配置重建、通知拒绝和前台服务超时仍需运行验收。
-- 桌面真实播放器：原生接口替身测试不能证明 libmpv、显示驱动、HDR、全屏浮层在安装包内的行为。需要实际安装包和播放源验收。
+- 桌面真实播放器：源码构建的真实 libmpv 全屏失焦测试已通过；这不能证明安装包、HDR、全部显示驱动及播放控制浮层都通过。分发目录启动检查另行执行，MSI 安装及升级仍需验收。
 - Linux/macOS 安装包和两端从旧版升级：本轮尚无运行证据。
 - 离线旧数据：已发生的文件碰撞污染、远端同大小内容替换，无法仅凭长度自动发现。新路径分配和续传检查不能证明旧文件正确。
 - 同步并发：上传前合并缩小了丢数据窗口；不支持条件写入的 WebDAV 仍无法保证两个设备同时 PUT 时不互相覆盖。

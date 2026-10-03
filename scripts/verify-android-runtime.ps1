@@ -112,12 +112,14 @@ target=android-36
     Invoke-Tool $adb @('-s', $serial, 'shell', 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 1; done') 'device-boot' 180000 | Out-Null
     Invoke-Tool $adb @('-s', $serial, 'install', '-r', $apk) 'install-app' | Out-Null
     Invoke-Tool $adb @('-s', $serial, 'install', '-r', $testApks[0].FullName) 'install-tests' | Out-Null
-    $instrumentation = Invoke-Tool $adb @('-s', $serial, 'shell', 'am', 'instrument', '-w', 'com.daview.app.test/androidx.test.runner.AndroidJUnitRunner') 'instrumentation' 300000
+    $instrumentation = Invoke-Tool $adb @('-s', $serial, 'shell', 'am', 'instrument', '-w', '-r', 'com.daview.app.test/androidx.test.runner.AndroidJUnitRunner') 'instrumentation' 300000
     $result.instrumentationPassed = ($instrumentation -match 'OK \(\d+ tests?\)' -and $instrumentation -notmatch 'FAILURES!!!|INSTRUMENTATION_FAILED|Process crashed')
     $result.instrumentationSummary = [regex]::Match($instrumentation, 'OK \(\d+ tests?\)').Value
-    # AndroidJUnitRunner reports an assumption failure with status -4. The
+    # Raw output (-r) includes skipped (-3) and assumption failure (-4) status.
     # optional real episode fixture is intentionally absent from this fresh AVD.
-    $result.skipped = [regex]::Matches($instrumentation, 'INSTRUMENTATION_STATUS_CODE: -4\b').Count
+    $result.skipped = [regex]::Matches($instrumentation, 'INSTRUMENTATION_STATUS_CODE: -(3|4)\b').Count
+    $result.completedTests = [regex]::Matches($instrumentation, 'INSTRUMENTATION_STATUS_CODE: 0\b').Count
+    if ($result.completedTests -eq 0) { throw 'No completed instrumentation test cases were reported.' }
     if (-not $result.instrumentationPassed) { throw 'Instrumentation tests failed; see instrumentation.log.' }
     $launch = Invoke-Tool $adb @('-s', $serial, 'shell', 'am', 'start', '-W', '-n', 'com.daview.app/.MainActivity') 'launch-app'
     if ($launch -match 'Error:|Exception') { throw 'The app did not launch.' }
