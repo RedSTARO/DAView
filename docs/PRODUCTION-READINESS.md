@@ -40,6 +40,9 @@
 - 首次发布构建的三个任务均成功，但启动校验因 `Process.MainWindowHandle` 返回 0 中止；隔离数据库和日志已创建，现有证据不足以认定应用没有窗口。验证器改为枚举仅属于本次启动及其子进程的可见 AWT 窗口，并保存启动器 stdout/stderr，待重验。
 - 配置修复的最终核心验证在 2026-10-03 23:37（Asia/Singapore）完成：229 项全部通过，无跳过，core lint 无问题（`build/audit/configuration-final-20261003-04/`）。此前同组改动的桌面 145 项无失败、1 项选择性跳过，Android 编译/仪器 APK 组装及应用 lint 已通过（`configuration-release-20261003-02/tests/`）。新增方括号路径用例源于独立 Java 程序复现，HTTP URL 转 URI 改用 `HttpUrl.toUri()` 以避免合法路径被再次拒绝。
 - 第二次组合验证在测试结束后中断，原进程已消失，发布步骤没有最终记录；不计为发布验证成功，也没有凭缺失记录重复启动原任务。
+- 发布产物验证在 2026-10-04 00:44（Asia/Singapore）完成：普通及 ProGuard Windows 分发目录都显示可见的 `SunAwtFrame`，创建隔离数据库并初始化日志；两套分发目录的项目许可文件校验通过。Android release APK 为 6,203,356 字节，四种 ABI 的 16 个 FFmpeg 库齐全，项目许可文件校验通过。Gradle 退出码 0，输入哈希未变化。结果见 `build/audit/release-artifacts-20261004-04/`；这是目录启动及包内容检查，不是 MSI 安装/升级或完整播放验收。
+- 验证器自身的两次误判已修正：`.NET Process.MainWindowHandle` 不足以识别启动器子进程/有 owner 的窗口；Logback 打开日志写入时，读取端须允许 `FileShare.ReadWrite`。未把这两次检测失败报告为应用启动失败。
+- `verify-android-runtime.ps1 -ReleaseUiSmoke` 新增 release 黑盒检查入口：先运行 debug 仪器测试，然后在同一独立 AVD 中移除测试应用，使用临时 QA 证书签名的 release 副本测试首次启动、无效配置拒绝、密码草稿保留和 FFmpeg 可用提示。不会使用正式签名密钥或发布 QA 安装包，结果待运行。
 
 ## 尚未满足的验收项
 

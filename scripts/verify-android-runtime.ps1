@@ -1,6 +1,7 @@
 param(
     [string]$OutputDirectory = "",
-    [int]$Port = 5580
+    [int]$Port = 5580,
+    [switch]$ReleaseUiSmoke
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,6 +20,7 @@ $avdName = 'DAViewAudit'
 $emulatorProcess = $null
 $started = [DateTimeOffset]::UtcNow
 $result = [ordered]@{ startedAt = $started.ToString('o'); passed = $false; error = $null; device = $serial }
+$result.uiVariant = if ($ReleaseUiSmoke) { 'release' } else { 'debug' }
 
 function Invoke-Tool([string]$Executable, [string[]]$Arguments, [string]$Name, [int]$Timeout = 120000) {
     $info = [Diagnostics.ProcessStartInfo]::new($Executable)
@@ -51,7 +53,9 @@ try {
     $imageRelative = 'system-images/android-36/default/x86_64/'
     if (-not (Test-Path -LiteralPath (Join-Path $sdk ($imageRelative + 'system.img')))) { throw 'Android 36 default x86_64 image is not installed.' }
     $env:ANDROID_HOME = $sdk
-    & (Join-Path $repo 'gradlew.bat') :composeApp:assembleDebug :composeApp:assembleDebugAndroidTest --console=plain -q *> (Join-Path $OutputDirectory 'gradle.log')
+    $tasks = @(':composeApp:assembleDebug', ':composeApp:assembleDebugAndroidTest')
+    if ($ReleaseUiSmoke) { $tasks += ':composeApp:assembleRelease' }
+    & (Join-Path $repo 'gradlew.bat') @tasks --console=plain -q *> (Join-Path $OutputDirectory 'gradle.log')
     $result.buildExitCode = $LASTEXITCODE
     if ($LASTEXITCODE -ne 0) { throw 'Android build failed; see gradle.log.' }
 
@@ -72,6 +76,25 @@ try {
         }
     } finally { $zip.Dispose() }
     $result.apkLicensesVerified = $true
+
+    if ($ReleaseUiSmoke) {
+        # Sign a COPY using a throwaway QA certificate. Production signing
+        # material is never read, and the unsigned release artifact is untouched.
+        $env:DAVIEW_AUDIT_KEYPASS = [Guid]::NewGuid().ToString('N')
+        $keyStore = Join-Path $OutputDirectory 'audit-only.p12'
+        Invoke-Tool (Get-Command keytool).Source @('-genkeypair', '-keystore', $keyStore, '-storetype', 'PKCS12', '-alias', 'audit', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '2', '-dname', 'CN=DAView Runtime Audit', '-storepass:env', 'DAVIEW_AUDIT_KEYPASS', '-keypass:env', 'DAVIEW_AUDIT_KEYPASS') 'qa-key' | Out-Null
+        $buildTools = Get-ChildItem (Join-Path $sdk 'build-tools') -Directory | Sort-Object { [version]($_.Name -replace '-.*$', '') } -Descending | Select-Object -First 1
+        $signer = Join-Path $buildTools.FullName 'apksigner.bat'
+        $unsigned = Get-ChildItem 'composeApp/build/outputs/apk/release' -Filter '*.apk' | Select-Object -First 1
+        $releaseApk = Join-Path $OutputDirectory 'DAView-release-audit-only.apk'
+        & $signer sign --ks $keyStore --ks-key-alias audit --ks-pass env:DAVIEW_AUDIT_KEYPASS --key-pass env:DAVIEW_AUDIT_KEYPASS --v4-signing-enabled false --out $releaseApk $unsigned.FullName *> (Join-Path $OutputDirectory 'sign-release.log')
+        if ($LASTEXITCODE -ne 0) { throw 'QA signing failed.' }
+        & $signer verify $releaseApk *> (Join-Path $OutputDirectory 'verify-signature.log')
+        if ($LASTEXITCODE -ne 0) { throw 'QA APK signature verification failed.' }
+        $result.releaseApk = $releaseApk
+        $result.releaseUnsignedSha256 = (Get-FileHash -LiteralPath $unsigned.FullName).Hash
+        $result.releaseSigning = 'Temporary audit certificate only; not for distribution.'
+    }
 
     # Build an AVD using only known hardware settings and the installed system
     # image. No existing AVD config, user image, account or snapshot is copied.
@@ -110,6 +133,8 @@ target=android-36
     Invoke-Tool $adb @('-s', $serial, 'wait-for-device') 'device-connect' 180000 | Out-Null
     # Boot waiting is bounded inside the background worker, never model polling.
     Invoke-Tool $adb @('-s', $serial, 'shell', 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 1; done') 'device-boot' 180000 | Out-Null
+    $actualAvd = Invoke-Tool $adb @('-s', $serial, 'emu', 'avd', 'name') 'avd-identity'
+    if ($actualAvd -notmatch "(?m)^$avdName\r?$") { throw 'Connected emulator is not the isolated audit AVD.' }
     Invoke-Tool $adb @('-s', $serial, 'install', '-r', $apk) 'install-app' | Out-Null
     Invoke-Tool $adb @('-s', $serial, 'install', '-r', $testApks[0].FullName) 'install-tests' | Out-Null
     $instrumentation = Invoke-Tool $adb @('-s', $serial, 'shell', 'am', 'instrument', '-w', '-r', 'com.daview.app.test/androidx.test.runner.AndroidJUnitRunner') 'instrumentation' 300000
@@ -121,8 +146,28 @@ target=android-36
     $result.completedTests = [regex]::Matches($instrumentation, 'INSTRUMENTATION_STATUS_CODE: 0\b').Count
     if ($result.completedTests -eq 0) { throw 'No completed instrumentation test cases were reported.' }
     if (-not $result.instrumentationPassed) { throw 'Instrumentation tests failed; see instrumentation.log.' }
+    $result.instrumentationVariant = 'debug'
+    if ($ReleaseUiSmoke) {
+        # The existing instrumentation suite references app classes directly;
+        # use public UI for R8 release checks instead of treating debug-class
+        # names as a contract of the obfuscated app.
+        Invoke-Tool $adb @('-s', $serial, 'uninstall', 'com.daview.app.test') 'uninstall-debug-tests' | Out-Null
+        Invoke-Tool $adb @('-s', $serial, 'uninstall', 'com.daview.app') 'uninstall-debug-app' | Out-Null
+        Invoke-Tool $adb @('-s', $serial, 'install', $releaseApk) 'install-release' | Out-Null
+        Invoke-Tool $adb @('-s', $serial, 'root') 'audit-adb-root' | Out-Null
+        Invoke-Tool $adb @('-s', $serial, 'wait-for-device') 'root-reconnect' | Out-Null
+        # This AOSP test image permits root; needed only to assert that an
+        # invalid settings submission did not change the isolated config.
+        $uid = Invoke-Tool $adb @('-s', $serial, 'shell', 'id', '-u') 'audit-uid'
+        if ($uid.Trim() -ne '0') { throw 'The isolated AOSP test image did not allow config verification.' }
+        Invoke-Tool $adb @('-s', $serial, 'shell', 'settings', 'put', 'secure', 'show_ime_with_hard_keyboard', '0') 'hardware-keyboard' | Out-Null
+    }
     $launch = Invoke-Tool $adb @('-s', $serial, 'shell', 'am', 'start', '-W', '-n', 'com.daview.app/.MainActivity') 'launch-app'
     if ($launch -match 'Error:|Exception') { throw 'The app did not launch.' }
+    if ($ReleaseUiSmoke) {
+        . (Join-Path $PSScriptRoot 'android-release-ui.ps1')
+        Invoke-ReleaseUiChecks
+    }
     Invoke-Tool $adb @('-s', $serial, 'shell', 'uiautomator', 'dump', '/sdcard/daview-audit-ui.xml') 'dump-ui' | Out-Null
     Invoke-Tool $adb @('-s', $serial, 'pull', '/sdcard/daview-audit-ui.xml', (Join-Path $OutputDirectory 'home.xml')) 'pull-ui' | Out-Null
     Invoke-Tool $adb @('-s', $serial, 'shell', 'screencap', '-p', '/sdcard/daview-audit-home.png') 'screenshot' | Out-Null
