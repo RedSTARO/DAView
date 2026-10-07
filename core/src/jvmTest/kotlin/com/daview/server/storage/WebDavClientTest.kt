@@ -3,6 +3,8 @@ package com.daview.server.storage
 import com.daview.server.config.StorageConfig
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -11,6 +13,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class WebDavClientTest {
     private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply { start() }
@@ -116,6 +119,29 @@ class WebDavClientTest {
         val result = dav.read("/sync", limit = body.toByteArray().size.toLong())
         assertContentEquals(body.toByteArray(), result.bytes)
         assertNull(result.error)
+    }
+
+    @Test
+    fun `a total call timeout aborts a stalled body read after a redirect`() {
+        val releaseBody = CountDownLatch(1)
+        redirect("/dav/sync", "/cdn/sync")
+        server.createContext("/cdn/sync") { exchange ->
+            try {
+                exchange.sendResponseHeaders(200, 100)
+                exchange.responseBody.write('a'.code)
+                exchange.responseBody.flush()
+                releaseBody.await(5, TimeUnit.SECONDS)
+            } finally { exchange.close() }
+        }
+        val started = System.nanoTime()
+        try {
+            val result = dav.read("/sync", callTimeoutMs = 200)
+            assertNull(result.bytes)
+            assertNotNull(result.error)
+            assertFalse(result.missing)
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 2_000,
+                "the body read used the client's 120 second read timeout")
+        } finally { releaseBody.countDown() }
     }
 
     @Test

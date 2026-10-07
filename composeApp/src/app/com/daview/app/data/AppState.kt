@@ -211,7 +211,8 @@ internal suspend fun <T> catchingOperation(block: suspend () -> T): Result<T> = 
 class AppState internal constructor(
     private val scope: CoroutineScope,
     private val settings: SettingsStore,
-    reads: CatalogReads? = null
+    reads: CatalogReads? = null,
+    private val openContext: () -> ServerContext = ::createCoreContext
 ) {
     constructor(scope: CoroutineScope) : this(scope, createSettingsStore())
 
@@ -252,6 +253,9 @@ class AppState internal constructor(
 
     /** Set instead of [ready] when the library could not be opened at all. */
     var startupError by mutableStateOf<String?>(null)
+        private set
+
+    var startupSyncing by mutableStateOf(false)
         private set
 
     val core: ServerContext get() = requireOpen().core
@@ -818,7 +822,7 @@ class AppState internal constructor(
     }
 
     /**
-     * Opens the library, then reads what it already knows.
+     * Opens the library and merges cloud progress before the first catalogue read.
      *
      * Opening costs about a third of a second on a warm machine — the SQLite
      * driver unpacks its native library, the migrations run, the planner's
@@ -826,10 +830,10 @@ class AppState internal constructor(
      * being composed, so nothing was on screen until it finished. It runs off
      * the UI thread now and the window is up while it does.
      */
-    fun open() {
-        if (opened != null) return
-        scope.launch {
-            val context = catchingOperation { withContext(Dispatchers.IO) { createCoreContext() } }
+    fun open(): Job? {
+        if (opened != null) return null
+        return scope.launch {
+            val context = catchingOperation { withContext(Dispatchers.IO) { openContext() } }
                 .getOrElse {
                     startupError = it.message ?: "无法打开媒体库"
                     return@launch
@@ -840,6 +844,21 @@ class AppState internal constructor(
             // desktop is never gated.
             context.offline.transferGate = { !downloadWifiOnly || isUnmeteredNetwork() }
             context.offline.transferGateReason = "等待 Wi-Fi"
+            // Await the startup pull before any screen can read stale progress
+            // or a scan can compete for the share. Offline startup still opens
+            // the local library after the bounded sync attempt finishes.
+            startupSyncing = context.config.sync.enabled
+            try {
+                catchingOperation { library.syncOnStartup() }
+                    .onSuccess { result ->
+                        if (result != null && !result.ok) {
+                            notify("启动进度同步失败，已使用本地进度：${result.message}")
+                        }
+                    }
+                    .onFailure { notify("启动进度同步失败，已使用本地进度：${describe(it)}") }
+            } finally {
+                startupSyncing = false
+            }
             catchingOperation {
                 serverInfo = library.info()
                 libraries = library.libraries()

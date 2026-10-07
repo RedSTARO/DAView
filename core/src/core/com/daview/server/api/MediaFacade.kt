@@ -725,6 +725,9 @@ class MediaFacade(private val context: ServerContext) {
 
     suspend fun syncPull(): SyncResultDto = io { context.sync.pull() }
 
+    /** Await this before the first library read or automatic scan. */
+    suspend fun syncOnStartup(): SyncResultDto? = io { context.sync.pullOnStartup() }
+
     // ------------------------------------------------------------ backup
 
     /**

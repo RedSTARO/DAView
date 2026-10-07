@@ -17,6 +17,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import java.util.concurrent.Executors
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -44,6 +45,8 @@ class SyncService(
         Thread(runnable, "daview-sync").apply { isDaemon = true }
     }
     private val running = AtomicBoolean(false)
+    private val startupClaimed = AtomicBoolean(false)
+    private val startupResult = CompletableFuture<SyncResultDto?>()
 
     /** Fingerprint of everything the file carries, at the last successful upload. */
     @Volatile
@@ -88,6 +91,7 @@ class SyncService(
     }
 
     private fun tickOnce() {
+        pullOnStartup()
         val config = context.config.sync
         if (!config.enabled) return
         val now = System.currentTimeMillis()
@@ -110,6 +114,41 @@ class SyncService(
         (uploadIntervalMinutes.coerceAtLeast(1) * 60_000L) / 2
 
     /**
+     * Reads once before this context's initial library load, ignoring the last
+     * process's pull time. Every other sync entry point crosses the same barrier,
+     * so a timer or manual upload cannot take the operation guard first and
+     * cause startup to return "busy" without merging the remote progress.
+     *
+     * Activity recreation shares this completed result. Disabled sync returns
+     * null without a request; an unavailable share finishes within the network
+     * deadline and leaves its failure available to the caller and settings.
+     */
+    fun pullOnStartup(): SyncResultDto? {
+        if (startupClaimed.compareAndSet(false, true)) {
+            try {
+                startupResult.complete(if (context.config.sync.enabled) {
+                    lastPullAttemptAt = System.currentTimeMillis()
+                    pullOnce(callTimeoutMs = STARTUP_PULL_TIMEOUT_MS)
+                } else null)
+            } catch (e: Exception) {
+                // A recoverable startup failure must not poison the one-shot
+                // barrier: later manual and periodic sync still need to run.
+                val message = "启动同步失败: ${e.message ?: e::class.simpleName}"
+                log.warn("{}", message)
+                val failed = runCatching { fail(message) }.getOrElse {
+                    log.warn("记录启动同步失败信息时出错: {}", it.message)
+                    SyncResultDto(ok = false, message = message, at = System.currentTimeMillis())
+                }
+                startupResult.complete(failed)
+            } catch (t: Throwable) {
+                startupResult.completeExceptionally(t)
+                throw t
+            }
+        }
+        return startupResult.join()
+    }
+
+    /**
      * Merges what is already on the share, then writes the result back.
      *
      * The merge is not optional. `PUT` replaces the whole file and this gateway
@@ -119,6 +158,7 @@ class SyncService(
      * happen to the gap between this read and this write.
      */
     fun upload(automatic: Boolean = false): SyncResultDto {
+        pullOnStartup()
         if (!running.compareAndSet(false, true)) {
             return SyncResultDto(ok = false, message = "同步正在进行中", at = System.currentTimeMillis())
         }
@@ -172,30 +212,35 @@ class SyncService(
 
     /** Reads the file back and merges it, keeping whichever side of a row is newer. */
     fun pull(): SyncResultDto {
+        pullOnStartup()
         if (!running.compareAndSet(false, true)) {
             return SyncResultDto(ok = false, message = "同步正在进行中", at = System.currentTimeMillis())
         }
         try {
-            val dav = davProvider() ?: return fail("WebDAV 未配置")
-            val path = context.config.sync.remotePath.ifBlank { DEFAULT_PATH }
-            val outcome = mergeRemote(dav, path)
-            val now = System.currentTimeMillis()
-            return when (outcome) {
-                is Merge.Applied -> SyncResultDto(
-                    ok = true,
-                    message = "已合并 ${outcome.summary.userData} 条观看记录、" +
-                        "${outcome.summary.libraries} 个媒体库",
-                    at = now,
-                    libraries = outcome.summary.libraries,
-                    userData = outcome.summary.userData
-                )
-
-                Merge.Missing -> fail("$path 上还没有同步文件")
-                is Merge.Unreadable -> fail("同步文件解析失败: ${outcome.reason}")
-                is Merge.Unreachable -> fail("读取同步文件失败: ${outcome.reason}")
-            }
+            return pullOnce()
         } finally {
             running.set(false)
+        }
+    }
+
+    private fun pullOnce(callTimeoutMs: Long = 0): SyncResultDto {
+        val dav = davProvider() ?: return fail("WebDAV 未配置")
+        val path = context.config.sync.remotePath.ifBlank { DEFAULT_PATH }
+        val outcome = mergeRemote(dav, path, callTimeoutMs)
+        val now = System.currentTimeMillis()
+        return when (outcome) {
+            is Merge.Applied -> SyncResultDto(
+                ok = true,
+                message = "已合并 ${outcome.summary.userData} 条观看记录、" +
+                    "${outcome.summary.libraries} 个媒体库",
+                at = now,
+                libraries = outcome.summary.libraries,
+                userData = outcome.summary.userData
+            )
+
+            Merge.Missing -> fail("$path 上还没有同步文件")
+            is Merge.Unreadable -> fail("同步文件解析失败: ${outcome.reason}")
+            is Merge.Unreachable -> fail("读取同步文件失败: ${outcome.reason}")
         }
     }
 
@@ -206,8 +251,8 @@ class SyncService(
      * differently: an absent file can be created; an unreadable, unsupported
      * or unreachable file must stay intact for a later retry or recovery.
      */
-    private fun mergeRemote(dav: WebDavClient, path: String): Merge {
-        val read = dav.read(path)
+    private fun mergeRemote(dav: WebDavClient, path: String, callTimeoutMs: Long = 0): Merge {
+        val read = dav.read(path, callTimeoutMs = callTimeoutMs)
         read.error?.let { return Merge.Unreachable(it) }
         val raw = read.bytes ?: run {
             // A file removed after our last upload must be recreated even if
@@ -298,6 +343,7 @@ class SyncService(
     private companion object {
         const val DEFAULT_PATH = "/daview-sync.json"
         const val TICK_SECONDS = 60L
+        const val STARTUP_PULL_TIMEOUT_MS = 10_000L
 
         /**
          * Settings, libraries, watch state and the hand-picked scrape entries.

@@ -341,11 +341,16 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
      * from "I could not find out": `PUT` writes the whole file, so treating a
      * timeout as an empty share would overwrite what every other device wrote.
      */
-    fun read(relativePath: String, limit: Long = 32L * 1024 * 1024): ReadResult {
+    fun read(relativePath: String, limit: Long = 32L * 1024 * 1024, callTimeoutMs: Long = 0): ReadResult {
         require(limit in 1 until Int.MAX_VALUE.toLong()) { "读取上限无效" }
+        require(callTimeoutMs >= 0) { "读取超时无效" }
         return runCatching {
             val request = request(absoluteUrl(relativePath)).get().build()
-            fileHttp.newCall(request).execute().use {
+            // This covers redirects and body reads as well as connecting. A
+            // coroutine timeout alone cannot cancel this blocking HTTP call.
+            val call = fileHttp.newCall(request)
+            if (callTimeoutMs > 0) call.timeout().timeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+            call.execute().use {
                 // A CDN 404 can mean an expired signed URL, not a missing DAV
                 // file. Only the original endpoint may establish absence.
                 if ((it.code == 404 || it.code == 410) && it.priorResponse == null) {
