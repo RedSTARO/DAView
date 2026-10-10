@@ -1,0 +1,33 @@
+{
+  "version": "b84a11d",
+  "packageVersion": "1.0.125",
+  "publishedAt": "2026-10-10T08:01:45Z",
+  "pageUrl": "https://github.com/RedSTARO/DAView/releases/tag/ci",
+  "notes": "CI 构建 b84a11d（b84a11d2fa5978b24872cbdcaacdc2517c916b36）\n\n- fix: refresh pages after background startup synchronization\n- fix: synchronize watch progress before loading the app\n- docs: record remaining installer and platform validation constraints\n- fix: pin and verify the Windows playback engine before packaging\n- fix: bundle compatible Android SQLite and validate optimized releases\n- fix: track every synchronized edit and repair stale remote snapshots\n- test: verify packaged startup and add Android release UI checks\n- fix: reject invalid storage settings before persisting them",
+  "assets": {
+    "android": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-b84a11d.apk",
+      "name": "DAView-b84a11d.apk",
+      "sha256": "07e59014ef758df48ad11d1669385da5cf2694bdf2165eb57738eb9f39cdeb26",
+      "size": 8739677
+    },
+    "linux": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-b84a11d.deb",
+      "name": "DAView-b84a11d.deb",
+      "sha256": "e0280ed8045482c41cc976a68ce3f6cf40ab4c3f95d472a38f50713934b28095",
+      "size": 60191556
+    },
+    "macos": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-b84a11d.dmg",
+      "name": "DAView-b84a11d.dmg",
+      "sha256": "0580f59f95a18ef0b9af7a055a80965b81142601a97e600bd195a0dee431f8df",
+      "size": 75916140
+    },
+    "windows": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-b84a11d.msi",
+      "name": "DAView-b84a11d.msi",
+      "sha256": "e01cc583e170a5ff78a46da2393a38ecf26ba4e20460b75dace72d331469e837",
+      "size": 112700755
+    }
+  }
+}
