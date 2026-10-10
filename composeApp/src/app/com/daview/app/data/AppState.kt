@@ -42,6 +42,7 @@ import com.daview.shared.model.ServerSettingsDto
 import com.daview.shared.model.UserDataDto
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -822,7 +823,7 @@ class AppState internal constructor(
     }
 
     /**
-     * Opens the library and merges cloud progress before the first catalogue read.
+     * Opens the local library while cloud progress is pulled in the background.
      *
      * Opening costs about a third of a second on a warm machine — the SQLite
      * driver unpacks its native library, the migrations run, the planner's
@@ -844,29 +845,48 @@ class AppState internal constructor(
             // desktop is never gated.
             context.offline.transferGate = { !downloadWifiOnly || isUnmeteredNetwork() }
             context.offline.transferGateReason = "等待 Wi-Fi"
-            // Await the startup pull before any screen can read stale progress
-            // or a scan can compete for the share. Offline startup still opens
-            // the local library after the bounded sync attempt finishes.
+            // Start the pull before other background work, while the first
+            // screen reads local data without waiting for the network.
             startupSyncing = context.config.sync.enabled
-            try {
+            val sync = scope.async(start = CoroutineStart.UNDISPATCHED) {
                 catchingOperation { library.syncOnStartup() }
-                    .onSuccess { result ->
-                        if (result != null && !result.ok) {
-                            notify("启动进度同步失败，已使用本地进度：${result.message}")
-                        }
-                    }
-                    .onFailure { notify("启动进度同步失败，已使用本地进度：${describe(it)}") }
-            } finally {
-                startupSyncing = false
             }
             catchingOperation {
                 serverInfo = library.info()
                 libraries = library.libraries()
             }
             initialLoaded = true
-            refreshHome()
-            if (scanOnStartup) startupScan()
-            if (checkUpdatesOnStartup && canSelfUpdate()) startupUpdateCheck()
+            val initialHome = refreshHome()
+            scope.launch {
+                try {
+                    sync.await()
+                        .onSuccess { result ->
+                            when {
+                                result == null -> Unit
+                                !result.ok -> notify("启动进度同步失败，继续使用本地进度：${result.message}")
+                                else -> {
+                                    val refreshSearch = searchResults.isNotEmpty() || searchEpisodes.isNotEmpty() ||
+                                        searchedFor != null || searchLoading
+                                    invalidateSearchCache()
+                                    refreshLibraries()
+                                    refreshHome()
+                                    if (refreshSearch && current !is Screen.Search) {
+                                        search(searchQuery, preserveLoaded = true)
+                                    }
+                                    if (current !is Screen.Home) refreshCurrent()
+                                }
+                            }
+                        }
+                        .onFailure { notify("启动进度同步失败，继续使用本地进度：${describe(it)}") }
+                } finally {
+                    startupSyncing = false
+                }
+                if (scanOnStartup) startupScan()
+                if (checkUpdatesOnStartup && canSelfUpdate()) startupUpdateCheck()
+            }
+            // The returned job represents only local startup. Background sync
+            // and its page refresh continue independently after it completes.
+            initialHome.join()
         }
     }
 
@@ -882,8 +902,8 @@ class AppState internal constructor(
             }
             is Screen.Shelf -> loadShelf(screen)
             is Screen.Search -> {
-                searchedFor = null
-                search(searchQuery)
+                invalidateSearchCache()
+                search(searchQuery, preserveLoaded = true)
             }
             else -> Unit
         }
@@ -942,26 +962,36 @@ class AppState internal constructor(
     var homeError by mutableStateOf<String?>(null)
         private set
 
-    fun refreshHome(pulled: Boolean = false) = scope.launch {
+    private var homeJob: Job? = null
+    private var homeGeneration = 0L
+
+    fun refreshHome(pulled: Boolean = false): Job {
+        val generation = ++homeGeneration
+        homeJob?.cancel()
         homeRefreshing = true
-        if (pulled) homePulling = true
-        try {
-            loadHome()
-            homeError = null
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            if (homeLoaded) notify(describe(e)) else homeError = describe(e)
-        } finally {
-            homeRefreshing = false
-            if (pulled) homePulling = false
-        }
+        homePulling = pulled
+        return scope.launch {
+            try {
+                loadHome(generation)
+                if (generation == homeGeneration) homeError = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (generation == homeGeneration && isActive) {
+                    if (homeLoaded) notify(describe(e)) else homeError = describe(e)
+                }
+            } finally {
+                if (generation == homeGeneration) {
+                    homeRefreshing = false
+                    homePulling = false
+                }
+            }
+        }.also { homeJob = it }
     }
 
-    private suspend fun loadHome() {
+    private suspend fun loadHome(generation: Long) {
         val libs = library.libraries()
-        libraries = libs
-        coroutineScope {
+        val data = coroutineScope {
             val resume = async { library.resume(20, links) }
             val nextUp = async { library.nextUp(20, links) }
             val latest = async { library.latest(null, 24, links) }
@@ -980,7 +1010,7 @@ class AppState internal constructor(
             // The per-library rows are kept as they were until their own answer
             // comes back; clearing them here made the lower half of the page
             // collapse and grow back every time the page was refreshed.
-            home = HomeData(
+            HomeData(
                 resume = resumeRows,
                 nextUp = nextUp.await().filterNot { (it.seriesId ?: it.id) in onResume },
                 latest = latest.await(),
@@ -988,12 +1018,18 @@ class AppState internal constructor(
                 unwatched = home.unwatched.filterKeys { id -> libs.any { it.id == id } }
             )
         }
+        currentCoroutineContext().ensureActive()
+        if (generation != homeGeneration) return
+        libraries = libs
+        home = data
         homeLoaded = true
         // One row per library, and they only fill in the bottom of the page, so
         // they are gathered after the rest of it is already on screen.
         val rows = coroutineScope {
             libs.map { entry -> async { entry.id to library.unwatched(entry.id, 24, links) } }.awaitAll()
         }
+        currentCoroutineContext().ensureActive()
+        if (generation != homeGeneration) return
         home = home.copy(unwatched = rows.toMap().filterValues { it.isNotEmpty() })
     }
 
@@ -1164,30 +1200,40 @@ class AppState internal constructor(
     var shelfError by mutableStateOf<String?>(null)
         private set
 
+    private var shelfJob: Job? = null
+    private var shelfGeneration = 0L
+
     fun loadShelf(shelf: Screen.Shelf) {
+        val generation = ++shelfGeneration
+        shelfJob?.cancel()
         if (shelfOf != shelf) {
             shelfItems = emptyList()
             shelfOf = null
         }
         shelfLoading = true
         shelfError = null
-        scope.launch {
+        shelfJob = scope.launch {
             try {
-                shelfItems = when (shelf.kind) {
+                val items = when (shelf.kind) {
                     ShelfKind.RESUME -> library.resume(200, links)
                     ShelfKind.NEXT_UP -> library.nextUp(200, links)
                     ShelfKind.LATEST -> library.latest(null, 200, links)
                     ShelfKind.FAVOURITES -> library.items(links, favorite = true, sort = "sortName", limit = 500).items
                     ShelfKind.UNWATCHED -> shelf.libraryId?.let { library.unwatched(it, 500, links) }.orEmpty()
                 }
+                currentCoroutineContext().ensureActive()
+                if (generation != shelfGeneration) return@launch
+                shelfItems = items
                 shelfOf = shelf
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 // Said on the page, with a retry; it used to spin for ever.
-                if (shelfOf == shelf) notify(describe(e)) else shelfError = describe(e)
+                if (generation == shelfGeneration && isActive) {
+                    if (shelfOf == shelf) notify(describe(e)) else shelfError = describe(e)
+                }
             } finally {
-                shelfLoading = false
+                if (generation == shelfGeneration) shelfLoading = false
             }
         }
     }
@@ -1288,6 +1334,23 @@ class AppState internal constructor(
 
     // ------------------------------------------------------------ search
 
+    private var searchGeneration = 0L
+    private var searchMoreJob: Job? = null
+    /** The query of the retained rows, even while their cache is invalidated. */
+    private var searchResultsFor: String? = null
+
+    /** Keep visible rows while retiring reads taken before a background merge. */
+    private fun invalidateSearchCache() {
+        searchedFor = null
+        ++searchGeneration
+        searchJob?.cancel()
+        searchJob = null
+        searchMoreJob?.cancel()
+        searchMoreJob = null
+        searchLoading = false
+        searchLoadingMore = false
+    }
+
     /**
      * Runs one search, and cancels whatever search was still in flight.
      *
@@ -1295,43 +1358,60 @@ class AppState internal constructor(
      * answer to a shorter, slower query could land after the answer to what the
      * user had actually finished typing.
      */
-    fun search(query: String) {
+    fun search(query: String, preserveLoaded: Boolean = false) {
         if (query == searchedFor && !searchLoading) return
-        searchJob?.cancel()
+        val keep = if (preserveLoaded && searchResultsFor == query) {
+            searchResults.size.coerceAtLeast(SEARCH_LIMIT)
+        } else SEARCH_LIMIT
+        invalidateSearchCache()
+        val generation = searchGeneration
         if (query.isBlank()) {
             searchResults = emptyList()
             searchEpisodes = emptyList()
             searchTotal = 0
+            searchResultsFor = query
             searchedFor = query
             searchLoading = false
             return
         }
         searchLoading = true
         searchJob = scope.launch {
-            val me = coroutineContext[Job]
             try {
                 coroutineScope {
                     val works = async {
-                        library.items(
-                            links, topLevelOnly = true, search = query, searchPeople = true,
-                            sort = "relevance", limit = SEARCH_LIMIT
-                        )
+                        val collected = ArrayList<MediaItemDto>()
+                        var total: Int
+                        do {
+                            val page = library.items(
+                                links, topLevelOnly = true, search = query, searchPeople = true,
+                                sort = "relevance", limit = minOf(500, keep - collected.size),
+                                offset = collected.size
+                            )
+                            currentCoroutineContext().ensureActive()
+                            collected += page.items
+                            total = page.total
+                        } while (collected.size < keep && collected.size < total && page.items.isNotEmpty())
+                        ItemPage(collected, total, 0)
                     }
                     val episodes = async {
                         library.items(links, kind = ItemKind.EPISODE, search = query, sort = "relevance", limit = 30).items
                     }
                     val page = works.await()
+                    val episodeRows = episodes.await()
+                    currentCoroutineContext().ensureActive()
+                    if (generation != searchGeneration) return@coroutineScope
                     searchResults = page.items
                     searchTotal = page.total
-                    searchEpisodes = episodes.await()
+                    searchEpisodes = episodeRows
+                    searchResultsFor = query
                 }
-                searchedFor = query
+                if (generation == searchGeneration) searchedFor = query
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                notify(describe(e))
+                if (generation == searchGeneration && isActive) notify(describe(e))
             } finally {
-                if (searchJob === me) searchLoading = false
+                if (generation == searchGeneration) searchLoading = false
             }
         }
     }
@@ -1339,16 +1419,24 @@ class AppState internal constructor(
     fun loadMoreSearch() {
         if (searchLoading || searchLoadingMore || searchResults.size >= searchTotal) return
         val query = searchedFor ?: return
+        val generation = searchGeneration
         searchLoadingMore = true
-        run {
+        searchMoreJob = scope.launch {
             try {
                 val page = library.items(
                     links, topLevelOnly = true, search = query, searchPeople = true,
                     sort = "relevance", limit = SEARCH_LIMIT, offset = searchResults.size
                 )
-                if (searchedFor == query) searchResults = searchResults + page.items
+                currentCoroutineContext().ensureActive()
+                if (generation == searchGeneration && searchedFor == query) {
+                    searchResults = searchResults + page.items
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (generation == searchGeneration && isActive) notify(describe(e))
             } finally {
-                searchLoadingMore = false
+                if (generation == searchGeneration) searchLoadingMore = false
             }
         }
     }

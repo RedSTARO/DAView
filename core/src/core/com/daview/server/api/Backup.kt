@@ -205,29 +205,35 @@ fun applyBackup(
         }
     }
 
-    val deleted = context.repository.deletedLibraryIds()
     var appliedLibraries = 0
     backup.libraries.forEach { remote ->
-        if (machineLocal) {
-            // A library this device deleted does not come back because another
-            // device has not caught up yet.
-            if (remote.id in deleted) return@forEach
-            val local = context.repository.library(remote.id)
-            // The newer definition wins, and a tie stays as it is here. A tie
-            // is the usual case — neither side has edited it — and it used to
-            // go to the file, which is how a rename or a new scraping order
-            // was undone by the next pull.
-            if (local != null && local.updatedAt >= remote.updatedAt) return@forEach
-            // When this device last scanned is this device's own business.
-            context.repository.upsertLibrary(remote.copy(lastScanAt = local?.lastScanAt))
-        } else {
-            // A file the person picked is them putting the library back, so an
-            // earlier delete no longer stands. Skipping it here restored the
-            // library's items with no library to show them in.
-            context.repository.forgetDeletedLibrary(remote.id)
-            context.repository.upsertLibrary(remote)
+        // The comparison and write share the writer transaction. A live edit,
+        // deletion or scan cannot commit between reading this row and applying
+        // the file's definition. Keep transactions per row so readers and other
+        // writes do not wait for the rest of the file to be merged.
+        val applied = context.database.transaction {
+            if (machineLocal) {
+                // A library this device deleted does not come back because another
+                // device has not caught up yet.
+                if (context.repository.isLibraryDeleted(remote.id)) return@transaction false
+                val local = context.repository.library(remote.id)
+                // The newer definition wins, and a tie stays as it is here. A tie
+                // is the usual case — neither side has edited it — and it used to
+                // go to the file, which is how a rename or a new scraping order
+                // was undone by the next pull.
+                if (local != null && local.updatedAt >= remote.updatedAt) return@transaction false
+                // When this device last scanned is this device's own business.
+                context.repository.upsertLibrary(remote.copy(lastScanAt = local?.lastScanAt))
+            } else {
+                // A file the person picked is them putting the library back, so an
+                // earlier delete no longer stands. Skipping it here restored the
+                // library's items with no library to show them in.
+                context.repository.forgetDeletedLibrary(remote.id)
+                context.repository.upsertLibrary(remote)
+            }
+            true
         }
-        appliedLibraries++
+        if (applied) appliedLibraries++
     }
 
     // Pins land before the items, so an item restored in the same file already
@@ -235,30 +241,32 @@ fun applyBackup(
     // two are both decisions the user made at a point in time.
     var mergedPins = 0
     backup.pins.forEach { row ->
-        val local = context.repository.pin(row.itemId)
-        if (local != null && local.updatedAt >= row.updatedAt) return@forEach
-        // A NONE row is a pin somebody took off. It wins the same way a pin
-        // does — by being newer — and then the item has to forget its lock too,
-        // or the next scrape would keep reusing the old id.
-        if (row.provider == MetadataProvider.NONE) {
+        val applied = context.database.transaction {
+            val local = context.repository.pin(row.itemId)
+            if (local != null && local.updatedAt >= row.updatedAt) return@transaction false
+            // A NONE row is a pin somebody took off. The timestamp check, pin
+            // tombstone and item unlock must commit together, or a newer local
+            // pin could be overwritten or left with its lock cleared.
+            if (row.provider == MetadataProvider.NONE) {
+                context.repository.savePin(
+                    itemId = row.itemId,
+                    provider = MetadataProvider.NONE.name,
+                    providerId = "",
+                    updatedAt = row.updatedAt.takeIf { it > 0 } ?: System.currentTimeMillis()
+                )
+                context.repository.clearItemLock(row.itemId)
+                return@transaction true
+            }
+            if (row.providerId.isBlank()) return@transaction false
             context.repository.savePin(
                 itemId = row.itemId,
-                provider = MetadataProvider.NONE.name,
-                providerId = "",
+                provider = row.provider.name,
+                providerId = row.providerId,
                 updatedAt = row.updatedAt.takeIf { it > 0 } ?: System.currentTimeMillis()
             )
-            context.repository.clearItemLock(row.itemId)
-            mergedPins++
-            return@forEach
+            true
         }
-        if (row.providerId.isBlank()) return@forEach
-        context.repository.savePin(
-            itemId = row.itemId,
-            provider = row.provider.name,
-            providerId = row.providerId,
-            updatedAt = row.updatedAt.takeIf { it > 0 } ?: System.currentTimeMillis()
-        )
-        mergedPins++
+        if (applied) mergedPins++
     }
 
     backup.items.chunked(ITEM_PAGE).forEach { chunk ->
@@ -271,14 +279,17 @@ fun applyBackup(
     }
     var mergedUserData = 0
     backup.userData.forEach { row ->
-        val local = if (mergeUserDataByTimestamp) context.repository.userDataUpdatedAt(row.itemId) else null
-        if (local != null && local >= row.updatedAt) return@forEach
-        context.repository.restoreUserData(
-            row.itemId,
-            row.data,
-            updatedAt = row.updatedAt.takeIf { it > 0 } ?: System.currentTimeMillis()
-        )
-        mergedUserData++
+        val applied = context.database.transaction {
+            val local = if (mergeUserDataByTimestamp) context.repository.userDataUpdatedAt(row.itemId) else null
+            if (local != null && local >= row.updatedAt) return@transaction false
+            context.repository.restoreUserData(
+                row.itemId,
+                row.data,
+                updatedAt = row.updatedAt.takeIf { it > 0 } ?: System.currentTimeMillis()
+            )
+            true
+        }
+        if (applied) mergedUserData++
     }
 
     return BackupSummaryDto(

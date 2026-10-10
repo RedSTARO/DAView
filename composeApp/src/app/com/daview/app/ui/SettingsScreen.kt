@@ -833,10 +833,13 @@ private fun SyncSection(state: AppState) {
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(state.startupSyncing, busy) {
+        if (busy) return@LaunchedEffect
         runCatching { state.library.syncSettings() }.onSuccess {
+            // Background startup completion updates status without replacing
+            // a remote path the user is still editing.
+            if (path == settings?.remotePath.orEmpty()) path = it.remotePath
             settings = it
-            path = it.remotePath
         }
     }
     val current = settings

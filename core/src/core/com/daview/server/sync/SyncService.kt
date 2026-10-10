@@ -114,8 +114,9 @@ class SyncService(
         (uploadIntervalMinutes.coerceAtLeast(1) * 60_000L) / 2
 
     /**
-     * Reads once before this context's initial library load, ignoring the last
-     * process's pull time. Every other sync entry point crosses the same barrier,
+     * Reads once in the background when this context opens, ignoring the last
+     * process's pull time. Library reads remain available while this is pending.
+     * Every other sync entry point crosses the same operation barrier,
      * so a timer or manual upload cannot take the operation guard first and
      * cause startup to return "busy" without merging the remote progress.
      *

@@ -137,7 +137,7 @@ fun App() {
                 }
                 Library(state)
             } else {
-                Opening(state.startupError, state.startupSyncing)
+                Opening(state.startupError)
             }
         }
     }
@@ -145,19 +145,9 @@ fun App() {
 
 /** The window while the library is being opened, or if it could not be. */
 @Composable
-private fun Opening(error: String?, syncing: Boolean) {
+private fun Opening(error: String?) {
     if (error == null) {
-        if (syncing) {
-            LoadingPane {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(Modifier.size(32.dp))
-                    Spacer(Modifier.height(16.dp))
-                    Text("正在同步播放进度", style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-        } else {
-            LoadingPane()
-        }
+        LoadingPane()
         return
     }
     LoadingPane {

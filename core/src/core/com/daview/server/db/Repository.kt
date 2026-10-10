@@ -150,6 +150,11 @@ class Repository(private val db: Database) {
         }
     }
 
+    fun isLibraryDeleted(id: String): Boolean = db.read { connection ->
+        connection.statement("SELECT 1 FROM deleted_libraries WHERE id = ?")
+            .apply { setString(1, id) }.useQuery { it.next() }
+    }
+
     /** Undoes the tombstone, for a library the user adds again by hand. */
     fun forgetDeletedLibrary(id: String) = db.transaction { connection ->
         connection.statement("DELETE FROM deleted_libraries WHERE id = ?")
