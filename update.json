@@ -1,0 +1,33 @@
+{
+  "version": "977cef2",
+  "packageVersion": "1.0.126",
+  "publishedAt": "2026-10-14T16:44:43Z",
+  "pageUrl": "https://github.com/RedSTARO/DAView/releases/tag/ci",
+  "notes": "CI 构建 977cef2（977cef2f2225fe394ca1d2cfbb9c38a577322066）\n\n- perf: restore cached home before background startup refresh\n- fix: refresh pages after background startup synchronization\n- fix: synchronize watch progress before loading the app\n- docs: record remaining installer and platform validation constraints\n- fix: pin and verify the Windows playback engine before packaging\n- fix: bundle compatible Android SQLite and validate optimized releases\n- fix: track every synchronized edit and repair stale remote snapshots\n- test: verify packaged startup and add Android release UI checks",
+  "assets": {
+    "android": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-977cef2.apk",
+      "name": "DAView-977cef2.apk",
+      "sha256": "4fd7b69f93249d028b51ac8f4a4cacc9ee281d1bce33b571bdd5a9b901b39bb0",
+      "size": 8743773
+    },
+    "linux": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-977cef2.deb",
+      "name": "DAView-977cef2.deb",
+      "sha256": "c9e15c2a3eaf74ee0a705a96ada98c8cfed8d254990407ad71d76b66e3bdf93b",
+      "size": 60216484
+    },
+    "macos": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-977cef2.dmg",
+      "name": "DAView-977cef2.dmg",
+      "sha256": "6309e361aada05926566cbfb33ad7b4a22e5d884fa3a81521a9a0f1c79c1d13d",
+      "size": 75968234
+    },
+    "windows": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-977cef2.msi",
+      "name": "DAView-977cef2.msi",
+      "sha256": "927b4ec7fc57144325b22652db074587a58b52253f78d392381ac936fe142ac4",
+      "size": 112721235
+    }
+  }
+}
