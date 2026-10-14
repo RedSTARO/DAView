@@ -48,6 +48,68 @@ import kotlin.test.assertTrue
 
 class AppStateStartupSyncTest {
     @Test
+    fun `cached home is usable before local queries and network complete then saves the merged home`() = runBlocking {
+        withFixture(enabled = true) { f ->
+            f.seedHomeCache()
+            f.sql.holdFirstResume.set(true)
+            val job = assertNotNull(f.state.open())
+            f.awaitState { job.isCompleted && f.state.ready && f.state.homeLoaded }
+            f.sql.awaitHeldResume()
+            f.awaitRequest()
+
+            assertEquals("Cached movies", f.state.libraries.single().name)
+            assertEquals(CACHED_POSITION, f.state.home.resume.single().userData.positionMs)
+            assertTrue(f.state.homeRefreshing)
+            assertTrue(f.state.startupSyncing)
+            val entry = f.state.currentEntry
+
+            // A newer refresh finishes before the slow, pre-sync local read.
+            f.releaseResponse()
+            f.awaitMergedHome()
+            f.sql.releaseResume()
+            f.awaitAllWork()
+
+            assertSame(entry, f.state.currentEntry)
+            val saved = assertNotNull(f.homeCache.read())
+            assertEquals("Remote movies", saved.libraries.single().name)
+            assertEquals(REMOTE_POSITION, saved.home.resume.single().userData.positionMs)
+            assertEquals(f.state.home, saved.home)
+        }
+    }
+
+    @Test
+    fun `failed local refresh keeps the cached home visible and its disk snapshot intact`() = runBlocking {
+        withFixture(enabled = false) { f ->
+            f.seedHomeCache()
+            val before = f.homeCache.read()
+            f.sql.failHomeReads.set(true)
+            assertNotNull(f.state.open()).join()
+            f.awaitState { !f.state.homeRefreshing && f.state.toast != null }
+
+            assertTrue(f.state.ready)
+            assertTrue(f.state.homeLoaded)
+            assertNull(f.state.startupError)
+            assertNull(f.state.homeError)
+            assertEquals(CACHED_POSITION, f.state.home.resume.single().userData.positionMs)
+            assertEquals(before, f.homeCache.read())
+            assertTrue(f.requests.isEmpty())
+        }
+    }
+
+    @Test
+    fun `corrupt cache falls back to local data and is replaced after the read`() = runBlocking {
+        withFixture(enabled = false) { f ->
+            f.corruptHomeCache()
+            f.awaitInitial(assertNotNull(f.state.open()))
+
+            assertEquals(LOCAL_POSITION, f.state.home.resume.single().userData.positionMs)
+            assertEquals(f.state.home, assertNotNull(f.homeCache.read()).home)
+            assertNull(f.state.startupError)
+            assertNull(f.state.toast)
+        }
+    }
+
+    @Test
     fun `startup shows local home while sync is pending then refreshes the same state`() = runBlocking {
         withFixture(enabled = true) { f ->
             val job = assertNotNull(f.state.open())
@@ -380,6 +442,7 @@ class AppStateStartupSyncTest {
         val additionalRemoteUserData = ConcurrentLinkedQueue<BackupUserDataDto>()
         val sql = CatalogueObservedSql(JdbcSqlDatabase(dir))
         val core = ServerContext(dir, sql)
+        val homeCache = HomeSnapshotCache(dir)
         private val scope = CoroutineScope(parent.coroutineContext +
             SupervisorJob(parent.coroutineContext[Job]) +
             CoroutineExceptionHandler { _, error -> uncaught += error })
@@ -459,6 +522,21 @@ class AppStateStartupSyncTest {
             ))
         })
 
+        fun seedHomeCache() = homeCache.write(HomeSnapshot(
+            libraries = listOf(LibraryDto(id = LIBRARY_ID, name = "Cached movies", kind = LibraryKind.MOVIE,
+                path = "/movies", updatedAt = 50)),
+            home = HomeData(resume = listOf(MediaItemDto(
+                id = ITEM_ID, libraryId = LIBRARY_ID, kind = ItemKind.MOVIE,
+                name = "Isolated movie", userData = UserDataDto(positionMs = CACHED_POSITION)
+            ))),
+            info = null
+        ))
+
+        fun corruptHomeCache() {
+            seedHomeCache()
+            java.nio.file.Files.write(dir.resolve("cache/home-v1.json"), "{partial".toByteArray())
+        }
+
         suspend fun awaitRequest() {
             assertTrue(withContext(Dispatchers.IO) { received.await(10, TimeUnit.SECONDS) },
                 "Startup never requested remote progress")
@@ -516,6 +594,7 @@ class AppStateStartupSyncTest {
     private class CatalogueObservedSql(private val delegate: SqlDatabase) : SqlDatabase by delegate {
         val cataloguePositions = ConcurrentLinkedQueue<Long>()
         val holdFirstResume = AtomicBoolean(false)
+        val failHomeReads = AtomicBoolean(false)
         val holdSearchPage = AtomicBoolean(false)
         private val resumeHeld = CountDownLatch(1)
         private val resumePermit = CountDownLatch(1)
@@ -560,6 +639,7 @@ class AppStateStartupSyncTest {
                         }
 
                         override fun <T> useQuery(block: (SqlCursor) -> T): T {
+                            if (isResume && failHomeReads.get()) error("Fixture home read failed")
                             val result = statement.useQuery(block)
                             if (isResume && holdFirstResume.compareAndSet(true, false)) {
                                 resumeHeld.countDown()
@@ -586,6 +666,7 @@ class AppStateStartupSyncTest {
         private const val LIBRARY_ID = "startup-library"
         private const val ITEM_ID = "startup-movie"
         private const val LOCAL_POSITION = 9_000L
+        private const val CACHED_POSITION = 1_000L
         private const val REMOTE_POSITION = 42_000L
         private const val SEARCH_PAGE_SIZE = 60
 

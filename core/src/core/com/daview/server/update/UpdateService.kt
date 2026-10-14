@@ -73,13 +73,15 @@ class UpdateService(dataDir: Path) {
     private val log = LoggerFactory.getLogger(UpdateService::class.java)
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        // GitHub answers a release download with a redirect to its object store.
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .build()
+    private val http: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            // GitHub answers a release download with a redirect to its object store.
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+    }
 
     /**
      * Where packages land. Under the data directory on purpose: on Android that

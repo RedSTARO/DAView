@@ -28,14 +28,17 @@ class ImageCache(
     private val log = LoggerFactory.getLogger(ImageCache::class.java)
     private val dir: Path = dataDir.resolve("cache").resolve("images").also { it.createDirectories() }
 
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        .followRedirects(true)
-        // Five seconds, not fifteen: a poster that has not started arriving by
-        // then is not going to save the grid, and every scroll back into view
-        // used to pay the full timeout again.
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .build()
+    // Cached artwork does not need an HTTP client or TLS initialization.
+    private val http: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .followRedirects(true)
+            // Five seconds, not fifteen: a poster that has not started arriving by
+            // then is not going to save the grid, and every scroll back into view
+            // used to pay the full timeout again.
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .build()
+    }
 
     /**
      * URLs that failed recently, so a grid full of unreachable posters does not

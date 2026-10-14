@@ -132,6 +132,7 @@ data class LibraryView(
         get() = onlyUnwatched || onlyFavourite || inProgress || genre != null || decade != null
 }
 
+@Serializable
 data class HomeData(
     val resume: List<MediaItemDto> = emptyList(),
     val nextUp: List<MediaItemDto> = emptyList(),
@@ -239,6 +240,7 @@ class AppState internal constructor(
     private class Opened(val core: ServerContext) {
         val media = core.media
         val links = LocalAssetLinks(core)
+        val homeCache = HomeSnapshotCache(core.configStore.dataDir)
     }
 
     private var opened by mutableStateOf<Opened?>(null)
@@ -251,6 +253,7 @@ class AppState internal constructor(
     val ready: Boolean get() = opened != null && initialLoaded
 
     private var initialLoaded by mutableStateOf(false)
+    private var openingJob: Job? = null
 
     /** Set instead of [ready] when the library could not be opened at all. */
     var startupError by mutableStateOf<String?>(null)
@@ -823,23 +826,33 @@ class AppState internal constructor(
     }
 
     /**
-     * Opens the local library while cloud progress is pulled in the background.
-     *
-     * Opening costs about a third of a second on a warm machine — the SQLite
-     * driver unpacks its native library, the migrations run, the planner's
-     * statistics are refreshed — and it used to happen while the window was
-     * being composed, so nothing was on screen until it finished. It runs off
-     * the UI thread now and the window is up while it does.
+     * Restore the last home snapshot before starting catalogue reads or sync.
+     * SQLite still opens off the UI thread; with a cache hit neither the home
+     * queries nor the network are on the path to the first populated screen.
      */
     fun open(): Job? {
-        if (opened != null) return null
+        if (opened != null || openingJob?.isActive == true) return null
         return scope.launch {
+            startupError = null
             val context = catchingOperation { withContext(Dispatchers.IO) { openContext() } }
                 .getOrElse {
                     startupError = it.message ?: "无法打开媒体库"
                     return@launch
                 }
-            opened = Opened(context)
+            val session = Opened(context)
+            opened = session
+            val cached = withContext(Dispatchers.IO) { session.homeCache.read() }
+            if (cached != null) {
+                libraries = cached.libraries
+                home = cached.home
+                serverInfo = cached.info?.copy(
+                    name = context.config.serverName,
+                    version = context.appVersion,
+                    storageConfigured = context.webdav() != null
+                )
+                homeLoaded = true
+                initialLoaded = true
+            }
             // The download queue asks this before every block. Off Wi-Fi a
             // phone's transfers wait rather than run up a mobile bill; a
             // desktop is never gated.
@@ -851,11 +864,17 @@ class AppState internal constructor(
             val sync = scope.async(start = CoroutineStart.UNDISPATCHED) {
                 catchingOperation { library.syncOnStartup() }
             }
-            catchingOperation {
-                serverInfo = library.info()
-                libraries = library.libraries()
+            if (cached == null) {
+                catchingOperation {
+                    serverInfo = library.info()
+                    libraries = library.libraries()
+                }
+                initialLoaded = true
+            } else {
+                // Counts can be expensive on a large catalogue. Keep the cached
+                // counts until the background read returns.
+                run { serverInfo = library.info() }
             }
-            initialLoaded = true
             val initialHome = refreshHome()
             scope.launch {
                 try {
@@ -884,10 +903,10 @@ class AppState internal constructor(
                 if (scanOnStartup) startupScan()
                 if (checkUpdatesOnStartup && canSelfUpdate()) startupUpdateCheck()
             }
-            // The returned job represents only local startup. Background sync
-            // and its page refresh continue independently after it completes.
-            initialHome.join()
-        }
+            // A hit completes startup immediately; both refreshes continue in
+            // the owning scope. A miss waits for the first local home as before.
+            if (cached == null) initialHome.join()
+        }.also { openingJob = it }
     }
 
     /** Loads whatever the current screen shows, again. */
@@ -1023,6 +1042,7 @@ class AppState internal constructor(
         libraries = libs
         home = data
         homeLoaded = true
+        saveHomeSnapshot(generation)
         // One row per library, and they only fill in the bottom of the page, so
         // they are gathered after the rest of it is already on screen.
         val rows = coroutineScope {
@@ -1031,6 +1051,25 @@ class AppState internal constructor(
         currentCoroutineContext().ensureActive()
         if (generation != homeGeneration) return
         home = home.copy(unwatched = rows.toMap().filterValues { it.isNotEmpty() })
+        saveHomeSnapshot(generation)
+    }
+
+    private suspend fun saveHomeSnapshot(generation: Long) {
+        val snapshot = HomeSnapshot(libraries = libraries, home = home, info = serverInfo)
+        val cache = requireOpen().homeCache
+        // Serialize writers so an obsolete refresh cannot replace a newer
+        // snapshot. Cancellation is checked after acquiring the write slot.
+        homeCacheMutex.withLock {
+            if (generation != homeGeneration) return
+            withContext(Dispatchers.IO) {
+                currentCoroutineContext().ensureActive()
+                catchingOperation { cache.write(snapshot) }
+                    .onFailure {
+                        java.util.logging.Logger.getLogger(AppState::class.java.name)
+                            .log(java.util.logging.Level.WARNING, "Could not save the home snapshot", it)
+                    }
+            }
+        }
     }
 
     /** How a library page is being (re)loaded. */
@@ -2098,6 +2137,10 @@ class AppState internal constructor(
     }
 
     private companion object {
+        // Activity recreation can leave an old instance finishing disk IO.
+        // Share the writer lock so that instance cannot replace a newer cache.
+        val homeCacheMutex = Mutex()
+
         /** One page of search results. The facade caps a page at 500 anyway. */
         const val SEARCH_LIMIT = 60
 

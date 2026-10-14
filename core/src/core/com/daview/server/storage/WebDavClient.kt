@@ -60,21 +60,26 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
     // Redirects are not followed because the 302 to the signed CDN link is
     // information this class hands out (see resolveDirectUrl), and there is no
     // call timeout because the same client streams multi-gigabyte ranges.
-    private val http: OkHttpClient = OkHttpClient.Builder()
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .writeTimeout(180, TimeUnit.SECONDS)
-        .callTimeout(0, TimeUnit.MILLISECONDS)
-        .build()
+    // TLS/client initialization is not needed to open the local catalogue.
+    private val http: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .writeTimeout(180, TimeUnit.SECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .build()
+    }
 
     // Whole-file reads follow redirects using OkHttp's origin-aware credential
     // handling. A Range request here could return only a prefix of a sync file.
-    private val fileHttp = http.newBuilder()
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .build()
+    private val fileHttp by lazy {
+        http.newBuilder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+    }
 
     // Parse before accepting a saved configuration. OkHttp also encodes spaces
     // and Unicode paths consistently with the requests this client will issue.

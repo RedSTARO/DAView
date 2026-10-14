@@ -121,11 +121,13 @@ const val SCRAPE_CACHE_MAX_AGE_MS = 7L * 24 * 3600 * 1000
 abstract class HttpScraper(protected val repository: Repository?) {
     protected val log = LoggerFactory.getLogger(javaClass)
 
-    protected val http: OkHttpClient = OkHttpClient.Builder()
-        .followRedirects(true)
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(25, TimeUnit.SECONDS)
-        .build()
+    protected val http: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .followRedirects(true)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(25, TimeUnit.SECONDS)
+            .build()
+    }
 
     protected val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
