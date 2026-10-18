@@ -139,6 +139,9 @@ function Smoke-Desktop([string]$variant) {
         $windows = @([AuditWindows]::Owned([uint32[]]$processIds))
         $windows | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $OutputDirectory "$variant.windows.json") -Encoding utf8
         if (@($windows | Where-Object { $_.ClassName -eq 'SunAwtFrame' -and $_.Visible }).Count -eq 0) { throw "$variant has no visible AWT main window" }
+        if (@($windows | Where-Object { $_.Visible -and $_.ClassName -in @('SunAwtDialog', '#32770') }).Count -gt 0) {
+            throw "$variant opened a startup dialog; see $variant.windows.json"
+        }
         $database = Join-Path $data 'daview.db'
         if (-not (Test-Path -LiteralPath $database)) { throw "$variant did not open its isolated database" }
         $log = Join-Path $data 'logs/daview.log'
@@ -149,7 +152,7 @@ function Smoke-Desktop([string]$variant) {
             [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
         $reader = [IO.StreamReader]::new($logStream, [Text.Encoding]::UTF8)
         try { $logged = $reader.ReadToEnd() } finally { $reader.Dispose() }
-        if ($logged -match '(?m)\bERROR\b|uncaught exception|NoClassDefFoundError|NoSuchMethodError') { throw "$variant startup log contains errors" }
+        if ($logged -match '(?m)\bERROR\b|uncaught exception|VerifyError|NoClassDefFoundError|NoSuchMethodError') { throw "$variant startup log contains errors" }
         return @{variant=$variant; launcher=$exe; startupPassed=$true; licensesVerified=$true; mpvSha256=$pin.dllSha256; databaseBytes=(Get-Item $database).Length; log=$log}
     } finally {
         # Closing the test process directly avoids writing window preferences

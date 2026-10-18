@@ -360,3 +360,29 @@ compose.desktop {
         }
     }
 }
+
+// Unit tests use the original dependencies, so they cannot detect invalid
+// bytecode produced by ProGuard. Run this verifier with only the processed
+// release jars before any desktop release distribution can be packaged.
+val compileReleaseBytecodeVerifier = tasks.register<JavaCompile>("compileReleaseBytecodeVerifier") {
+    source(rootProject.file("scripts/VerifyDesktopRelease.java"))
+    classpath = files()
+    destinationDirectory.set(layout.buildDirectory.dir("release-bytecode-verifier"))
+    options.release.set(17)
+}
+
+val verifyReleaseBytecode = tasks.register<JavaExec>("verifyReleaseBytecode") {
+    group = "verification"
+    description = "Verifies processed desktop release bytecode and Okio stream reads."
+    dependsOn("proguardReleaseJars", compileReleaseBytecodeVerifier)
+    classpath(compileReleaseBytecodeVerifier.flatMap { it.destinationDirectory })
+    classpath(fileTree(layout.buildDirectory.dir("compose/tmp/main-release/proguard")) {
+        include("*.jar")
+    })
+    mainClass.set("VerifyDesktopRelease")
+    jvmArgs("-Xverify:all")
+    args(layout.buildDirectory.file("compose/tmp/proguardReleaseJars/mapping.txt").get().asFile.absolutePath)
+}
+
+tasks.matching { it.name == "createReleaseDistributable" || it.name.startsWith("packageRelease") }
+    .configureEach { dependsOn(verifyReleaseBytecode) }

@@ -12,6 +12,13 @@
 # obfuscated stack trace from a user's log cannot be read.
 -printmapping build/compose/tmp/proguardReleaseJars/mapping.txt
 
+# ProGuard can narrow Okio__OkioKt.buffer's return type to RealBufferedSource
+# while leaving a checkcast to BufferedSource before areturn (VerifyError).
+# Compose's **Kt__* workaround does not match Okio's __*Kt naming scheme.
+# Keep shrinking, obfuscation and the other optimizations enabled.
+# https://github.com/Guardsquare/proguard/issues/533
+-optimizations !method/specialization/returntype
+
 # ---- libmpv, through JNA ---------------------------------------------------
 # The interface's method names are the C symbols JNA binds them to, and JNA
 # builds the proxy, reads the options map and calls back through reflection.

@@ -635,6 +635,10 @@ UP-TO-DATE，APK 里带的是旧代码。
 ./gradlew :core:jvmTest :composeApp:desktopTest
 ```
 
+桌面发布包另有 `./gradlew :composeApp:verifyReleaseBytecode`：在 ProGuard 处理后的
+JAR 上强制 JVM 校验，并实际读取 Okio 缓冲流。`createReleaseDistributable` 和
+`packageRelease*` 会自动先跑这项检查；普通单元测试使用未处理的依赖，覆盖不到这类发布包错误。
+
 `:core:jvmTest` 覆盖命名解析（季 / 集 / 双语字幕 / 噪音过滤）、外置播放器的进度推算
 （末尾索引读取不得跳到片尾、静置后才锚定、下载进度作为上限）、刮削匹配的取舍、
 手动指定（钉住之后不得再搜索、换条目要清掉上一个匹配的字段、id 填错不能动已有数据），
