@@ -11,3 +11,5 @@
 /composeApp/nativeResources/common/licenses/** text eol=lf
 composeApp/src/androidMain/assets/licenses/sqlite/Apache-2.0.txt text eol=lf
 composeApp/nativeResources/windows/licenses/mpv/* text eol=lf
+# Every shell script runs under bash, on Linux runners and in WSL alike.
+/scripts/*.sh text eol=lf

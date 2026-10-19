@@ -298,7 +298,7 @@ WebDAV 上的一个文件，别的设备读回来合并。
 | `build-android` | ubuntu | 编译 FFmpeg 解码库（有缓存），`assembleRelease` 出未签名 APK，再检查 APK 里的解码库 |
 | `sign-android` | ubuntu | 用 SDK 自带的 `apksigner` 签名；只在 master / main / 标签的推送上运行 |
 | `build-desktop-windows` | windows | `:composeApp:desktopTest`，拉 libmpv，`packageReleaseMsi` |
-| `build-desktop-linux`、`build-desktop-macos` | ubuntu、macos | `packageReleaseDeb`、`packageReleaseDmg` |
+| `build-desktop-linux`、`build-desktop-macos` | ubuntu、macos | `packageReleaseDeb`、`packageReleaseDmg`；`.deb` 随后经 `scripts/repack-deb.sh` 放宽依赖并改用 xz 压缩（见下） |
 | `publish-ci` | ubuntu | master 推送：把四个包和 `update.json` 放到 `ci` 预发布上，清单推到 `updates` 分支 |
 | `release` | ubuntu | `v*` 标签：建 GitHub Release，同样发布清单 |
 | `notify-telegram` | ubuntu | 把签名 APK 和各平台的成败发到 Telegram；没配 secret 就跳过 |
@@ -317,6 +317,10 @@ WebDAV 上的一个文件，别的设备读回来合并。
   签名在单独的 job 里做。
   签名用的四个 secret（`SIGNING_KEY_BASE64`、`ALIAS`、`KEY_STORE_PASSWORD`、`KEY_PASSWORD`）只在
   `sign-android` 里出现，密码经环境变量交给 `apksigner`；fork 来的 PR 拿不到它们，只会得到未签名的 APK。
+- **`.deb` 的依赖要放宽才能装到旧发行版上**。jpackage 按构建机（Ubuntu 24.04）上的包名写依赖，其中 `libasound2t64`、
+  `libpng16-16t64` 是 64 位 time_t 迁移后的新名字，Debian 12 和 Ubuntu 22.04 上不存在，包因此装不上。
+  `scripts/repack-deb.sh` 把每个 `…t64` 依赖改成「`新名 | 旧名`」，并把成员改为 xz 压缩（Debian 11 的 dpkg 读不了 zstd），
+  文件内容、权限与维护脚本不变。
 - **第三方 action 钉在提交哈希上**，workflow 的默认权限是只读，只有两个发布 job 自己申请写权限。
 - **Android 的 DTS / TrueHD 解码库在 CI 里现编**（`scripts/build-ffmpeg-decoder.sh`，LGPL，四个 ABI），
   见 `ffmpeg-decoder/README.md`。

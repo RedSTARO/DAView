@@ -439,6 +439,15 @@ jobs:
           test -n "$pkg"
           mv "$pkg" "$(dirname "$pkg")/DAView-${VERSION}.deb"
 
+      # jpackage names the libraries' packages as this Ubuntu 24.04 runner
+      # calls them, and two of those names (libasound2t64, libpng16-16t64)
+      # do not exist on Debian 12 or Ubuntu 22.04, where the package then
+      # could not be installed. Each becomes "<new> | <old>", and the members
+      # are recompressed with xz, which every dpkg in use reads. Before the
+      # mapping archive, which records this file's hash.
+      - name: 放宽 deb 依赖
+        run: bash scripts/repack-deb.sh "composeApp/build/compose/binaries/main-release/deb/DAView-${VERSION}.deb"
+
       - name: 归档 linux 混淆映射
         run: >-
           python scripts/archive-release-mapping.py
