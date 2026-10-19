@@ -57,13 +57,14 @@
 | Linux 运行 | WSL Debian 13 + WSLg：解包运行 CI 的 `.deb`，隔离数据目录下建库、加锁、写日志，首次使用界面正常（OpenGL 不可用时回退软件渲染）。`dpkg -i` 安装 1.0.126 → 升级 1.0.127 → `--purge`：升级后没有旧版文件残留，卸载删除 `/opt/daview` 与菜单项，用户数据保留。1.0.126 启动即报 Okio 的 `VerifyError`，1.0.127 日志无错误，与 `0f8e138` 的修复一致 |
 | Linux 依赖与安装脚本 | jpackage 在 Ubuntu 24.04 上把依赖写成 `libasound2t64`、`libpng16-16t64`；在 debootstrap 建的干净 Debian 12.15 根目录里，原包 `apt-get install` 直接报这两个依赖「not installable」。另一个问题：jpackage 的 `postinst` 在 `set -e` 下调用 `xdg-desktop-menu install`，没有桌面菜单目录（无桌面环境、WSL、容器）时失败，包停在半配置状态，且 `prerm` 的 `uninstall` 同样失败，连卸载都卸不掉。`scripts/repack-deb.sh` 把 `…t64` 依赖改成「`新名 \| 旧名`」、让这两处菜单调用失败时只警告、并改用 xz 压缩。重打包后在同一个干净的 Debian 12 里：apt 自动解析依赖并安装成功，`remove` 与 `purge` 成功，`/opt/daview` 被删除；其余 223 个条目的内容、权限、属主不变，体积 60.2 → 56.6 MB。有菜单目录的真实桌面系统上菜单注册走原路径，未实测 |
 | Android 生命周期 | API 36 模拟器、`0f8e138` 的 debug 包：把 dataSync 前台服务时限临时调到 60 秒，应用转入后台后系统报 `FGS (dataSync) timed out`，服务按 `onTimeout` 停止、通知移除、进程未崩溃，扫描在后台继续完成；播放中按 Home 进入画中画（`mode=pinned`），字幕正常；熄屏后播放转为暂停、解锁不自动续播；横竖屏切换不重建 Activity、播放不中断；拒绝通知权限后先给出用途说明，扫描的前台服务照常运行；后台进程被杀后冷启动回到同一详情页，播放进度已保存 |
-| Windows 安装（Sandbox） | 在 Windows Sandbox 里安装 1.0.113 与 1.0.127 的 MSI 都以 1603 失败：jpackage 的自定义动作 `JpFindRelatedProducts`（`JpCaDll`，只依赖系统 DLL）被代码完整性策略拦截，事件 3077/3033 记录 `msiexec` 加载的未签名 DLL 不满足签名级别，策略 ID `{0283ac0f-…}`（智能应用控制）；直接 `LoadLibrary` 返回 4551。本机该功能关闭（`VerifiedAndReputablePolicyState=0`），所以本机能装。MSI、`JpCaDll` 与 `DAView.exe` 均未签名（`Get-AuthenticodeSignature`：NotSigned），因此在开启智能应用控制的 Windows 11 上无法安装或运行。MSI 的安装/升级流程因此没能在 Sandbox 里验收 |
+| Windows 安装（Sandbox） | 在 Windows Sandbox 里安装 1.0.113 与 1.0.127 的 MSI 都以 1603 失败：jpackage 的自定义动作 `JpFindRelatedProducts`（`JpCaDll`，只依赖系统 DLL）被代码完整性策略拦截，事件 3077/3033 记录 `msiexec` 加载的未签名 DLL 不满足签名级别要求，策略 ID 以 `{0283ac0f-fff1-49ae-ada1-8a` 开头（按此 ID 判断是智能应用控制，事件中没有直接读到策略名称）；直接 `LoadLibrary` 返回 4551。本机智能应用控制关闭（`VerifiedAndReputablePolicyState=0`），所以本机能装。MSI、`JpCaDll` 与 `DAView.exe` 均未签名（`Get-AuthenticodeSignature`：NotSigned）。推断：强制执行同类策略的 Windows 上安装会同样失败；`DAView.exe` 在该策略下能否运行未实测。MSI 的安装/升级流程因此没能在 Sandbox 里验收 |
 
 ## 尚未满足的验收项
 
 - Android 真机：目前 `adb devices -l` 没有连接设备。后台/前台切换、锁屏、画中画、配置重建、通知拒绝和前台服务超时已在 API 36 模拟器上验收（见上表），真机与厂商系统上的行为仍未验证。
 - 桌面真实播放器：源码构建的真实 libmpv 全屏失焦测试已通过；这不能证明安装包、HDR、全部显示驱动及播放控制浮层都通过。上述分发目录启动检查已完成，MSI 安装及升级仍需验收。
-- Windows 代码签名：MSI、其中的自定义动作 DLL 和 `DAView.exe` 都没有 Authenticode 签名。开启智能应用控制或类似 WDAC 策略的 Windows 会拦下安装（Sandbox 中实测 1603/1723）和运行；一般机器上也会触发 SmartScreen 的未知发布者提示。解决需要代码签名证书（如 OV/EV 证书或 Azure Trusted Signing），是否购买、用谁的名义签名由所有者决定。
+- 已发出的 1.0.126 桌面版：它启动时 Okio 的混淆类校验失败（WSL 中实测 `VerifyError`），而更新检查和下载都经过 OkHttp/Okio。推断 1.0.126 的自动更新检查会静默失败，装了它的设备（包括本机注册表中 2026-10-18 安装的那份）可能收不到 1.0.127，需要手动安装；未在 1.0.126 上实际点过「检查更新」确认。
+- Windows 代码签名：MSI、其中的自定义动作 DLL 和 `DAView.exe` 都没有 Authenticode 签名。强制执行代码完整性策略（如智能应用控制）的 Windows 会拦下安装（Sandbox 中实测 1603/1723），能否运行未实测；从浏览器下载的安装包首次打开时还会出现 SmartScreen 的未知发布者提示（应用内更新下载的文件不带网络来源标记，不触发这一提示）。解决需要代码签名证书（如 OV/EV 证书或 Azure Trusted Signing），是否购买、用谁的名义签名由所有者决定。
 - MSI 验证环境：2026-10-04 检查未找到 WiX 的 candle/light，本机有 JDK 25 和 Android Studio JBR 21。准备在工作区下载便携 WiX、构建 MSI 并只解包检查（不安装）的命令被自动审批拒绝，只返回 `blocked by policy`，命令未执行；没有把该计划记为 MSI 构建通过。
 - Linux/macOS 安装包和两端从旧版升级：Linux 已在 WSL Debian 13 上验证运行与 dpkg 升级、卸载（见上表）；Debian 12 / Ubuntu 22.04 实机安装、macOS 的 DMG 仍无运行证据。
 - Linux 环境检查：运行打包后的 `.deb` 不需要系统 Java（安装包自带运行时），已在 WSL Debian 13 中完成；macOS 测试主机尚未提供。

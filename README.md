@@ -321,7 +321,8 @@ WebDAV 上的一个文件，别的设备读回来合并。
   `libpng16-16t64` 是 64 位 time_t 迁移后的新名字，Debian 12 和 Ubuntu 22.04 上不存在，包因此装不上。
   `scripts/repack-deb.sh` 把每个 `…t64` 依赖改成「`新名 | 旧名`」，并把成员改为 xz 压缩（Debian 11 的 dpkg 读不了 zstd）。
   jpackage 的安装/卸载脚本在 `set -e` 下注册桌面菜单，没有菜单目录的系统（无桌面环境、WSL、容器）上会让安装停在半配置、
-  卸载也卸不掉，这两处改成失败只警告。文件内容与权限不变。
+  卸载也卸不掉，这两处改成失败只警告。文件内容与权限不变。脚本在模板里找不到恰好各一处菜单调用时会报错退出，
+  所以升级 JDK 或 Compose 后 jpackage 模板若有变化，Linux 打包（以及依赖它的发布）会停下，需要先更新脚本。
 - **第三方 action 钉在提交哈希上**，workflow 的默认权限是只读，只有两个发布 job 自己申请写权限。
 - **Android 的 DTS / TrueHD 解码库在 CI 里现编**（`scripts/build-ffmpeg-decoder.sh`，LGPL，四个 ABI），
   见 `ffmpeg-decoder/README.md`。
@@ -633,9 +634,9 @@ UP-TO-DATE，APK 里带的是旧代码。
 - **刮削需要自备 API Key**：没有 TMDB / TheTVDB Key 时，电影与电视剧库只会用文件名建库、没有海报和简介；
   番剧库可以只靠 bangumi.tv。bangumi.tv 默认**不会**作为电影 / 电视剧的兜底源——
   它只收录动画，会把同名的真人剧匹配成动画。
-- **Windows 安装包没有代码签名**：MSI、其中 jpackage 的自定义动作 DLL 和 `DAView.exe` 都未签名。开启「智能应用控制」的 Windows 11
-  会拦下安装（Windows Sandbox 中实测 1603，事件日志为代码完整性拦截）和运行；其他机器首次运行会出现 SmartScreen 的未知发布者提示。
-  需要代码签名证书才能解决。
+- **Windows 安装包没有代码签名**：MSI、其中 jpackage 的自定义动作 DLL 和 `DAView.exe` 都未签名。强制执行代码完整性策略
+  （如「智能应用控制」）的 Windows 会拦下安装（Windows Sandbox 中实测 1603，事件日志为代码完整性拦截）；从浏览器下载的安装包
+  首次打开会出现 SmartScreen 的未知发布者提示，应用内更新不经过浏览器，不触发这一提示。需要代码签名证书才能解决。
 
 ## 测试
 
