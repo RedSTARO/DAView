@@ -48,16 +48,28 @@
 
 `verify-production.ps1` 检查源码输入是否在测试期间变化；`verify-release-artifacts.ps1` 检查包内容和隔离启动；`verify-android-runtime.ps1 -ReleaseUiSmoke` 运行独立 AVD 与 release 黑盒检查。后台任务将结果写入 JSON。本环境的 Windows CLI 没有 `queue`，daemon 仅支持 Unix，现有 App Server 是不可接管的 stdio，无法配置完成后回调当前会话；未设置定时轮询。本轮没有推送或发布。
 
+## 2026-10-20 追加验证（基线 `0f8e138`）
+
+| 范围 | 结果与边界 |
+| --- | --- |
+| 远端 CI | `6d3156b` 之后的 4 次 master 运行（至 `0f8e138`，run 39104180757）全部成功，包括桌面 `packageRelease*`、APK 签名和 `ci` 预发布；四个平台的映射 ZIP 都已作为构建产物和预发布附件发布 |
+| 安装包体积 | 与开启压缩混淆前的 `6533738` 相比：APK 24.4 → 8.3 MB，MSI 167 → 107 MB，DMG 131 → 72 MB，DEB 112 → 57 MB；APK 签名证书 SHA-256 不变（`4a917098…1d376`），v2/v3 签名有效 |
+| Linux 运行 | WSL Debian 13 + WSLg：解包运行 CI 的 `.deb`，隔离数据目录下建库、加锁、写日志，首次使用界面正常（OpenGL 不可用时回退软件渲染）。`dpkg -i` 安装 1.0.126 → 升级 1.0.127 → `--purge`：升级后没有旧版文件残留，卸载删除 `/opt/daview` 与菜单项，用户数据保留。1.0.126 启动即报 Okio 的 `VerifyError`，1.0.127 日志无错误，与 `0f8e138` 的修复一致 |
+| Linux 依赖与安装脚本 | jpackage 在 Ubuntu 24.04 上把依赖写成 `libasound2t64`、`libpng16-16t64`；在 debootstrap 建的干净 Debian 12.15 根目录里，原包 `apt-get install` 直接报这两个依赖「not installable」。另一个问题：jpackage 的 `postinst` 在 `set -e` 下调用 `xdg-desktop-menu install`，没有桌面菜单目录（无桌面环境、WSL、容器）时失败，包停在半配置状态，且 `prerm` 的 `uninstall` 同样失败，连卸载都卸不掉。`scripts/repack-deb.sh` 把 `…t64` 依赖改成「`新名 \| 旧名`」、让这两处菜单调用失败时只警告、并改用 xz 压缩。重打包后在同一个干净的 Debian 12 里：apt 自动解析依赖并安装成功，`remove` 与 `purge` 成功，`/opt/daview` 被删除；其余 223 个条目的内容、权限、属主不变，体积 60.2 → 56.6 MB。有菜单目录的真实桌面系统上菜单注册走原路径，未实测 |
+| Android 生命周期 | API 36 模拟器、`0f8e138` 的 debug 包：把 dataSync 前台服务时限临时调到 60 秒，应用转入后台后系统报 `FGS (dataSync) timed out`，服务按 `onTimeout` 停止、通知移除、进程未崩溃，扫描在后台继续完成；播放中按 Home 进入画中画（`mode=pinned`），字幕正常；熄屏后播放转为暂停、解锁不自动续播；横竖屏切换不重建 Activity、播放不中断；拒绝通知权限后先给出用途说明，扫描的前台服务照常运行；后台进程被杀后冷启动回到同一详情页，播放进度已保存 |
+| Windows 安装（Sandbox） | 在 Windows Sandbox 里安装 1.0.113 与 1.0.127 的 MSI 都以 1603 失败：jpackage 的自定义动作 `JpFindRelatedProducts`（`JpCaDll`，只依赖系统 DLL）被代码完整性策略拦截，事件 3077/3033 记录 `msiexec` 加载的未签名 DLL 不满足签名级别，策略 ID `{0283ac0f-…}`（智能应用控制）；直接 `LoadLibrary` 返回 4551。本机该功能关闭（`VerifiedAndReputablePolicyState=0`），所以本机能装。MSI、`JpCaDll` 与 `DAView.exe` 均未签名（`Get-AuthenticodeSignature`：NotSigned），因此在开启智能应用控制的 Windows 11 上无法安装或运行。MSI 的安装/升级流程因此没能在 Sandbox 里验收 |
+
 ## 尚未满足的验收项
 
-- Android 真机：目前 `adb devices -l` 没有连接设备。上述模拟器基础测试已完成；后台/前台切换、锁屏、画中画、配置重建、通知拒绝和前台服务超时仍需运行验收。
+- Android 真机：目前 `adb devices -l` 没有连接设备。后台/前台切换、锁屏、画中画、配置重建、通知拒绝和前台服务超时已在 API 36 模拟器上验收（见上表），真机与厂商系统上的行为仍未验证。
 - 桌面真实播放器：源码构建的真实 libmpv 全屏失焦测试已通过；这不能证明安装包、HDR、全部显示驱动及播放控制浮层都通过。上述分发目录启动检查已完成，MSI 安装及升级仍需验收。
+- Windows 代码签名：MSI、其中的自定义动作 DLL 和 `DAView.exe` 都没有 Authenticode 签名。开启智能应用控制或类似 WDAC 策略的 Windows 会拦下安装（Sandbox 中实测 1603/1723）和运行；一般机器上也会触发 SmartScreen 的未知发布者提示。解决需要代码签名证书（如 OV/EV 证书或 Azure Trusted Signing），是否购买、用谁的名义签名由所有者决定。
 - MSI 验证环境：2026-10-04 检查未找到 WiX 的 candle/light，本机有 JDK 25 和 Android Studio JBR 21。准备在工作区下载便携 WiX、构建 MSI 并只解包检查（不安装）的命令被自动审批拒绝，只返回 `blocked by policy`，命令未执行；没有把该计划记为 MSI 构建通过。
-- Linux/macOS 安装包和两端从旧版升级：本轮尚无运行证据。
-- Linux 环境检查：本机存在 Debian WSL，具备 dpkg-deb 和 WSLg，但 `java` 不在 PATH，标准 JVM 目录也未发现工具链；macOS 测试主机尚未提供。已向用户询问可用设备、隔离虚拟机或主机，等待环境信息。
+- Linux/macOS 安装包和两端从旧版升级：Linux 已在 WSL Debian 13 上验证运行与 dpkg 升级、卸载（见上表）；Debian 12 / Ubuntu 22.04 实机安装、macOS 的 DMG 仍无运行证据。
+- Linux 环境检查：运行打包后的 `.deb` 不需要系统 Java（安装包自带运行时），已在 WSL Debian 13 中完成；macOS 测试主机尚未提供。
 - 离线旧数据：已发生的文件碰撞污染、远端同大小内容替换，无法仅凭长度自动发现。新路径分配和续传检查不能证明旧文件正确。
 - 同步并发：不支持条件写入的 WebDAV 仍无法保证两个设备同时 PUT 时不互相覆盖。后续拉取补传缺少/较旧行的回归测试已通过；同时间戳时保留本机值的既有冲突规则不变，也没有消除设备时钟偏差。
-- 发布配置：用户授权的原有压缩/混淆配置已经过上述本机验证；CI 已切换到桌面 `packageRelease*`，各平台归档映射及来源/产物哈希。远端 CI、Linux/macOS 打包及运行仍无本轮证据，不能用 Windows 目录启动替代其验收。
+- 发布配置：远端 CI 已按 `packageRelease*` 成功打出四个平台的包并归档映射（见上表）；macOS 包的运行仍无证据。
 - Android 8 兼容：API 26 镜像下载命令被自动审批拦截（只返回 `blocked by policy`）；本机当前只有 API 36/36.1 镜像，最低版本设备的实际运行验收仍缺。验证器支持指定 API 和独立镜像目录，不将 API 36 结果当作 Android 8 实测。
 - 项目许可证：用户授权选择开源许可证后，DAView 自有代码已采用 `GPL-3.0-or-later`，根目录 `LICENSE` 为 GNU 官方完整文本。第三方声明继续适用。Windows 内置 libmpv 及其依赖的对应源码、构建信息和实际安装包中的许可材料仍需逐项验证；选定项目许可证并不自动关闭这些发布验收项。
 - libmpv 归档长期保留：上游工作流会清理旧 GitHub release，CI 缓存也不是永久镜像；当前已固定的归档仍可获取，但后续失效会明确阻止构建。未擅自向项目 Release 上传副本。`mpv-dev` 归档没有依赖源码/完整通知，构建脚本也引用浮动分支；已经补入 mpv 自身 Copyright/GPL 文本及准确来源记录，这些仍不足以证明全部对应源码材料已齐全。

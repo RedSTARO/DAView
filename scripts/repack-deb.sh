@@ -13,11 +13,17 @@
 #   dependency on a "<name>t64" package becomes "<name>t64 | <name>"; the
 #   renamed packages also provide the old name, so newer systems are
 #   unaffected.
+# - Menu registration. jpackage's postinst runs `xdg-desktop-menu install`
+#   under `set -e`, and that command fails wherever there is no desktop menu
+#   directory — a system without a desktop environment, WSL, a container. The
+#   package was then left unconfigured, and prerm's `uninstall` fails the same
+#   way on removal. Both now carry on with a warning: the menu entry is a
+#   convenience, the application in /opt/daview works without it.
 # - Compression. Ubuntu's dpkg writes zstd members, which dpkg on Debian 11
 #   cannot read. xz is read by every dpkg in use and comes out smaller.
 #
-# File contents, modes and maintainer scripts are unchanged; ownership is
-# root's, as in the original.
+# File contents and modes are unchanged, and so are the maintainer scripts
+# apart from those two lines; ownership is root's, as in the original.
 set -euo pipefail
 
 deb="${1:?usage: $0 <package.deb>}"
@@ -53,6 +59,32 @@ text, count = re.subn(r"^Depends:[ \t]*(.*)$", widen, text, count=1, flags=re.M)
 if count != 1:
     sys.exit("the package has no Depends field")
 open(path, "w", encoding="utf-8", newline="\n").write(text)
+PY
+
+python3 - "$work/pkg/DEBIAN" <<'PY'
+import os
+import re
+import sys
+
+directory = sys.argv[1]
+changed = 0
+for name in ("postinst", "prerm"):
+    path = os.path.join(directory, name)
+    if not os.path.exists(path):
+        continue
+    text = open(path, encoding="utf-8").read()
+    text, count = re.subn(
+        r"^([ \t]*xdg-desktop-menu (?:install|uninstall) [^\n|&;]+?)[ \t]*$",
+        r'\1 || echo "DAView: the desktop menu entry could not be updated; '
+        r'the application itself is unaffected." >&2',
+        text,
+        flags=re.M,
+    )
+    if count:
+        open(path, "w", encoding="utf-8", newline="\n").write(text)
+        changed += count
+if changed != 2:
+    sys.exit("expected one xdg-desktop-menu call each in postinst and prerm, found %d" % changed)
 PY
 
 dpkg-deb --root-owner-group -Zxz -z9 -b "$work/pkg" "$work/out.deb" >/dev/null
