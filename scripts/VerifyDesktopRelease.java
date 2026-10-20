@@ -1,13 +1,22 @@
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 
 /** Runs against processed release jars, without unprocessed test dependencies. */
 public final class VerifyDesktopRelease {
@@ -56,6 +65,108 @@ public final class VerifyDesktopRelease {
             }
         }
         System.out.println("Verified " + verified.size() + " release Okio classes and both buffered stream reads");
+
+        verifyAllClasses();
+        verifySqlite();
+    }
+
+    /**
+     * Every class of the app is linked and verified, not only the ones a
+     * startup screen happens to load, and every enum must still answer
+     * Enum.valueOf. That call finds the constants by invoking a public static
+     * method named "values" through reflection; obfuscation once renamed it,
+     * and each library then read as OTHER and each item as MOVIE.
+     *
+     * Library classes that cannot load here refer to optional dependencies
+     * the rules mark -dontwarn; they are counted, not failed.
+     */
+    private static void verifyAllClasses() throws Exception {
+        ClassLoader loader = VerifyDesktopRelease.class.getClassLoader();
+        List<String> failures = new ArrayList<>();
+        int own = 0;
+        int enums = 0;
+        int skipped = 0;
+        for (String entry : System.getProperty("java.class.path").split(File.pathSeparator)) {
+            if (!entry.endsWith(".jar")) continue;
+            try (JarFile jar = new JarFile(entry)) {
+                for (JarEntry file : Collections.list(jar.entries())) {
+                    String path = file.getName();
+                    if (!path.endsWith(".class") || path.startsWith("META-INF/")
+                            || path.endsWith("module-info.class") || path.endsWith("package-info.class")) continue;
+                    String name = path.substring(0, path.length() - ".class".length()).replace('/', '.');
+                    boolean ours = name.startsWith("com.daview.");
+                    Class<?> type;
+                    try {
+                        type = Class.forName(name, false, loader);
+                        if (ours) {
+                            type.getDeclaredConstructors();
+                            type.getDeclaredMethods();
+                            type.getDeclaredFields();
+                            own++;
+                        }
+                    } catch (LinkageError | ClassNotFoundException | SecurityException error) {
+                        if (ours) failures.add(name + ": " + error);
+                        else skipped++;
+                        continue;
+                    }
+                    if (!type.isEnum()) continue;
+                    enums++;
+                    try {
+                        Method values = type.getMethod("values");
+                        Method valueOf = type.getMethod("valueOf", String.class);
+                        if (!Modifier.isStatic(values.getModifiers()) || values.getReturnType() != type.arrayType()
+                                || !Modifier.isStatic(valueOf.getModifiers()) || valueOf.getReturnType() != type) {
+                            failures.add(name + ": values()/valueOf(String) do not have their enum signatures");
+                        } else if (ours) {
+                            Object[] constants = type.getEnumConstants();
+                            if (constants == null) {
+                                failures.add(name + ": Enum.valueOf cannot see its constants");
+                            } else {
+                                for (Object constant : constants) {
+                                    String constantName = ((Enum<?>) constant).name();
+                                    // The call each generated valueOf makes, and the
+                                    // one that failed; it also reaches non-public enums.
+                                    try {
+                                        if (enumValueOf(type, constantName) != constant) {
+                                            failures.add(name + ": valueOf(\"" + constantName + "\") returned another constant");
+                                        }
+                                    } catch (IllegalArgumentException thrown) {
+                                        failures.add(name + ": Enum.valueOf(\"" + constantName + "\") threw " + thrown.getMessage());
+                                    }
+                                }
+                            }
+                        }
+                    } catch (NoSuchMethodException missing) {
+                        failures.add(name + ": enum without public values()/valueOf(String); Enum.valueOf would throw");
+                    } catch (LinkageError error) {
+                        if (ours) failures.add(name + ": " + error);
+                        else skipped++;
+                    }
+                }
+            }
+        }
+        if (own == 0) throw new AssertionError("No com.daview classes on the release classpath");
+        if (!failures.isEmpty()) {
+            throw new AssertionError(failures.size() + " release class failure(s):%n  ".formatted()
+                + String.join("%n  ".formatted(), failures));
+        }
+        System.out.println("Verified " + own + " app classes and " + enums + " enums (" + skipped
+            + " library classes with optional dependencies skipped)");
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static Object enumValueOf(Class<?> type, String constantName) {
+        return Enum.valueOf((Class) type, constantName);
+    }
+
+    /** The driver is registered by name and loads its native library from a resource beside its classes. */
+    private static void verifySqlite() throws Exception {
+        Class.forName("org.sqlite.JDBC");
+        try (Connection connection = DriverManager.getConnection("jdbc:sqlite::memory:");
+             ResultSet result = connection.createStatement().executeQuery("SELECT sqlite_version()")) {
+            if (!result.next() || result.getString(1).isBlank()) throw new AssertionError("SQLite returned no version");
+            System.out.println("Opened SQLite " + result.getString(1) + " through the release driver");
+        }
     }
 
     private static Class<?> releaseClass(String original) throws ClassNotFoundException {

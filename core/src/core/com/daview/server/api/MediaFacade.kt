@@ -4,6 +4,7 @@ import com.daview.server.ServerContext
 import com.daview.server.config.StorageConfig
 import com.daview.server.db.Repository
 import com.daview.server.library.Scanner
+import com.daview.server.scraper.HttpScraper
 import com.daview.server.storage.DavEntry
 import com.daview.server.storage.WebDavClient
 import com.daview.shared.model.*
@@ -163,9 +164,9 @@ class MediaFacade(private val context: ServerContext) {
 
     suspend fun deleteLibrary(id: String) = io { context.repository.deleteLibrary(id) }
 
-    suspend fun scan(libraryId: String, mode: ScanMode): ScanProgressDto = io {
+    suspend fun scan(libraryId: String, mode: ScanMode, afterRunning: Boolean = false): ScanProgressDto = io {
         val library = context.repository.library(libraryId) ?: notFound("媒体库不存在")
-        context.scans.submit(library, mode)
+        context.scans.submit(library, mode, afterRunning = afterRunning)
     }
 
     /**
@@ -517,7 +518,13 @@ class MediaFacade(private val context: ServerContext) {
         if (provider == null || provider == MetadataProvider.NONE) invalid("未知的刮削源")
         val effectiveQuery = query?.takeIf { it.isNotBlank() } ?: context.metadata.folderTitle(item).title
         val kind = if (item.kind == ItemKind.MOVIE) ItemKind.MOVIE else ItemKind.SERIES
-        context.metadata.searchProvider(provider, effectiveQuery, year, kind, context.scraperConfigFor(item)).map {
+        val (found, failure) = HttpScraper.withFailures {
+            context.metadata.searchProvider(provider, effectiveQuery, year, kind, context.scraperConfigFor(item))
+        }
+        if (found.isEmpty() && failure != null) {
+            throw FacadeException(Failure.UPSTREAM, "${provider.displayName} 搜索失败", failure)
+        }
+        found.map {
             ScrapeCandidateDto(
                 provider = provider,
                 providerId = it.providerId,
@@ -559,6 +566,12 @@ class MediaFacade(private val context: ServerContext) {
      * how this used to fail — a 502 with nothing in the player to say why.
      */
     suspend fun startPlayback(request: PlaybackStartRequest, links: AssetLinks): PlaybackInfoDto = io {
+        // Played in the first seconds after launch, the stored position can
+        // be one another device has since moved on from, and the first report
+        // would stamp it as the newest and send it back to every device. The
+        // startup pull is bounded and returns at once when it is already done
+        // or sync is off.
+        context.sync.pullOnStartup()
         val requested = context.repository.item(request.itemId)
         val stored = when {
             requested == null -> null

@@ -217,9 +217,11 @@ This program is distributed without any warranty; see [LICENSE](LICENSE).
   （`composeApp/build/generated/daview/`，不进 git）。以前版本是个常量，每个包都说自己是 1.0.0，没法比。
   Android 的 `versionCode` 也取提交数，所以新包一定装得上旧包。
 - **更新目标是 CI 出的包**：每次推送 master，`publish-ci` job 把签名 APK 和三个桌面包放到一个固定标签
-  `ci` 的滚动预发布上（每次删掉重建，只留最新一次的包；workflow artifacts 要 token 才能下载，应用没有），
+  `ci` 的滚动预发布上（workflow artifacts 要 token 才能下载，应用没有），
   并用 `scripts/update-manifest.py` 生成 `update.json`（版本、安装包版本、发布页、最近几条提交、
-  每个平台的下载地址 / SHA-256 / 大小），推到仓库的 **`updates` 孤儿分支**。打 `v*` 标签的正式发布走同一套，
+  每个平台的下载地址 / SHA-256 / 大小），推到仓库的 **`updates` 孤儿分支**。发布前先确认这次运行仍是
+  master 的最新提交、线上清单还不是这个版本，重跑旧运行不会把渠道退回去；新包传完才切换清单，清理时保留
+  本次和上一份清单引用的包，已经读到上一份清单的客户端还要从那里下载。打 `v*` 标签的正式发布走同一套，
   只是包挂在那个标签自己的 Release 上。应用默认从
   `https://raw.githubusercontent.com/RedSTARO/DAView/updates/update.json` 读清单——放单独的分支而不是
   master，是因为往 master 提交会再触发一次整个 workflow；推 `ci` 标签和 `updates` 分支都不会触发。
@@ -258,10 +260,14 @@ WebDAV 上的一个文件，别的设备读回来合并。
 - **启动时优先同步进度**。已启用跨端同步时，每次应用进程启动都会立即拉取并合并，
   不受上次拉取时间和同步间隔限制。同步在后台进行，页面先恢复上次保存的首页快照，
   同时刷新本地数据库；首次运行或缓存损坏时从数据库加载。合并完成后
-  自动更新首页和当前页面，保留导航、筛选和滚动位置，不中断正在播放的内容。
-  启动拉取的网络请求最多等待 10 秒，失败时提示并保留本地进度，后台按原有间隔重试。
-  启动扫描等待这次同步尝试完成，优先让进度同步使用网络。
-  同一进程内重建窗口或 Android Activity 不会重复执行启动拉取；同步关闭时直接加载本地媒体库。
+  自动更新首页和当前页面，保留导航、筛选和滚动位置，不中断正在播放的内容；没有合并到任何行时不刷新。
+  启动拉取的网络请求（含 DNS 解析）最多等待 10 秒，失败时提示并保留本地进度，后台按原有间隔重试；
+  之后的拉取和上传分别最多 60 秒、180 秒。
+  启动扫描等待这次同步尝试完成，优先让进度同步使用网络。这段时间里开始播放会先等它结束
+  （「正在准备播放」），否则会从合并前的旧进度续播，并把旧进度当作最新的写回各设备；
+  「每次询问」也在它结束后按数据库里的进度提问。
+  同一进程内重建窗口或 Android Activity 不会重复执行启动拉取，也不会再次提示或处理那次的结果；
+  同步关闭时直接加载本地媒体库。
 - **首页缓存**位于数据目录的 `cache/home-v1.json`。本地 core 打开后，有效快照可先显示媒体库入口和
   首页各行，无需等整组首页查询返回。后台读取成功后原位更新页面并保存快照；读取失败保留已显示内容。
   快照仅用于展示，可能暂时显示上次刷新时的进度，不会回写数据库或参与同步合并。首次升级需成功加载
@@ -312,8 +318,11 @@ WebDAV 上的一个文件，别的设备读回来合并。
   `:composeApp:desktopTest` 也挂在这个 job 上，因为它是唯一已经在配置并构建 composeApp 的 runner。
 - **APK release 启用 R8 压缩、混淆和资源裁剪，桌面 release 包启用 ProGuard**。反射、JNI、服务加载器的
   保留规则在 `composeApp/proguard-android.pro` 和 `composeApp/proguard-desktop.pro`。
+  桌面打包前 `:composeApp:verifyReleaseBytecode` 只用混淆后的 jar 运行：加载并校验全部应用类，对每个枚举
+  走一遍 `Enum.valueOf`（混淆曾把 `values()` 改名，媒体库全被读成 OTHER），再经发布包里的驱动打开 SQLite。
   每个平台的映射单独压缩归档，附源提交、版本及构建产物 SHA-256；Android 哈希对应签名前的 APK。
-  CI artifact 保留 90 天，当前 CI 预发布及正式标签 Release 同时附带映射 ZIP。诊断旧版本时须使用同次构建的映射。
+  CI artifact 保留 90 天；`ci` 预发布保留最近 40 个提交的映射 ZIP，正式标签 Release 也附带映射。
+  桌面日志每次启动先记一行版本号，诊断时按它取同次构建的映射。
   签名在单独的 job 里做。
   签名用的四个 secret（`SIGNING_KEY_BASE64`、`ALIAS`、`KEY_STORE_PASSWORD`、`KEY_PASSWORD`）只在
   `sign-android` 里出现，密码经环境变量交给 `apksigner`；fork 来的 PR 拿不到它们，只会得到未签名的 APK。

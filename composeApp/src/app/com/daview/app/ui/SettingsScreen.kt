@@ -446,9 +446,14 @@ private fun <T> ChoiceRow(label: String, options: List<Pair<T, String>>, selecte
     }
 }
 
+/**
+ * The same choice as chips that wrap, for options too long for a segment: on
+ * a 360dp phone each of four segments is about 80dp, and the selected one
+ * also carries a check mark.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ChipChoiceRow(label: String, options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
+private fun <T> ChipChoiceRow(label: String, options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
     Column(Modifier.padding(vertical = 6.dp)) {
         Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(6.dp))
@@ -719,7 +724,7 @@ private fun ScraperSection(state: AppState) {
         Spacer(Modifier.height(12.dp))
         // A choice among four, which takes effect as it is made — it looked like
         // it did, and used to wait for a save button further down.
-        ChoiceRow(
+        ChipChoiceRow(
             label = "元数据语言（媒体库可以单独设置）",
             options = METADATA_LANGUAGES,
             selected = settings.scraper.language
@@ -764,7 +769,7 @@ private fun PlaybackSection(state: AppState) {
             selected = state.preferredSubtitleLanguage
         ) { state.changePreferredSubtitleLanguage(it) }
         Hint("只用于还没选过音轨和字幕的内容。在某一集里换了音轨或字幕，同一部剧的下一集会沿用那个选择。")
-        ChoiceRow(
+        ChipChoiceRow(
             label = "字幕大小",
             options = listOf(0.8f to "小", 1f to "标准", 1.25f to "大", 1.5f to "特大"),
             selected = listOf(0.8f, 1f, 1.25f, 1.5f).minByOrNull { kotlin.math.abs(it - state.subtitleScale) } ?: 1f
@@ -903,7 +908,7 @@ private fun SyncSection(state: AppState) {
         }
 
         current?.let { sync ->
-            ChoiceRow(
+            ChipChoiceRow(
                 label = "检查间隔",
                 options = listOf(5 to "5 分钟", 10 to "10 分钟", 30 to "30 分钟", 60 to "1 小时"),
                 selected = listOf(5, 10, 30, 60).minByOrNull { kotlin.math.abs(it - sync.minIntervalMinutes) } ?: 10
@@ -1073,7 +1078,8 @@ private fun BackupSection(state: AppState) {
                                 DaViewJson.decodeFromString(BackupFileDto.serializer(), content)
                             }
                         } catch (e: Throwable) {
-                            error = "这不是 DAView 的备份文件：${e.message ?: ""}".trim()
+                            // The parser's own message is about JSON paths and tokens.
+                            error = "这不是 DAView 的备份文件，或文件已损坏、不完整。"
                         } finally {
                             busy = false
                         }
@@ -1210,7 +1216,9 @@ private fun DownloadsSection(state: AppState) {
                 modifier = Modifier.weight(1f)
             )
             if (active.isNotEmpty()) {
-                TextButton(onClick = { state.cancelAllDownloads() }) { Text("全部取消") }
+                TextButton(onClick = {
+                    state.stopDownloads("停止全部 ${active.size} 个下载？", active) { state.cancelAllDownloads() }
+                }) { Text("全部取消") }
             }
         }
         if (downloads.isEmpty()) {
@@ -1374,9 +1382,14 @@ private fun DownloadRow(state: AppState, download: DownloadDto, indent: Boolean)
                     )
                 )
             } else if (download.active) {
-                state.cancelDownload(download.itemId)
+                state.stopDownloads("停止下载「${download.name}」？", listOf(download)) {
+                    state.cancelDownload(download.itemId)
+                }
             } else {
-                state.removeDownload(download.itemId)
+                // A failed download keeps what arrived for 「重试」 to resume from.
+                state.stopDownloads("删除「${download.name}」已下载的部分？", listOf(download), confirmLabel = "删除") {
+                    state.removeDownload(download.itemId)
+                }
             }
         }) {
             Text(if (download.active) "取消" else "删除")
@@ -1404,13 +1417,19 @@ private fun GeneralSection(state: AppState) {
         val sections = state.homeSections
         sections.forEachIndexed { index, (section, shown) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = shown,
-                    onCheckedChange = { on ->
-                        state.changeHomeSections(sections.toMutableList().also { it[index] = section to on })
-                    }
-                )
-                Text(section.label, Modifier.weight(1f))
+                // The label toggles the row as the box does, and is what a
+                // screen reader announces with it.
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .toggleable(value = shown, role = Role.Checkbox) { on ->
+                            state.changeHomeSections(sections.toMutableList().also { it[index] = section to on })
+                        },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(checked = shown, onCheckedChange = null)
+                    Text(section.label, Modifier.weight(1f))
+                }
                 IconButton(enabled = index > 0, onClick = {
                     state.changeHomeSections(sections.toMutableList().also { it.add(index - 1, it.removeAt(index)) })
                 }) { Icon(Icons.Filled.ArrowUpward, contentDescription = "上移") }

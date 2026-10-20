@@ -23,12 +23,34 @@ internal data class HomeSnapshot(
 internal class HomeSnapshotCache(dataDir: Path) {
     private val file = dataDir.resolve("cache").resolve("home-v1.json")
 
-    fun read(): HomeSnapshot? = runCatching {
-        // Bound allocations even if a partial or unrelated file replaces the cache.
-        if (Files.size(file) > MAX_BYTES) return null
-        DaViewJson.decodeFromString(HomeSnapshot.serializer(), String(Files.readAllBytes(file), Charsets.UTF_8))
-            .takeIf { it.version == 1 }
-    }.getOrNull()
+    fun read(): HomeSnapshot? {
+        deleteAbandonedTemporaries()
+        return runCatching {
+            // Bound allocations even if a partial or unrelated file replaces the cache.
+            if (Files.size(file) > MAX_BYTES) return null
+            DaViewJson.decodeFromString(HomeSnapshot.serializer(), String(Files.readAllBytes(file), Charsets.UTF_8))
+                .takeIf { it.version == 1 }
+        }.getOrNull()
+    }
+
+    /**
+     * A write cut short by the process ending leaves its temporary file
+     * behind, as large as the snapshot, under a new name every time. The
+     * read runs once at startup; a file a minute old is no longer being
+     * written by anyone.
+     */
+    private fun deleteAbandonedTemporaries() {
+        val cutoff = System.currentTimeMillis() - ABANDONED_AFTER_MS
+        runCatching {
+            Files.newDirectoryStream(file.parent, "home-*.tmp").use { files ->
+                files.forEach { path ->
+                    runCatching {
+                        if (Files.getLastModifiedTime(path).toMillis() < cutoff) Files.deleteIfExists(path)
+                    }
+                }
+            }
+        }
+    }
 
     fun write(snapshot: HomeSnapshot) {
         val bytes = DaViewJson.encodeToString(HomeSnapshot.serializer(), snapshot).toByteArray(Charsets.UTF_8)
@@ -52,5 +74,6 @@ internal class HomeSnapshotCache(dataDir: Path) {
 
     private companion object {
         const val MAX_BYTES = 8 * 1024 * 1024
+        const val ABANDONED_AFTER_MS = 60_000L
     }
 }

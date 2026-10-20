@@ -154,21 +154,24 @@ abstract class HttpScraper(protected val repository: Repository?) {
         val response = runCatching { http.newCall(builder.build()).execute() }
             .getOrElse {
                 log.warn("请求 {} 失败: {}", builder.build().url.redact(), it::class.simpleName)
+                noteFailure("无法连接：${it.message ?: it::class.simpleName}")
                 return JsonElementOrNull(null)
             }
         val body = runCatching { response.use {
             if (!it.isSuccessful) {
                 log.warn("请求 {} 返回 HTTP {}", builder.build().url.redact(), it.code)
+                noteFailure(httpFailure(it.code))
                 return JsonElementOrNull(null)
             }
             readJsonBody(it)
         } }.getOrElse {
             log.warn("读取 {} 失败: {}", builder.build().url.redact(), it::class.simpleName)
+            noteFailure("读取响应失败：${it.message ?: it::class.simpleName}")
             return JsonElementOrNull(null)
         }
         val parsed = runCatching { json.parseToJsonElement(body) }.getOrNull()
             ?.takeIf { it is JsonObject || it is JsonArray }
-            ?: return JsonElementOrNull(null)
+            ?: return JsonElementOrNull(null).also { noteFailure("响应不是可读的 JSON") }
         cacheKey?.let { repository?.cachePut(it, body) }
         return JsonElementOrNull(parsed)
     }
@@ -187,17 +190,20 @@ abstract class HttpScraper(protected val repository: Repository?) {
         val response = runCatching { http.newCall(builder.build()).execute() }
             .getOrElse {
                 log.warn("请求 {} 失败: {}", builder.build().url.redact(), it::class.simpleName)
+                noteFailure("无法连接：${it.message ?: it::class.simpleName}")
                 return JsonElementOrNull(null)
             }
         return runCatching { response.use {
             if (!it.isSuccessful) {
                 log.warn("请求 {} 返回 HTTP {}", builder.build().url.redact(), it.code)
+                noteFailure(httpFailure(it.code))
                 JsonElementOrNull(null)
             } else {
                 JsonElementOrNull(json.parseToJsonElement(readJsonBody(it)))
             }
         } }.getOrElse {
             log.warn("读取 {} 失败: {}", builder.build().url.redact(), it::class.simpleName)
+            noteFailure("读取响应失败：${it.message ?: it::class.simpleName}")
             JsonElementOrNull(null)
         }
     }
@@ -220,6 +226,33 @@ abstract class HttpScraper(protected val repository: Repository?) {
     companion object {
         const val USER_AGENT = "DAView/1.0 (+https://github.com/daview)"
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+        private val failure = ThreadLocal<String?>()
+
+        private fun noteFailure(reason: String) = failure.set(reason)
+
+        private fun httpFailure(code: Int) = when (code) {
+            401, 403 -> "HTTP $code：密钥无效或没有权限"
+            429 -> "HTTP 429：请求过于频繁，稍后再试"
+            else -> "HTTP $code"
+        }
+
+        /**
+         * Runs [block] and says why a request in it got no answer, if one did.
+         * Every request here turns a failure into "nothing", which is right
+         * for a scan that moves on to the next source; a person searching by
+         * hand has to be told a source could not be reached, or refused the
+         * key, rather than that it had no results.
+         */
+        fun <T> withFailures(block: () -> T): Pair<T, String?> {
+            failure.remove()
+            try {
+                val result = block()
+                return result to failure.get()
+            } finally {
+                failure.remove()
+            }
+        }
     }
 }
 

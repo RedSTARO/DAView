@@ -72,7 +72,9 @@ object DesktopShortcuts {
                 InputTracker.handleEscape() -> true
                 else -> back(current)
             }
-            event.isCtrlPressed && event.key == Key.F -> {
+            // Behind a dialog it would switch pages and throw away whatever
+            // was being typed in it.
+            event.isCtrlPressed && event.key == Key.F -> !InputTracker.modalOpen && run {
                 current.switchTo(Screen.Search)
                 true
             }

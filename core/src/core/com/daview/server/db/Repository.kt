@@ -404,8 +404,9 @@ class Repository(private val db: Database) {
      *
      * `scraped_at` is stamped so the scanner's upsert leaves them alone (it
      * keeps the scraper's columns for anything already scraped), and the status
-     * goes to MANUAL so the page says where the values came from. Blank means
-     * "no change", because the dialog only sends what was touched.
+     * goes to MANUAL so the page says where the values came from. Null means
+     * "no change", because the dialog only sends what was touched; a year of
+     * zero clears it.
      */
     fun updateItemFields(
         itemId: String,
@@ -420,7 +421,8 @@ class Repository(private val db: Database) {
         name?.let { sets += "name = ?, sort_name = ?"; binds += it; binds += it.lowercase() }
         originalName?.let { sets += "original_name = ?"; binds += it }
         overview?.let { sets += "overview = ?"; binds += it }
-        year?.let { sets += "year = ?"; binds += it }
+        // Zero is "no year": an emptied field clears it.
+        year?.let { sets += "year = ?"; binds += it.takeIf { y -> y > 0 } }
         genres?.let { sets += "genres = ?"; binds += json.encodeToString(stringListSerializer, it) }
         if (sets.isEmpty()) return@transaction
 
@@ -887,8 +889,12 @@ class Repository(private val db: Database) {
             "SELECT COUNT(*) FROM items i LEFT JOIN user_data u ON u.item_id = i.id $where"
         ).apply { bind(binds) }.useQuery { if (it.next()) it.getIntAt(1) else 0 }
 
+        // The id breaks ties. Every order above has them (names, years and
+        // play dates repeat, a never-played row has none), and paging over a
+        // tie gave no stable answer: one page could repeat an entry the
+        // previous one held and skip another altogether.
         val items = connection.statement(
-            "$SELECT_ITEM $where ORDER BY $order LIMIT ? OFFSET ?"
+            "$SELECT_ITEM $where ORDER BY $order, i.id LIMIT ? OFFSET ?"
         ).apply {
             bind(binds + orderBinds)
             setInt(binds.size + orderBinds.size + 1, query.limit)
@@ -1343,14 +1349,12 @@ class Repository(private val db: Database) {
         subtitleStreamIndex: Int?,
         markPlayed: Boolean? = null
     ): UserDataDto {
-        val existing = userData(itemId)
         val percentage = if (runtimeMs != null && runtimeMs > 0) {
             (positionMs.toDouble() / runtimeMs.toDouble()).coerceIn(0.0, 1.0)
         } else 0.0
         // Emby's rule: past 90% counts as watched, and the resume point is cleared.
         val played = markPlayed ?: (percentage >= 0.9)
         val storedPosition = if (played) 0L else positionMs
-        val playCount = if (played && !existing.played) existing.playCount + 1 else existing.playCount
 
         db.transaction { connection ->
             connection.statement(
@@ -1361,10 +1365,17 @@ class Repository(private val db: Database) {
                 ON CONFLICT(item_id) DO UPDATE SET
                     position_ms = excluded.position_ms,
                     played = excluded.played,
-                    play_count = excluded.play_count,
+                    -- Counted from the row this statement replaces. A count
+                    -- read beforehand could predate a merged row and be
+                    -- written back as the newest.
+                    play_count = user_data.play_count +
+                        CASE WHEN excluded.played = 1 AND COALESCE(user_data.played, 0) = 0 THEN 1 ELSE 0 END,
                     last_played_at = excluded.last_played_at,
                     audio_stream_index = COALESCE(excluded.audio_stream_index, user_data.audio_stream_index),
                     subtitle_stream_index = COALESCE(excluded.subtitle_stream_index, user_data.subtitle_stream_index),
+                    -- Watching it again is the clearest sign it belongs back
+                    -- on Continue Watching.
+                    hidden_from_resume = 0,
                     updated_at = excluded.updated_at
                 """.trimIndent()
             ).use { statement ->
@@ -1372,7 +1383,7 @@ class Repository(private val db: Database) {
                 statement.setString(1, itemId)
                 statement.setLong(2, storedPosition)
                 statement.setInt(3, if (played) 1 else 0)
-                statement.setInt(4, playCount)
+                statement.setInt(4, if (played) 1 else 0)
                 statement.setString(5, itemId)
                 statement.setLong(6, now)
                 audioStreamIndex?.let { statement.setInt(7, it) } ?: statement.setNull(7)
@@ -1387,20 +1398,24 @@ class Repository(private val db: Database) {
     /**
      * Takes an entry off the continue-watching shelf without touching where it
      * had got to. Playing it again puts it back.
+     *
+     * The flag stays on this device, so the row's timestamp is left alone:
+     * it is what decides which device's copy of the row wins in sync, and
+     * hiding used to make this device's position and watched state beat any
+     * newer ones from elsewhere. A row made here for the flag alone starts at
+     * zero for the same reason.
      */
     fun setHiddenFromResume(itemId: String, hidden: Boolean) = db.transaction { connection ->
         connection.statement(
             """
             INSERT INTO user_data (item_id, hidden_from_resume, updated_at)
-            VALUES (?, ?, ?)
+            VALUES (?, ?, 0)
             ON CONFLICT(item_id) DO UPDATE SET
-                hidden_from_resume = excluded.hidden_from_resume,
-                updated_at = excluded.updated_at
+                hidden_from_resume = excluded.hidden_from_resume
             """.trimIndent()
         ).use {
             it.setString(1, itemId)
             it.setInt(2, if (hidden) 1 else 0)
-            it.setLong(3, System.currentTimeMillis())
             it.executeUpdate()
         }
     }

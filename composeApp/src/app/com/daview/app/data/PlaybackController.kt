@@ -45,6 +45,8 @@ internal interface PlaybackBackend {
     val deviceName: String
     suspend fun item(id: String): MediaItemDto
     suspend fun nextEpisode(id: String): MediaItemDto?
+    /** Returns once the pull the app makes at launch has finished, or at once without one. */
+    suspend fun awaitStartupSync()
     suspend fun start(request: PlaybackStartRequest): PlaybackInfoDto
     suspend fun stop(request: PlaybackStopRequest)
     suspend fun report(request: PlaybackProgressRequest)
@@ -60,6 +62,7 @@ private class LibraryPlaybackBackend(private val state: AppState) : PlaybackBack
     override val deviceName get() = defaultDeviceName()
     override suspend fun item(id: String) = state.library.item(id, state.links)
     override suspend fun nextEpisode(id: String) = state.library.nextEpisode(id, state.links)
+    override suspend fun awaitStartupSync() { state.library.syncOnStartup() }
     override suspend fun start(request: PlaybackStartRequest) = state.library.startPlayback(request, state.links)
     override suspend fun stop(request: PlaybackStopRequest) = state.library.stopPlayback(request)
     override suspend fun report(request: PlaybackProgressRequest) { state.library.reportProgress(request) }
@@ -190,19 +193,17 @@ class PlaybackController internal constructor(
         if (starting || !scope.isActive) return
         unattended = 0
         if (startPositionMs == null && state.resumeBehavior == ResumeBehavior.ASK) {
-            if (!item.isPlayable) {
-                launchStart(item.id, item.name) { generation ->
-                    val episode = backend.nextEpisode(item.id)
-                    ensureRequest(generation)
-                    if (episode != null && episode.userData.positionMs > 0) resumePrompt = episode
-                    else startChosen(item, null, generation)
-                }
-                return
+            // The row tapped can come from the home snapshot or from a read
+            // made before the startup pull, so the question is asked about the
+            // stored position, read once that pull is done.
+            launchStart(item.id, item.name) { generation ->
+                backend.awaitStartupSync()
+                val target = if (item.isPlayable) backend.item(item.id) else backend.nextEpisode(item.id)
+                ensureRequest(generation)
+                if (target != null && target.userData.positionMs > 0) resumePrompt = target
+                else startChosen(item, null, generation)
             }
-            if (item.userData.positionMs > 0) {
-                resumePrompt = item
-                return
-            }
+            return
         }
         launchStart(item.id, item.name) { startChosen(item, startPositionMs, it) }
     }
@@ -221,7 +222,11 @@ class PlaybackController internal constructor(
     fun answerResumePrompt(fromStart: Boolean) {
         val item = resumePrompt ?: return
         resumePrompt = null
-        play(item, if (fromStart) 0L else item.userData.positionMs)
+        if (starting || !scope.isActive) return
+        unattended = 0
+        // Carrying on passes no position: the core resumes from the stored
+        // one, which a sync may have moved since the question was put.
+        launchStart(item.id, item.name) { startChosen(item, if (fromStart) 0L else null, it) }
     }
 
     fun dismissResumePrompt() { resumePrompt = null }

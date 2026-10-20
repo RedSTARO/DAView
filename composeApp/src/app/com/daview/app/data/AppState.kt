@@ -39,6 +39,7 @@ import com.daview.shared.model.ScanMode
 import com.daview.shared.model.ScanProgressDto
 import com.daview.shared.model.ServerInfoDto
 import com.daview.shared.model.ServerSettingsDto
+import com.daview.shared.model.SyncResultDto
 import com.daview.shared.model.UserDataDto
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -254,6 +255,14 @@ class AppState internal constructor(
 
     private var initialLoaded by mutableStateOf(false)
     private var openingJob: Job? = null
+
+    /**
+     * The startup pull runs once per process, and a window recreated in a
+     * live process (Android keeps the core across activities) is handed the
+     * result again. One from before this state existed was shown and acted on
+     * by the window that saw it.
+     */
+    private val createdAt = System.currentTimeMillis()
 
     /** Set instead of [ready] when the library could not be opened at all. */
     var startupError by mutableStateOf<String?>(null)
@@ -872,8 +881,10 @@ class AppState internal constructor(
                 initialLoaded = true
             } else {
                 // Counts can be expensive on a large catalogue. Keep the cached
-                // counts until the background read returns.
-                run { serverInfo = library.info() }
+                // counts until the background read returns. Inside launch a
+                // bare run { } is the standard library's: it would read inline
+                // and a failure would end startup before the home refresh.
+                this@AppState.run { serverInfo = library.info() }
             }
             val initialHome = refreshHome()
             scope.launch {
@@ -881,8 +892,11 @@ class AppState internal constructor(
                     sync.await()
                         .onSuccess { result ->
                             when {
-                                result == null -> Unit
+                                result == null || result.at < createdAt -> Unit
                                 !result.ok -> notify("启动进度同步失败，继续使用本地进度：${result.message}")
+                                // The usual launch: nothing on the share was newer. Every
+                                // page on screen would be read again for nothing.
+                                !result.changedAnything() -> Unit
                                 else -> {
                                     val refreshSearch = searchResults.isNotEmpty() || searchEpisodes.isNotEmpty() ||
                                         searchedFor != null || searchLoading
@@ -945,6 +959,12 @@ class AppState internal constructor(
                 notify(describe(e))
             }
         }
+    }
+
+    /** A result without counts comes from something other than a merge; it is taken to have changed things. */
+    private fun SyncResultDto.changedAnything(): Boolean {
+        val counts = listOf(libraries, userData, pins)
+        return counts.any { it == null } || counts.sumOf { it ?: 0 } > 0
     }
 
     /** The message worth showing for a failure from the facade. */
@@ -1090,6 +1110,13 @@ class AppState internal constructor(
     private var libraryQuery: LibraryQuery? = null
     private var libraryAppendMutex = Mutex()
 
+    /**
+     * A new order or filter starts the list from the top, whichever load
+     * brings it in: a refresh (a sync or a scan finishing) can replace the
+     * requery before it lands, and the list used to stay where it was.
+     */
+    private var libraryScrollResetPending = false
+
     fun loadLibrary(libraryId: String, mode: LoadMode = LoadMode.FRESH) {
         val generation = ++libraryGeneration
         libraryJob?.cancel()
@@ -1101,6 +1128,8 @@ class AppState internal constructor(
         libraryError = null
         loadVocabulary(libraryId)
         val sameLibrary = libraryItemsOf == libraryId
+        if (mode == LoadMode.REQUERY) libraryScrollResetPending = true
+        else if (!sameLibrary) libraryScrollResetPending = false
         when {
             mode == LoadMode.FRESH || !sameLibrary -> {
                 libraryLoading = true
@@ -1122,10 +1151,15 @@ class AppState internal constructor(
                     collected += page.items
                     total = page.total
                 } while (collected.size < keep && collected.size < total && page.items.isNotEmpty())
-                libraryItems = collected
+                // A scan writing between two page reads can repeat an entry,
+                // and the grid's keys must stay unique.
+                libraryItems = collected.distinctBy { it.id }
                 libraryTotal = total
                 libraryItemsOf = libraryId
-                if (mode == LoadMode.REQUERY) libraryScrollToTop++
+                if (libraryScrollResetPending) {
+                    libraryScrollResetPending = false
+                    libraryScrollToTop++
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -1430,7 +1464,8 @@ class AppState internal constructor(
                             collected += page.items
                             total = page.total
                         } while (collected.size < keep && collected.size < total && page.items.isNotEmpty())
-                        ItemPage(collected, total, 0)
+                        // A scan writing between two page reads can repeat an entry.
+                        ItemPage(collected.distinctBy { it.id }, total, 0)
                     }
                     val episodes = async {
                         library.items(links, kind = ItemKind.EPISODE, search = query, sort = "relevance", limit = 30).items
@@ -1468,7 +1503,10 @@ class AppState internal constructor(
                 )
                 currentCoroutineContext().ensureActive()
                 if (generation == searchGeneration && searchedFor == query) {
-                    searchResults = searchResults + page.items
+                    // A write between two page reads shifts the window, and the
+                    // grid's keys must stay unique.
+                    val ids = searchResults.mapTo(HashSet()) { it.id }
+                    searchResults = searchResults + page.items.filter { ids.add(it.id) }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -1496,13 +1534,19 @@ class AppState internal constructor(
      */
     fun hideFromResume(item: MediaItemDto) = run {
         library.setHiddenFromResume(item.id, true)
-        refreshHome()
+        refreshAfterResumeChange()
         notify("已从继续观看中移除", "撤销") {
             run {
                 library.setHiddenFromResume(item.id, false)
-                refreshHome()
+                refreshAfterResumeChange()
             }
         }
+    }
+
+    /** The home rows, and a 「查看全部」 page, are chosen by what was just changed. */
+    private fun refreshAfterResumeChange() {
+        refreshHome()
+        (current as? Screen.Shelf)?.let { loadShelf(it) }
     }
 
     fun toggleFavorite(item: MediaItemDto) = run {
@@ -1568,6 +1612,9 @@ class AppState internal constructor(
             }
         }
         if (current is Screen.Home) refreshHome()
+        // A 「查看全部」 page is chosen by watch state or favourite too: an entry
+        // that no longer belongs there has to leave, not redraw with a tick.
+        (current as? Screen.Shelf)?.let { loadShelf(it) }
     }
 
     // ------------------------------------------------------------ several at once
@@ -1733,6 +1780,25 @@ class AppState internal constructor(
         refreshDownloadsNow()
         if (resumed > 0) onDownloadStarted()
         pollDownloads()
+    }
+
+    /**
+     * Stopping a download deletes what has arrived, so once anything has it
+     * asks first and says how much; one still waiting for its turn stops at
+     * once, there being nothing to lose.
+     */
+    fun stopDownloads(title: String, rows: List<DownloadDto>, confirmLabel: String = "停止并删除", stop: () -> Unit) {
+        val received = rows.sumOf { it.downloadedBytes }
+        if (received <= 0) return stop()
+        confirm(
+            Confirmation(
+                title = title,
+                text = "已下载的 ${formatSize(received)} 会被删除，以后要从头下载。",
+                confirmLabel = confirmLabel,
+                destructive = true,
+                action = stop
+            )
+        )
     }
 
     fun cancelDownload(item: MediaItemDto) = cancelDownload(item.id)
@@ -1931,6 +1997,18 @@ class AppState internal constructor(
         pollScanStatus()
     }
 
+    /** Every library at once, as the empty home page offers. */
+    fun scanAllLibraries() = run {
+        val queued = library.scanAll(automatic = false)
+        if (queued.isEmpty()) {
+            notify("没有可以扫描的媒体库：先在设置里连接 WebDAV")
+            return@run
+        }
+        onScanStarted()
+        notify("已开始扫描 ${queued.size} 个媒体库")
+        pollScanStatus()
+    }
+
     private var scanPoll: Job? = null
 
     /**
@@ -2119,10 +2197,13 @@ class AppState internal constructor(
         refreshLibraries()
         onDone()
         if (rescan) {
-            library.scan(updated.id, ScanMode.REFRESH)
+            // A scan of this library that is already running keeps the
+            // settings it started with; the re-scrape waits behind it.
+            val running = library.scanStatus().any { it.libraryId == updated.id && it.running }
+            library.scan(updated.id, ScanMode.REFRESH, afterRunning = true)
             onScanStarted()
             pollScanStatus()
-            notify("已保存，正在按新设置重新刮削")
+            notify(if (running) "已保存；当前扫描结束后会按新设置重新刮削" else "已保存，正在按新设置重新刮削")
         } else {
             notify("已保存媒体库设置")
         }

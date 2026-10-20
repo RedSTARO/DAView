@@ -27,6 +27,14 @@ class ScanService(
     }
     private val progress = ConcurrentHashMap<String, ScanProgressDto>()
     private val cancellations = ConcurrentHashMap<String, Cancellation>()
+
+    /**
+     * Scans asked for while one of the same library was running. Asking for
+     * a re-scrape with new settings used to be answered with the running
+     * scan, which carried on with the settings it started with, and the
+     * request was gone.
+     */
+    private val followUps = ConcurrentHashMap<String, ScanMode>()
     private val submissionLock = Any()
 
     fun status(): List<ScanProgressDto> = progress.values.sortedBy { it.libraryName }
@@ -44,6 +52,8 @@ class ScanService(
      */
     fun cancel(libraryId: String) {
         synchronized(submissionLock) {
+            // Stopping means stopping: nothing queued behind it starts either.
+            followUps.remove(libraryId)
             if (isRunning(libraryId)) cancellations[libraryId]?.cancel()
         }
     }
@@ -70,9 +80,21 @@ class ScanService(
      * Queues a scan. [automatic] marks one nobody asked for — the check the
      * app runs on start-up — so the interface can stay quiet about it unless
      * it turns something up.
+     *
+     * While the library is already being scanned the running scan is the
+     * answer; with [afterRunning] this one also runs when that ends, reading
+     * the library's settings as they are stored then.
      */
-    fun submit(library: LibraryDto, mode: ScanMode, automatic: Boolean = false): ScanProgressDto = synchronized(submissionLock) {
-        if (isRunning(library.id)) return@synchronized progress.getValue(library.id)
+    fun submit(
+        library: LibraryDto,
+        mode: ScanMode,
+        automatic: Boolean = false,
+        afterRunning: Boolean = false
+    ): ScanProgressDto = synchronized(submissionLock) {
+        if (isRunning(library.id)) {
+            if (afterRunning) followUps.merge(library.id, mode) { queued, asked -> maxOf(queued, asked, compareBy(::reach)) }
+            return@synchronized progress.getValue(library.id)
+        }
         val initial = ScanProgressDto(
             libraryId = library.id,
             libraryName = library.name,
@@ -168,7 +190,19 @@ class ScanService(
             )
         } finally {
             cancellations.remove(library.id, cancellation)
+            synchronized(submissionLock) {
+                followUps.remove(library.id)?.let { next ->
+                    repository.library(library.id)?.let { stored -> submit(stored, next) }
+                }
+            }
         }
+    }
+
+    /** How much of the library a mode touches; a queued scan keeps the widest one asked for. */
+    private fun reach(mode: ScanMode) = when (mode) {
+        ScanMode.MISSING -> 0
+        ScanMode.FULL -> 1
+        ScanMode.REFRESH -> 2
     }
 
     /**

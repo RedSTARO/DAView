@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
@@ -69,6 +70,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.daview.app.data.AppState
 import com.daview.app.data.LibraryLayout
+import com.daview.app.data.ModalMarker
 import com.daview.app.data.OnEscape
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
@@ -250,6 +253,7 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
 
         if (searchOpen && selected == null) {
             val focus = remember { FocusRequester() }
+            val keyboard = LocalSoftwareKeyboardController.current
             // It opens to be typed into; a second click on the field was needed.
             LaunchedEffect(Unit) {
                 if (focusSearch) {
@@ -264,6 +268,8 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                // The list filters as it is typed; the key only puts the keyboard away.
+                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 4.dp)
@@ -608,16 +614,20 @@ fun ListEntry(
     var menuAt by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
     var lastPointer by remember { mutableStateOf(androidx.compose.ui.input.pointer.PointerType.Unknown) }
     val density = androidx.compose.ui.platform.LocalDensity.current
+    // Read when the gesture lands, not when it was set up: a long press or a
+    // right-click during a multi-select used to be kept and open the menu
+    // once the selection ended.
+    val selecting by androidx.compose.runtime.rememberUpdatedState(selected != null)
     Box {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .secondaryClick(onPointerType = { lastPointer = it }, onOpen = { menuAt = it })
+                .secondaryClick(onPointerType = { lastPointer = it }, onOpen = { if (!selecting) menuAt = it })
                 .combinedClickable(
                     onClick = onClick,
                     onLongClickLabel = "打开菜单",
                     onLongClick = {
-                        if (lastPointer != androidx.compose.ui.input.pointer.PointerType.Mouse) {
+                        if (!selecting && lastPointer != androidx.compose.ui.input.pointer.PointerType.Mouse) {
                             menuAt = androidx.compose.ui.geometry.Offset.Zero
                         }
                     }
@@ -733,6 +743,8 @@ fun SelectionBar(
         }
     }
     if (confirmMerge) {
+        // Esc belongs to the dialog, not to the selection behind it.
+        ModalMarker()
         val target = items.first()
         AlertDialog(
             onDismissRequest = { confirmMerge = false },

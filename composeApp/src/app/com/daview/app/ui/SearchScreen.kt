@@ -47,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
@@ -74,6 +75,7 @@ fun SearchScreen(state: AppState, playback: PlaybackController) {
     }
 
     val focusRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
     // The page opens ready to be typed into — but only when there is nothing in
     // it yet. Coming back from a result with a query in place, the keyboard
     // used to spring up over the results every time.
@@ -110,7 +112,12 @@ fun SearchScreen(state: AppState, playback: PlaybackController) {
                 label = { Text("搜索片名、原名、演员或类型") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { state.rememberSearch(query) }),
+                // Results follow the typing; the key records the search and puts
+                // the keyboard away from over them.
+                keyboardActions = KeyboardActions(onSearch = {
+                    state.rememberSearch(query)
+                    keyboard?.hide()
+                }),
                 trailingIcon = {
                     if (query.isNotEmpty()) {
                         IconButton(onClick = { query = "" }) {

@@ -20,11 +20,15 @@ import com.daview.shared.model.LibraryKind
 import com.daview.shared.model.MetadataProvider
 import com.daview.shared.model.ScanMode
 import com.daview.shared.model.ScanProgressDto
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.test.fail
 
 /**
@@ -60,6 +64,11 @@ class ScanServiceOrderTest {
     private class MemoryTree : DirectoryLister {
         private val dirs = HashMap<String, MutableList<DavEntry>>()
 
+        /** While set, every listing waits for it: a scan held part-way. */
+        @Volatile var hold: CountDownLatch? = null
+        @Volatile var waiting = false
+        val listed = ConcurrentLinkedQueue<String>()
+
         fun file(path: String) {
             val parent = path.substringBeforeLast('/')
             dir(parent)
@@ -76,7 +85,15 @@ class ScanServiceOrderTest {
             }
         }
 
-        override fun list(relativePath: String): List<DavEntry> = dirs[relativePath]?.toList() ?: emptyList()
+        override fun list(relativePath: String): List<DavEntry> {
+            listed += relativePath
+            hold?.let { latch ->
+                waiting = true
+                latch.await(10, TimeUnit.SECONDS)
+                waiting = false
+            }
+            return dirs[relativePath]?.toList() ?: emptyList()
+        }
     }
 
     /** Matches any title to itself and writes down every call, in order. */
@@ -118,6 +135,55 @@ class ScanServiceOrderTest {
     }
 
     private fun id(path: String) = Scanner.itemId("lib", path)
+
+    private fun waitFor(what: String, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 30_000
+        while (!condition()) {
+            if (System.currentTimeMillis() > deadline) fail("timed out waiting for $what")
+            Thread.sleep(20)
+        }
+    }
+
+    @Test
+    fun `a re-scrape asked for during a scan of the same library runs once that scan ends`() {
+        repository.upsertLibrary(library)
+        tree.file("/Ani/Show (2020)/Season 01/Show - S01E01.mkv")
+        val hold = CountDownLatch(1)
+        tree.hold = hold
+        scans.submit(library, ScanMode.FULL)
+        waitFor("the first scan to start walking") { tree.waiting }
+
+        val answer = scans.submit(library, ScanMode.REFRESH, afterRunning = true)
+        assertTrue(answer.running, "the running scan answers the request")
+
+        tree.hold = null
+        hold.countDown()
+        waitFor("both scans to walk the library") { tree.listed.count { it == "/Ani" } >= 2 && !scans.anyRunning() }
+
+        // The second run is the forced re-scrape: the show's details are fetched again.
+        assertEquals(2, scraper.calls.count { it == "details:Show" }, scraper.calls.toString())
+        assertEquals("done", scans.status().single().phase)
+    }
+
+    @Test
+    fun `stopping a scan also drops the re-scrape queued behind it`() {
+        repository.upsertLibrary(library)
+        tree.file("/Ani/Show (2020)/Season 01/Show - S01E01.mkv")
+        val hold = CountDownLatch(1)
+        tree.hold = hold
+        scans.submit(library, ScanMode.FULL)
+        waitFor("the first scan to start walking") { tree.waiting }
+        scans.submit(library, ScanMode.REFRESH, afterRunning = true)
+
+        scans.cancel(library.id)
+        tree.hold = null
+        hold.countDown()
+        waitFor("the scan to stop") { !scans.anyRunning() }
+        Thread.sleep(200)
+
+        assertEquals(false, scans.anyRunning())
+        assertEquals(1, tree.listed.count { it == "/Ani" })
+    }
 
     @Test
     fun `new folders are scraped before known ones are read, and grown shows are refreshed`() {

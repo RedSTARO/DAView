@@ -679,6 +679,8 @@ data class SyncResultDto(
     val bytes: Int? = null,
     val libraries: Int? = null,
     val userData: Int? = null,
+    /** Scraping corrections taken from the file; with the two above, what a pull changed here. */
+    val pins: Int? = null,
     /** Set when the storage itself refused the write, as opposed to a network error. */
     val readOnlyStorage: Boolean = false
 )

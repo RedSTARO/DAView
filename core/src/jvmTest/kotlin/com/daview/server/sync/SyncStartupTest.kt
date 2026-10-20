@@ -1,14 +1,27 @@
 package com.daview.server.sync
 
 import com.daview.server.ServerContext
+import com.daview.server.api.AssetLinks
 import com.daview.server.config.ConfigStore
 import com.daview.server.config.StorageConfig
 import com.daview.server.config.SyncConfig
+import com.daview.server.db.ItemRecord
 import com.daview.shared.api.DaViewJson
 import com.daview.shared.model.BackupFileDto
 import com.daview.shared.model.BackupUserDataDto
+import com.daview.shared.model.ItemKind
+import com.daview.shared.model.LibraryDto
+import com.daview.shared.model.LibraryKind
+import com.daview.shared.model.MediaItemDto
+import com.daview.shared.model.MediaStreamDto
+import com.daview.shared.model.PlaybackStartRequest
+import com.daview.shared.model.PlayerKind
+import com.daview.shared.model.StreamType
 import com.daview.shared.model.UserDataDto
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.net.InetSocketAddress
 import java.util.concurrent.Callable
@@ -128,6 +141,39 @@ class SyncStartupTest {
         assertEquals(listOf("GET"), requests.toList())
         assertEquals(previousUpload, context.config.sync.lastUploadAt)
         assertTrue(assertNotNull(context.config.sync.lastPullAt) <= System.currentTimeMillis())
+    }
+
+    @Test
+    fun `playback started during the startup pull resumes from the merged position`() = runBlocking {
+        val context = start()
+        context.repository.upsertLibrary(LibraryDto(id = "films", name = "Films", kind = LibraryKind.MOVIE, path = "/films"))
+        context.repository.upsertItem(ItemRecord(MediaItemDto(
+            id = "episode", libraryId = "films", kind = ItemKind.MOVIE, name = "Film",
+            path = "/films/film.mp4", runtimeMs = 100_000,
+            // Known streams and a probe stamp: starting reads nothing from storage.
+            mediaStreams = listOf(MediaStreamDto(index = 0, type = StreamType.VIDEO, codec = "h264"))
+        ), probedAt = 100))
+        context.repository.restoreUserData("episode", UserDataDto(positionMs = 1_000), 100)
+        body = payload("episode" to (5_000L to 200L))
+        blockGet = true
+
+        val startup = workers.submit(Callable { context.sync.pullOnStartup() })
+        assertTrue(getEntered.await(5, TimeUnit.SECONDS))
+        val playback = async(Dispatchers.Default) {
+            context.media.startPlayback(PlaybackStartRequest(itemId = "episode", player = PlayerKind.MPV), links)
+        }
+        delay(300)
+        assertFalse(playback.isCompleted, "Playback started from the position the pull was about to replace")
+
+        releaseGet.countDown()
+        assertEquals(5_000L, playback.await().startPositionMs)
+        assertTrue(assertNotNull(startup.get(5, TimeUnit.SECONDS)).ok)
+    }
+
+    private val links = object : AssetLinks {
+        override fun image(itemId: String, type: String, remoteUrl: String) = "image:$itemId"
+        override fun stream(itemId: String, fileName: String, sessionId: String, proxy: Boolean) = "stream:$sessionId"
+        override fun subtitle(itemId: String, index: Int, sessionId: String) = "subtitle:$index"
     }
 
     @Test

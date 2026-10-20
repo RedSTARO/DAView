@@ -10,6 +10,7 @@ import com.daview.shared.model.PlaybackStartRequest
 import com.daview.shared.model.PlaybackStopRequest
 import com.daview.shared.model.PlayerKind
 import com.daview.shared.model.SessionStateDto
+import com.daview.shared.model.UserDataDto
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -59,6 +60,7 @@ private class PlaybackStub : PlaybackBackend {
     )
     override suspend fun item(id: String): MediaItemDto { reads += id; return read(id) }
     override suspend fun nextEpisode(id: String) = read(id)
+    override suspend fun awaitStartupSync() { events += "startup-sync" }
     override suspend fun start(request: PlaybackStartRequest): PlaybackInfoDto {
         starts += request
         return startCall(request)
@@ -292,5 +294,45 @@ class PlaybackControllerRaceTest {
         runBlocking { withTimeout(5_000L) { interrupted.await() } }
         assertEquals(listOf(PlaybackStopRequest(sessionId, 55L)), backend.stops)
         assertEquals(0, backend.syncs)
+    }
+
+    @Test
+    fun `the resume question uses the stored position read after the startup pull`() = PlaybackFixture().use { f ->
+        f.state.changeResumeBehavior(ResumeBehavior.ASK)
+        // The row on screen came from the home snapshot; the database has moved on.
+        f.backend.read = { media(it).copy(userData = UserDataDto(positionMs = 42_000L)) }
+        f.controller.play(media("a").copy(userData = UserDataDto(positionMs = 1_000L)))
+        f.drain()
+        assertEquals(listOf("startup-sync"), f.backend.events)
+        assertEquals(42_000L, f.controller.resumePrompt?.userData?.positionMs)
+        assertTrue(f.backend.starts.isEmpty())
+
+        f.controller.answerResumePrompt(fromStart = false)
+        f.drain()
+        assertNull(f.controller.resumePrompt)
+        // No explicit position: the core resumes from the stored one.
+        assertNull(f.backend.starts.single().startPositionMs)
+    }
+
+    @Test
+    fun `no resume question when the stored position is gone`() = PlaybackFixture().use { f ->
+        f.state.changeResumeBehavior(ResumeBehavior.ASK)
+        // Finished on another device; the snapshot still shows a position.
+        f.backend.read = { media(it) }
+        f.controller.play(media("a").copy(userData = UserDataDto(positionMs = 1_000L)))
+        f.drain()
+        assertNull(f.controller.resumePrompt)
+        assertNull(f.backend.starts.single().startPositionMs)
+    }
+
+    @Test
+    fun `starting over from the resume question asks for the beginning`() = PlaybackFixture().use { f ->
+        f.state.changeResumeBehavior(ResumeBehavior.ASK)
+        f.backend.read = { media(it).copy(userData = UserDataDto(positionMs = 42_000L)) }
+        f.controller.play(media("a"))
+        f.drain()
+        f.controller.answerResumePrompt(fromStart = true)
+        f.drain()
+        assertEquals(0L, f.backend.starts.single().startPositionMs)
     }
 }

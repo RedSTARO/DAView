@@ -69,6 +69,7 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
             .readTimeout(120, TimeUnit.SECONDS)
             .writeTimeout(180, TimeUnit.SECONDS)
             .callTimeout(0, TimeUnit.MILLISECONDS)
+            .dns(BoundedDns(DNS_TIMEOUT_MS))
             .build()
     }
 
@@ -311,11 +312,19 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
      * Only ever called with a path the app owns; nothing here walks the tree or
      * touches media files.
      */
-    fun put(relativePath: String, bytes: ByteArray, contentType: String = "application/json"): WriteResult {
+    fun put(
+        relativePath: String,
+        bytes: ByteArray,
+        contentType: String = "application/json",
+        callTimeoutMs: Long = 0
+    ): WriteResult {
+        require(callTimeoutMs >= 0) { "上传超时无效" }
         val request = request(absoluteUrl(relativePath))
             .put(bytes.toRequestBody(contentType.toMediaType()))
             .build()
-        val response = runCatching { http.newCall(request).execute() }
+        val call = http.newCall(request)
+        if (callTimeoutMs > 0) call.timeout().timeout(callTimeoutMs, TimeUnit.MILLISECONDS)
+        val response = runCatching { call.execute() }
             .getOrElse { return WriteResult(false, null, it.message ?: it::class.simpleName) }
         return response.use {
             if (it.isSuccessful) {
@@ -412,6 +421,8 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
 
     private companion object {
         const val LIST_LIMIT = 32L * 1024 * 1024
+        /** Within the startup pull's own ten seconds; a lookup that slow has failed anyway. */
+        const val DNS_TIMEOUT_MS = 10_000L
         val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
         val CONTENT_RANGE = Regex("bytes (\\d+)-(\\d+)/(\\d+|\\*)", RegexOption.IGNORE_CASE)
         val XML_MEDIA_TYPE = "application/xml; charset=utf-8".toMediaType()

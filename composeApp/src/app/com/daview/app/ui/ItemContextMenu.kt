@@ -286,7 +286,8 @@ fun ColumnScope.ItemMenuItems(
                             action = { state.removeDownload(item.id) }
                         )
                     )
-                    DownloadState.RUNNING, DownloadState.QUEUED -> state.cancelDownload(item)
+                    DownloadState.RUNNING, DownloadState.QUEUED ->
+                        state.stopDownloads("停止下载「${item.name}」？", listOf(existing)) { state.cancelDownload(item) }
                     else -> state.download(item)
                 }
             }
@@ -304,7 +305,9 @@ fun ColumnScope.ItemMenuItems(
                 text = { Text("取消下载（$pending 集）") },
                 onClick = {
                     dismiss()
-                    state.cancelDownloadsUnder(item)
+                    state.stopDownloads("停止下载「${item.name}」的 $pending 集？", under.filter { it.active }) {
+                        state.cancelDownloadsUnder(item)
+                    }
                 }
             )
             done >= total -> DropdownMenuItem(

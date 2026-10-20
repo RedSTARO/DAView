@@ -59,6 +59,8 @@ import com.daview.shared.model.IdentifyRequest
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.MetadataProvider
 import com.daview.shared.model.ScrapeCandidateDto
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
@@ -91,20 +93,33 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     val queryFocus = remember { FocusRequester() }
 
+    // One search at a time: switching source starts another while the first
+    // may still be waiting, and its late answer used to replace the list
+    // under the newly selected source.
+    var searchJob by remember { mutableStateOf<Job?>(null) }
+    var searchGeneration by remember { mutableStateOf(0) }
+
     fun search() {
         val source = provider ?: return
         if (query.isBlank()) return
-        scope.launch {
+        searchJob?.cancel()
+        val generation = ++searchGeneration
+        searchJob = scope.launch {
             busy = true
             error = null
             picked = null
             try {
-                candidates = state.library.identifySearch(item.id, source, query, year.toIntOrNull())
-                searched = true
+                val found = state.library.identifySearch(item.id, source, query, year.toIntOrNull())
+                if (generation == searchGeneration) {
+                    candidates = found
+                    searched = true
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Throwable) {
-                error = state.describe(e)
+                if (generation == searchGeneration) error = state.describe(e)
             } finally {
-                busy = false
+                if (generation == searchGeneration) busy = false
             }
         }
     }
@@ -132,7 +147,9 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
     }
 
     fun apply(id: String) {
-        val source = provider ?: return
+        // A picked result names its own source; the selected toggle is only
+        // the source of an id typed by hand.
+        val source = picked?.takeIf { it.providerId == id }?.provider ?: provider ?: return
         scope.launch {
             busy = true
             error = null

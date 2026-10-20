@@ -66,6 +66,19 @@ class HttpScraperTest {
     }
 
     @Test
+    fun `a refused request is reported to a manual search instead of reading as no results`() {
+        server.createContext("/api") { exchange ->
+            exchange.sendResponseHeaders(401, -1)
+            exchange.close()
+        }
+        val (found, failure) = HttpScraper.withFailures { scraper.fetch(url) }
+        assertNull(found)
+        assertEquals("HTTP 401：密钥无效或没有权限", failure)
+        // Nothing is carried over to the next search on this thread.
+        assertNull(HttpScraper.withFailures { "nothing" }.second)
+    }
+
+    @Test
     fun `HTTP errors never put the API key in diagnostic logs`() {
         server.createContext("/api") { exchange ->
             exchange.sendResponseHeaders(403, -1)

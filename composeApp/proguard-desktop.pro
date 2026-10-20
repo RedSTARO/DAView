@@ -19,6 +19,17 @@
 # https://github.com/Guardsquare/proguard/issues/533
 -optimizations !method/specialization/returntype
 
+# ---- Enums -----------------------------------------------------------------
+# Enum.valueOf finds the constants by calling a public static method named
+# "values" through reflection. Renamed, every LibraryKind.valueOf in the
+# repository threw and fell back to its default: each library read as OTHER,
+# each item as MOVIE, each download as FAILED. AGP's default Android rules
+# carry this; the Compose desktop defaults do not.
+-keepclassmembers enum * {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+
 # ---- libmpv, through JNA ---------------------------------------------------
 # The interface's method names are the C symbols JNA binds them to, and JNA
 # builds the proxy, reads the options map and calls back through reflection.

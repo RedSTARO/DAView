@@ -102,6 +102,16 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
         return
     }
 
+    // Libraries with nothing in them yet: made on another device and pulled in
+    // by sync, restored from a backup, or scanned and found empty. Every row
+    // below would be empty, and on a wide window the page was blank.
+    if (state.libraries.all { it.itemCount == 0 } && home.latest.isEmpty() && home.resume.isEmpty() &&
+        home.nextUp.isEmpty() && home.favourites.isEmpty()
+    ) {
+        EmptyLibraries(state)
+        return
+    }
+
     val listState = rememberLazyListState()
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = LocalRailShown.current
@@ -269,6 +279,28 @@ private fun FirstRun(state: AppState) {
     ) {
         Button(onClick = { state.switchTo(Screen.Settings) }) {
             Text(if (storageReady) "添加媒体库" else "前往设置")
+        }
+    }
+}
+
+@Composable
+private fun EmptyLibraries(state: AppState) {
+    // Automatic scans count here: this is where their result would show.
+    val scanning = state.scanStatus.filter { it.running }
+    val storageReady = state.serverInfo?.storageConfigured == true
+    EmptyState(
+        title = "媒体库里还没有内容",
+        description = when {
+            scanning.isNotEmpty() ->
+                "正在扫描${scanning.joinToString("、") { "「${it.libraryName}」" }}，扫到的内容会出现在这里。"
+            !storageReady -> "还没有连接 WebDAV，媒体库扫描不了。先在设置里填写地址与账号。"
+            else -> "这些媒体库还没有扫描过，或者扫描时没有找到影片。扫描一次，找到的内容会出现在这里。"
+        }
+    ) {
+        when {
+            scanning.isNotEmpty() -> Unit
+            !storageReady -> Button(onClick = { state.switchTo(Screen.Settings) }) { Text("前往设置") }
+            else -> Button(onClick = { state.scanAllLibraries() }) { Text("扫描全部媒体库") }
         }
     }
 }

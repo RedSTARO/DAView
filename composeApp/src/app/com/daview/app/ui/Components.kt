@@ -72,6 +72,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -358,7 +359,11 @@ fun PosterCard(
     // scrolls itself as focus moves and nothing on screen says which tile it
     // landed on, which is WCAG 2.4.7 and the whole of TV navigation.
     val focused by interaction.collectIsFocusedAsState()
-    val lifted = hovered || focused
+    // Focus on the play button inside counts too: Tab from the tile lands on
+    // it, and hiding the overlay then took the focused button away with it,
+    // sending the next Tab back to the top of the window.
+    var focusWithin by remember { mutableStateOf(false) }
+    val lifted = hovered || focused || focusWithin
     val scale by animateFloatAsState(if (lifted) 1.04f else 1f, label = "poster-scale")
     val landscape = when (shape) {
         CardShape.LANDSCAPE -> true
@@ -401,6 +406,7 @@ fun PosterCard(
                     onOpen = { at -> menuAt = at }
                 )
             )
+            .onFocusChanged { focusWithin = it.hasFocus }
             .combinedClickable(
                 interactionSource = interaction,
                 // The default ripple, not null. Suppressing it left the app's
@@ -773,15 +779,15 @@ fun LinkText(
         modifier = modifier
             .hoverable(interaction)
             .pointerHoverIcon(PointerIcon.Hand)
-            // Padding before clickable, so it counts towards the hit area: the
-            // link used to be exactly one line of text tall — 20dp against the
-            // 48dp a finger needs.
-            .padding(vertical = 12.dp)
+            // Padding after clickable, inside it, so it counts towards the hit
+            // area and the pressed state: the link used to be exactly one line
+            // of text tall — 20dp against the 48dp a finger needs.
             .clickable(
                 interactionSource = interaction,
                 indication = ripple(),
                 onClick = onClick
             )
+            .padding(vertical = 12.dp)
             .semantics { role = Role.Button },
         // The caller's colour is honoured rather than overwritten with primary:
         // three of the four call sites passed one and were quietly ignored, so

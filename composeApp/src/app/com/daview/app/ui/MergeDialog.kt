@@ -136,7 +136,14 @@ fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
                             }
                             TextButton(
                                 enabled = !busy,
-                                onClick = { run { state.library.unmerge(source.id, state.links) } }
+                                onClick = {
+                                    run {
+                                        state.library.unmerge(source.id, state.links)
+                                        // The page behind still listed the split-off seasons.
+                                        state.loadDetail(item.id, quiet = true)
+                                        state.refreshLibraries()
+                                    }
+                                }
                             ) { Text("拆分") }
                         }
                     }

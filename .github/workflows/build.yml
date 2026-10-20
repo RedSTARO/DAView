@@ -549,7 +549,37 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Re-running an older run after a newer one has published must not move
+      # the channel back: the tag, the manifest and the clean-up below all
+      # follow this run's commit. Re-running a run that already published must
+      # not replace the packages either: rebuilt bytes differ, and every update
+      # would fail its checksum until the manifest caught up. The live
+      # manifest is kept for the clean-up, which leaves its packages in place.
+      - name: 检查是否需要发布
+        id: gate
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$GITHUB_REF"
+          if [ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]; then
+            echo "::notice::$GITHUB_SHA 已不是 ${GITHUB_REF#refs/heads/} 的最新提交，不发布"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git fetch --quiet origin updates 2>/dev/null &&
+            git show FETCH_HEAD:update.json > /tmp/previous-update.json 2>/dev/null; then
+            live="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("version", ""))' /tmp/previous-update.json)"
+            if [ "$live" = "$VERSION" ]; then
+              echo "::notice::ci 渠道已经发布了 $VERSION，不重复发布"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            rm -f /tmp/previous-update.json
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
+        if: steps.gate.outputs.publish == 'true'
         with:
           path: dist
           merge-multiple: true
@@ -557,12 +587,14 @@ jobs:
       # The test report lands in dist/ too, and the unsigned APK is the input
       # to signing, not something anyone installs.
       - name: 保留安装包和对应映射
+        if: steps.gate.outputs.publish == 'true'
         run: |
           rm -f dist/*unsigned*.apk
           find dist -type f ! -name 'DAView-*' -delete
           ls -l dist
 
       - name: 生成更新清单
+        if: steps.gate.outputs.publish == 'true'
         run: |
           {
             echo "CI 构建 $VERSION（${{ github.sha }}）"
@@ -587,6 +619,7 @@ jobs:
       # tag nor the branch sets this workflow off again: it runs on v* tags
       # and on master only.
       - name: 上传到 ci 预发布
+        if: steps.gate.outputs.publish == 'true'
         run: |
           set -euo pipefail
           if gh release view ci >/dev/null 2>&1; then
@@ -603,6 +636,7 @@ jobs:
           fi
 
       - name: 发布更新清单到 updates 分支
+        if: steps.gate.outputs.publish == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -615,17 +649,31 @@ jobs:
           git push --force origin updates
 
       # Last, so the manifest the app reads never names a package that is
-      # already gone. Anything on the release that this run did not upload
-      # belonged to an earlier build.
+      # already gone. The packages the previous manifest named stay too: a
+      # copy that read it at startup offers that build and downloads it later,
+      # and deleting them gave it a 404 until it checked again. Mappings stay
+      # for the last 40 commits, beyond the 90 days workflow artifacts last,
+      # so a log from an older build can still be read.
       - name: 清理 ci 预发布上的旧安装包
+        if: steps.gate.outputs.publish == 'true'
         run: |
           set -euo pipefail
           keep="$(cd dist && ls -1)"
+          if [ -s /tmp/previous-update.json ]; then
+            previous="$(python3 -c 'import json, sys; [print(a["name"]) for a in json.load(open(sys.argv[1])).get("assets", {}).values()]' /tmp/previous-update.json)"
+            keep="$(printf '%s\n%s' "$keep" "$previous")"
+          fi
+          recent="$(git log -40 --format=%H "$GITHUB_SHA")"
           gh release view ci --json assets --jq '.assets[].name' | while IFS= read -r name; do
-            if ! grep -qxF -- "$name" <<<"$keep"; then
-              echo "removing $name"
-              gh release delete-asset ci "$name" --yes
-            fi
+            if grep -qxF -- "$name" <<<"$keep"; then continue; fi
+            case "$name" in
+              DAView-mapping-*.zip)
+                sha="${name##*-}"
+                if grep -qxF -- "${sha%.zip}" <<<"$recent"; then continue; fi
+                ;;
+            esac
+            echo "removing $name"
+            gh release delete-asset ci "$name" --yes
           done
 
   # ─── Telegram 通知（每次 master/tag 推送，汇总所有产物状态）──────────────────

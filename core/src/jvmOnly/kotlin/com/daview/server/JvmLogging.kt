@@ -91,3 +91,16 @@ fun logUncaughtExceptions() {
         previous?.uncaughtException(thread, error)
     }
 }
+
+/**
+ * One line naming the build at every start. The log outlives updates, and an
+ * obfuscated stack trace can only be read with the mapping of the build that
+ * wrote it.
+ */
+fun logStartup(version: String, packageVersion: String) {
+    LoggerFactory.getLogger("com.daview.startup").info(
+        "DAView {}（安装包版本 {}）启动；{} {}，Java {}",
+        version, packageVersion,
+        System.getProperty("os.name"), System.getProperty("os.arch"), System.getProperty("java.version")
+    )
+}

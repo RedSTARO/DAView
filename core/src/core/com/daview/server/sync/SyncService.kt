@@ -181,7 +181,7 @@ class SyncService(
             val fingerprint = context.repository.syncFingerprint()
             val bytes = buildBackup(context, SYNC_SECTIONS).toByteArray(Charsets.UTF_8)
 
-            val result = dav.put(path, bytes)
+            val result = dav.put(path, bytes, callTimeoutMs = UPLOAD_TIMEOUT_MS)
             val now = System.currentTimeMillis()
             if (!result.ok) {
                 storageWritable = if (result.forbidden) false else storageWritable
@@ -224,7 +224,7 @@ class SyncService(
         }
     }
 
-    private fun pullOnce(callTimeoutMs: Long = 0): SyncResultDto {
+    private fun pullOnce(callTimeoutMs: Long = PULL_TIMEOUT_MS): SyncResultDto {
         val dav = davProvider() ?: return fail("WebDAV 未配置")
         val path = context.config.sync.remotePath.ifBlank { DEFAULT_PATH }
         val outcome = mergeRemote(dav, path, callTimeoutMs)
@@ -236,7 +236,8 @@ class SyncService(
                     "${outcome.summary.libraries} 个媒体库",
                 at = now,
                 libraries = outcome.summary.libraries,
-                userData = outcome.summary.userData
+                userData = outcome.summary.userData,
+                pins = outcome.summary.pins
             )
 
             Merge.Missing -> fail("$path 上还没有同步文件")
@@ -252,7 +253,7 @@ class SyncService(
      * differently: an absent file can be created; an unreadable, unsupported
      * or unreachable file must stay intact for a later retry or recovery.
      */
-    private fun mergeRemote(dav: WebDavClient, path: String, callTimeoutMs: Long = 0): Merge {
+    private fun mergeRemote(dav: WebDavClient, path: String, callTimeoutMs: Long = PULL_TIMEOUT_MS): Merge {
         val read = dav.read(path, callTimeoutMs = callTimeoutMs)
         read.error?.let { return Merge.Unreachable(it) }
         val raw = read.bytes ?: run {
@@ -345,6 +346,14 @@ class SyncService(
         const val DEFAULT_PATH = "/daview-sync.json"
         const val TICK_SECONDS = 60L
         const val STARTUP_PULL_TIMEOUT_MS = 10_000L
+
+        /**
+         * Every other read and write is bounded too. A gateway that stalls
+         * mid-response held the running flag for minutes, and an upload after
+         * playback that met it was turned away as "already syncing".
+         */
+        const val PULL_TIMEOUT_MS = 60_000L
+        const val UPLOAD_TIMEOUT_MS = 180_000L
 
         /**
          * Settings, libraries, watch state and the hand-picked scrape entries.

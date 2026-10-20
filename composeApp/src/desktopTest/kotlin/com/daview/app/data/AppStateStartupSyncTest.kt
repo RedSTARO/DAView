@@ -97,6 +97,23 @@ class AppStateStartupSyncTest {
     }
 
     @Test
+    fun `a failed count read on a cached start is reported and the local home still loads`() = runBlocking {
+        withFixture(enabled = false) { f ->
+            f.seedHomeCache()
+            f.sql.failItemCount.set(true)
+            assertNotNull(f.state.open()).join()
+            f.awaitState {
+                !f.state.homeRefreshing && f.state.home.resume.singleOrNull()?.userData?.positionMs == LOCAL_POSITION
+            }
+            f.awaitState { f.state.toast != null }
+
+            assertTrue(f.state.ready)
+            assertNull(f.state.startupError)
+            assertEquals("Fixture item count failed", f.state.toast?.message)
+        }
+    }
+
+    @Test
     fun `corrupt cache falls back to local data and is replaced after the read`() = runBlocking {
         withFixture(enabled = false) { f ->
             f.corruptHomeCache()
@@ -418,6 +435,49 @@ class AppStateStartupSyncTest {
         }
     }
 
+    @Test
+    fun `a pull that changes nothing does not read the pages again`() = runBlocking {
+        withFixture(enabled = true) { f ->
+            // Both local rows are newer than the file's.
+            f.core.repository.upsertLibrary(LibraryDto(
+                id = LIBRARY_ID, name = "Local movies", kind = LibraryKind.MOVIE, path = "/movies", updatedAt = 300
+            ))
+            f.core.repository.restoreUserData(ITEM_ID,
+                UserDataDto(positionMs = LOCAL_POSITION, lastPlayedAt = 100, favorite = true), updatedAt = 300)
+            val job = assertNotNull(f.state.open())
+            f.awaitRequest()
+            f.awaitInitial(job)
+            val reads = f.sql.cataloguePositions.size
+
+            f.releaseResponse()
+            f.awaitState { !f.state.startupSyncing }
+            f.awaitAllWork()
+
+            assertEquals(reads, f.sql.cataloguePositions.size, "Nothing merged, yet the libraries were read again")
+            assertEquals("Local movies", f.state.libraries.single().name)
+            assertEquals(LOCAL_POSITION, f.state.home.resume.single().userData.positionMs)
+            assertNull(f.state.toast)
+        }
+    }
+
+    @Test
+    fun `a window recreated in the same process does not repeat the startup result`() = runBlocking {
+        withFixture(enabled = true, status = 503) { f ->
+            f.releaseResponse()
+            f.awaitInitial(assertNotNull(f.state.open()))
+            f.awaitState { !f.state.startupSyncing && f.state.toast != null }
+            delay(5)
+
+            val again = f.recreate()
+            assertNotNull(again.open()).join()
+            f.awaitState { again.ready && !again.startupSyncing && !again.homeRefreshing }
+
+            assertNull(again.toast, "The earlier window already reported this result")
+            assertEquals(LOCAL_POSITION, again.home.resume.single().userData.positionMs)
+            assertEquals(listOf("GET /daview-sync.json"), f.requests.toList())
+        }
+    }
+
     private suspend fun CoroutineScope.withFixture(
         enabled: Boolean,
         status: Int = 200,
@@ -507,12 +567,16 @@ class AppStateStartupSyncTest {
                 id = "other-search-match", libraryId = LIBRARY_ID, kind = ItemKind.MOVIE,
                 name = "Isolated non favourite", path = "/movies/non-favourite.mkv"
             )))
-            val settings = MemorySettings().apply {
-                putString("library.scanOnStartup", "0")
-                putString("update.checkOnStartup", "0")
-            }
-            state = AppState(scope, settings, openContext = { core })
+            state = AppState(scope, settings(), openContext = { core })
         }
+
+        private fun settings() = MemorySettings().apply {
+            putString("library.scanOnStartup", "0")
+            putString("update.checkOnStartup", "0")
+        }
+
+        /** A second window over the same core, as after an Android activity is recreated. */
+        fun recreate() = AppState(scope, settings(), openContext = { core })
 
         fun seedSearchItems() = core.repository.upsertItems((0 until 65).map { index ->
             val number = index.toString().padStart(2, '0')
@@ -595,6 +659,7 @@ class AppStateStartupSyncTest {
         val cataloguePositions = ConcurrentLinkedQueue<Long>()
         val holdFirstResume = AtomicBoolean(false)
         val failHomeReads = AtomicBoolean(false)
+        val failItemCount = AtomicBoolean(false)
         val holdSearchPage = AtomicBoolean(false)
         private val resumeHeld = CountDownLatch(1)
         private val resumePermit = CountDownLatch(1)
@@ -618,6 +683,7 @@ class AppStateStartupSyncTest {
         override fun <T> read(block: (SqlConnection) -> T): T = delegate.read { connection ->
             block(object : SqlConnection {
                 override fun statement(sql: String): SqlStatement {
+                    if (sql == "SELECT COUNT(*) FROM items" && failItemCount.get()) error("Fixture item count failed")
                     if (sql.contains("FROM libraries l ORDER BY l.created_at")) {
                         val position = connection.statement("SELECT position_ms FROM user_data WHERE item_id = ?")
                             .apply { setString(1, ITEM_ID) }

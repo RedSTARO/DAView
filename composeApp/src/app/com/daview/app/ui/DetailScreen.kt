@@ -696,7 +696,8 @@ private fun DownloadAction(state: AppState, item: MediaItemDto) {
                         action = { state.removeDownload(item.id) }
                     )
                 )
-                DownloadState.RUNNING, DownloadState.QUEUED -> state.cancelDownload(item)
+                DownloadState.RUNNING, DownloadState.QUEUED ->
+                    state.stopDownloads("停止下载「${item.name}」？", listOf(download)) { state.cancelDownload(item) }
                 else -> state.download(item)
             }
         }) {
@@ -712,7 +713,11 @@ private fun DownloadAction(state: AppState, item: MediaItemDto) {
     val done = under.count { it.state == DownloadState.DONE }
     val scope = if (item.kind == ItemKind.SEASON) "本季" else "全部"
     when {
-        pending > 0 -> TipIconButton("取消下载（$pending 集）", onClick = { state.cancelDownloadsUnder(item) }) {
+        pending > 0 -> TipIconButton("取消下载（$pending 集）", onClick = {
+            state.stopDownloads("停止下载「${item.name}」的 $pending 集？", under.filter { it.active }) {
+                state.cancelDownloadsUnder(item)
+            }
+        }) {
             Icon(Icons.Filled.Downloading, contentDescription = "取消下载", tint = MaterialTheme.colorScheme.primary)
         }
         done >= total -> TipIconButton("删除本地文件（$done 集）…", onClick = {
@@ -743,7 +748,11 @@ private fun SeasonDownloadButton(state: AppState, season: MediaItemDto) {
     val done = under.count { it.state == DownloadState.DONE }
     val total = season.episodeCount ?: 0
     when {
-        pending > 0 -> TextButton(onClick = { state.cancelDownloadsUnder(season) }) { Text("取消下载（$pending 集）") }
+        pending > 0 -> TextButton(onClick = {
+            state.stopDownloads("停止下载「${season.name}」的 $pending 集？", under.filter { it.active }) {
+                state.cancelDownloadsUnder(season)
+            }
+        }) { Text("取消下载（$pending 集）") }
         total > 0 && done >= total -> TextButton(onClick = {
             state.confirm(
                 Confirmation(
@@ -807,8 +816,19 @@ private fun DetailMoreMenu(state: AppState, playback: PlaybackController, item: 
                 )
                 if (item.manualFields.isNotEmpty()) {
                     DropdownMenuItem(
-                        text = { Text("恢复为刮削结果") },
-                        onClick = { open = false; state.revertManualEdits(item) }
+                        text = { Text("恢复为刮削结果…") },
+                        onClick = {
+                            open = false
+                            state.confirm(
+                                Confirmation(
+                                    title = "恢复「${item.name}」的刮削结果？",
+                                    text = "手动改过的 ${item.manualFields.size} 个字段会被丢弃，换回刮削源的内容。",
+                                    confirmLabel = "恢复",
+                                    destructive = true,
+                                    action = { state.revertManualEdits(item) }
+                                )
+                            )
+                        }
                     )
                 }
                 HorizontalDivider()
@@ -823,8 +843,20 @@ private fun DetailMoreMenu(state: AppState, playback: PlaybackController, item: 
                 )
                 if (item.lockedProvider != null) {
                     DropdownMenuItem(
-                        text = { Text("解除手动指定，重新自动匹配") },
-                        onClick = { open = false; state.unpin(item) }
+                        text = { Text("解除手动指定，重新自动匹配…") },
+                        onClick = {
+                            open = false
+                            state.confirm(
+                                Confirmation(
+                                    title = "解除「${item.name}」的手动指定？",
+                                    text = "不再固定为 ${item.lockedProvider?.displayName} 上的这个条目，会立即重新自动匹配，" +
+                                        "匹配到的可能是另一部作品。",
+                                    confirmLabel = "解除",
+                                    destructive = true,
+                                    action = { state.unpin(item) }
+                                )
+                            )
+                        }
                     )
                 }
                 DropdownMenuItem(text = { Text("重新刮削") }, onClick = { open = false; state.refreshMetadata(item) })
@@ -1050,7 +1082,9 @@ private fun PeopleRow(state: AppState, item: MediaItemDto) {
             contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            items(item.people, key = { it.name + (it.role ?: "") }) { person ->
+            // Positional keys: a provider can list the same name and role
+            // twice, and a duplicate key takes the whole page down.
+            items(item.people) { person ->
                 // A face leads to the other titles it appears in.
                 Surface(
                     onClick = { state.searchFor(person.name) },

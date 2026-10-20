@@ -64,7 +64,11 @@ fun EditItemDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
             name = name.trim().takeIf { it != item.name },
             originalName = originalName.trim().takeIf { it != item.originalName.orEmpty() },
             overview = overview.trim().takeIf { it != item.overview.orEmpty() },
-            year = year.toIntOrNull().takeIf { it != item.year },
+            // An emptied field clears the year; 0 is how "no year" is sent.
+            year = when {
+                year.isBlank() -> 0.takeIf { item.year != null }
+                else -> year.toIntOrNull()?.takeIf { it != item.year }
+            },
             genres = genreList.takeIf { it != item.genres }
         )
         onDismiss()

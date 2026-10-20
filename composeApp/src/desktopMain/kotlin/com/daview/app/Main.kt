@@ -34,6 +34,7 @@ import com.daview.app.ui.DaViewIcon
 import com.daview.app.ui.LocalWindowFullscreen
 import com.daview.server.config.ConfigStore
 import com.daview.server.enableFileLogging
+import com.daview.server.logStartup
 import com.daview.server.logUncaughtExceptions
 import java.awt.AWTEvent
 import java.awt.Dimension
@@ -69,6 +70,7 @@ fun main() {
     // the file there is nothing to read after something has gone wrong.
     enableFileLogging(dataDir)
     logUncaughtExceptions()
+    logStartup(BuildInfo.VERSION, BuildInfo.PACKAGE_VERSION)
 
     application {
         val store = remember { createSettingsStore() }
