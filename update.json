@@ -1,0 +1,33 @@
+{
+  "version": "84d8959",
+  "packageVersion": "1.0.132",
+  "publishedAt": "2026-10-23T10:53:43Z",
+  "pageUrl": "https://github.com/RedSTARO/DAView/releases/tag/ci",
+  "notes": "CI 构建 84d8959（84d8959c2f03ee9adaed0104f8fa6fd1194ddb09）\n\n- feat: show the selected season's synopsis on a multi-season show\n- fix: repair release enum lookups, stale-progress sync paths and review findings\n- docs: state only what the Windows and update checks showed\n- fix(linux): install and remove the .deb on systems without a desktop menu\n- fix(linux): let the .deb install on Debian 12 and Ubuntu 22.04\n- fix(desktop): prevent ProGuard startup verification errors\n- perf: restore cached home before background startup refresh\n- fix: refresh pages after background startup synchronization",
+  "assets": {
+    "android": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-84d8959.apk",
+      "name": "DAView-84d8959.apk",
+      "sha256": "7034e3421434ca89955a76da7826f817dfa9d8934418595b850c6ae71b7d16f2",
+      "size": 8751965
+    },
+    "linux": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-84d8959.deb",
+      "name": "DAView-84d8959.deb",
+      "sha256": "affca85f5f39bf5cee4eb9c835016d5c40bc3576438508051bd9e436ea72c58d",
+      "size": 56662952
+    },
+    "macos": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-84d8959.dmg",
+      "name": "DAView-84d8959.dmg",
+      "sha256": "44600d004899a32d97efdf81a5d1579ad27dd68ad0ccb54ae4c7a6904258151a",
+      "size": 76007758
+    },
+    "windows": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-84d8959.msi",
+      "name": "DAView-84d8959.msi",
+      "sha256": "edbd6b45654002d4cf6715b650dd60cdb9fb20f8945684db48582c282e314df6",
+      "size": 112758102
+    }
+  }
+}
