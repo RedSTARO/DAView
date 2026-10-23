@@ -494,6 +494,19 @@ private fun ColumnScope.HeroTitle(state: AppState, item: MediaItemDto, openSerie
     }
 }
 
+/**
+ * The synopsis under the title. A show with more than one season shows the
+ * picked season's own, where it has one, and its own synopsis otherwise.
+ */
+private fun shownOverview(state: AppState, item: MediaItemDto): String? {
+    val own = item.overview?.takeIf { it.isNotBlank() }
+    if (item.kind != ItemKind.SERIES) return own
+    val seasons = state.detailChildren.filter { it.kind == ItemKind.SEASON }
+    // Specials are not a season of the run.
+    if (seasons.mapNotNull { it.indexNumber }.filter { it > 0 }.distinct().size < 2) return own
+    return seasons.firstOrNull { it.id == state.detailSeasonId }?.overview?.takeIf { it.isNotBlank() } ?: own
+}
+
 /** Genres and synopsis — the part that reads best across the full width. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -508,10 +521,12 @@ private fun ColumnScope.HeroBlurb(state: AppState, item: MediaItemDto) {
         }
     }
 
-    item.overview?.takeIf { it.isNotBlank() }?.let { overview ->
+    shownOverview(state, item)?.let { overview ->
         Spacer(Modifier.height(12.dp))
-        var expanded by remember(item.id) { mutableStateOf(false) }
-        var overflowing by remember(item.id) { mutableStateOf(false) }
+        // Keyed on the text: picking another season swaps it, and the
+        // expanded state and the overflow check belong to the old one.
+        var expanded by remember(overview) { mutableStateOf(false) }
+        var overflowing by remember(overview) { mutableStateOf(false) }
         SelectionContainer {
             Text(
                 overview,

@@ -101,13 +101,10 @@ class MetadataService(
         if (series.kind != ItemKind.SERIES || series.scrapedAt == null || series.providerIds.isEmpty()) return false
         val order = configuredOrder(library, config)
         if (order.isEmpty()) return false
-        applyEpisodeMetadata(
-            series,
-            series.providerIds,
-            order,
-            config.copy(language = library.language.ifBlank { config.language }),
-            maxAgeMs = 0
-        )
+        val localised = config.copy(language = library.language.ifBlank { config.language })
+        applyEpisodeMetadata(series, series.providerIds, order, localised, maxAgeMs = 0)
+        // What gained episodes may be a whole new season.
+        applySeasonMetadata(series, series.providerIds, order, localised, maxAgeMs = 0)
         return true
     }
 
@@ -239,7 +236,10 @@ class MetadataService(
             repository.setRatingSource(item.id, metadata.ratingProvider ?: metadata.provider)
         }
 
-        if (item.kind == ItemKind.SERIES) applyEpisodeMetadata(item, providerIds, order, config)
+        if (item.kind == ItemKind.SERIES) {
+            applyEpisodeMetadata(item, providerIds, order, config)
+            applySeasonMetadata(item, providerIds, order, config)
+        }
         return true
     }
 
@@ -312,7 +312,7 @@ class MetadataService(
             manualFields = emptyList()
         )
         repository.clearManualFields(item.id)
-        if (item.kind == ItemKind.SERIES) resetEpisodes(item.id)
+        if (item.kind == ItemKind.SERIES) resetSeasonsAndEpisodes(item.id)
         val applied = enrichItem(base, listOf(provider) + order.filter { it != provider }, config)
         if (!applied) return null
         // Recorded outside the item as well, so it survives into the sync file
@@ -351,7 +351,7 @@ class MetadataService(
             lockedProvider = null,
             scrapeStatus = ScrapeStatus.NONE
         )
-        if (item.kind == ItemKind.SERIES) resetEpisodes(item.id)
+        if (item.kind == ItemKind.SERIES) resetSeasonsAndEpisodes(item.id)
         if (enrichItem(base, order, config)) return
 
         // Nothing matched on its own: the item goes back to what the folder
@@ -403,12 +403,17 @@ class MetadataService(
 
     /**
      * Episodes the new series does not cover would otherwise keep the titles and
-     * stills of the wrong one, so they go back to their file names first.
+     * stills of the wrong one, so they go back to their file names first, and
+     * its seasons drop the wrong one's synopses.
      */
-    private fun resetEpisodes(seriesId: String) {
-        val episodes = repository.episodesOfSeries(seriesId)
-        if (episodes.isEmpty()) return
-        val updates = episodes.mapNotNull { episode ->
+    private fun resetSeasonsAndEpisodes(seriesId: String) {
+        val seasons = repository.children(seriesId)
+            .filter { it.kind == ItemKind.SEASON && it.overview != null }
+            .mapNotNull { season ->
+                val record = repository.itemRecord(season.id) ?: return@mapNotNull null
+                record.copy(dto = record.dto.copy(overview = null), scrapedAt = null)
+            }
+        val episodes = repository.episodesOfSeries(seriesId).mapNotNull { episode ->
             val record = repository.itemRecord(episode.id) ?: return@mapNotNull null
             val parsed = episode.path?.substringAfterLast('/')
                 ?.let { NameParser.parseEpisode(it, episode.parentIndexNumber) }
@@ -424,7 +429,7 @@ class MetadataService(
                 scrapedAt = null
             )
         }
-        repository.upsertItems(updates)
+        repository.upsertItems(seasons + episodes)
     }
 
     private fun applyEpisodeMetadata(
@@ -469,6 +474,50 @@ class MetadataService(
                 ),
                 scrapedAt = now
             )
+        }
+        repository.upsertItems(updates)
+    }
+
+    /**
+     * Gives each season of a show with more than one its own synopsis, which
+     * the series page shows when that season is picked. A season no source can
+     * place keeps what it had, and the page shows the show's synopsis for it.
+     */
+    private fun applySeasonMetadata(
+        series: MediaItemDto,
+        providerIds: Map<String, String>,
+        order: List<MetadataProvider>,
+        config: ScraperConfig,
+        maxAgeMs: Long = SCRAPE_CACHE_MAX_AGE_MS
+    ) {
+        val seasons = repository.children(series.id).filter { it.kind == ItemKind.SEASON }
+        // Specials are not a season of the run, and one season has nothing to tell apart.
+        val numbers = seasons.mapNotNull { it.indexNumber }.filter { it > 0 }.distinct()
+        if (numbers.size < 2) return
+
+        // By the time this runs the show itself is scraped; a source that
+        // trips over its seasons must not turn that into a failed scrape.
+        val scraped = runCatching {
+            order.asSequence()
+                .mapNotNull { provider ->
+                    val id = providerIds[provider.name.lowercase()] ?: return@mapNotNull null
+                    scrapers[provider]?.seasons(id, numbers.max(), config, maxAgeMs)
+                        ?.takeIf { found -> found.any { !it.overview.isNullOrBlank() } }
+                }
+                .firstOrNull()
+        }
+            .onFailure { log.warn("读取 {} 的分季简介失败: {}", series.name, it.message) }
+            .getOrNull() ?: return
+
+        val overviews = scraped
+            .mapNotNull { season -> season.overview?.takeIf { it.isNotBlank() }?.let { season.season to it } }
+            .toMap()
+        val now = System.currentTimeMillis()
+        val updates = seasons.mapNotNull { season ->
+            val overview = season.indexNumber?.let { overviews[it] } ?: return@mapNotNull null
+            val record = repository.itemRecord(season.id) ?: return@mapNotNull null
+            // Stamped, or the scanner's next pass writes its own empty synopsis back.
+            record.copy(dto = record.dto.copy(overview = overview), scrapedAt = now)
         }
         repository.upsertItems(updates)
     }

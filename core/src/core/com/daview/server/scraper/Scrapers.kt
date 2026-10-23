@@ -73,6 +73,12 @@ data class ScrapedEpisode(
     val runtimeMs: Long? = null
 )
 
+/** What a source says about one season of a show, numbered as the share numbers it. */
+data class ScrapedSeason(
+    val season: Int,
+    val overview: String?
+)
+
 interface MetadataScraper {
     val provider: MetadataProvider
     fun isConfigured(config: ScraperConfig): Boolean
@@ -112,6 +118,17 @@ interface MetadataScraper {
         config: ScraperConfig,
         maxAgeMs: Long = SCRAPE_CACHE_MAX_AGE_MS
     ): List<ScrapedEpisode> = emptyList()
+
+    /**
+     * The show's seasons, as far as season [upTo]. [maxAgeMs] is read as in
+     * [episodes]: a show that has just gained a season is asked about afresh.
+     */
+    fun seasons(
+        providerId: String,
+        upTo: Int,
+        config: ScraperConfig,
+        maxAgeMs: Long = SCRAPE_CACHE_MAX_AGE_MS
+    ): List<ScrapedSeason> = emptyList()
 }
 
 /** How long a provider's answer is reused before it is asked for again. */
@@ -382,6 +399,22 @@ class TmdbScraper(repository: Repository?) : HttpScraper(repository), MetadataSc
         }
     }
 
+    /** Read off the show's own entry, which lists its seasons; no request of its own. */
+    override fun seasons(providerId: String, upTo: Int, config: ScraperConfig, maxAgeMs: Long): List<ScrapedSeason> {
+        val series = getJson(
+            "${base(config)}/tv/$providerId?api_key=${config.tmdbApiKey}&language=${config.language}",
+            cacheKey = "tmdb:details:tv:$providerId:${config.language}",
+            cacheMaxAgeMs = maxAgeMs
+        ).obj ?: return emptyList()
+        return (series["seasons"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val season = element as? JsonObject ?: return@mapNotNull null
+            ScrapedSeason(
+                season = season.int("season_number") ?: return@mapNotNull null,
+                overview = season.str("overview")
+            )
+        }
+    }
+
     /**
      * TMDB indexes the same entries under TheTVDB's and IMDb's ids, so
      * something already identified by one of those can be looked up here
@@ -546,7 +579,11 @@ class TvdbScraper(repository: Repository?) : HttpScraper(repository), MetadataSc
 
 // ---------------------------------------------------------------- bangumi.tv
 
-class BangumiScraper(repository: Repository?) : HttpScraper(repository), MetadataScraper {
+class BangumiScraper(
+    repository: Repository?,
+    /** Overridden in tests. */
+    private val base: String = "https://api.bgm.tv"
+) : HttpScraper(repository), MetadataScraper {
     override val provider = MetadataProvider.BANGUMI
 
     /** The public read API needs no credentials; a token only raises rate limits. */
@@ -582,7 +619,7 @@ class BangumiScraper(repository: Repository?) : HttpScraper(repository), Metadat
                 })
             }
         }
-        val response = postJson("$BASE/v0/search/subjects?limit=10", body, headers(config)).obj
+        val response = postJson("$base/v0/search/subjects?limit=10", body, headers(config)).obj
         val results = response?.get("data")?.jsonArray ?: return emptyList()
         return results.mapIndexedNotNull { index, element ->
             val item = element as? JsonObject ?: return@mapIndexedNotNull null
@@ -602,11 +639,7 @@ class BangumiScraper(repository: Repository?) : HttpScraper(repository), Metadat
     }
 
     override fun details(providerId: String, kind: ItemKind, config: ScraperConfig): ScrapedMetadata? {
-        val item = getJson(
-            "$BASE/v0/subjects/$providerId",
-            headers(config),
-            cacheKey = "bgm:subject:$providerId"
-        ).obj ?: return null
+        val item = subject(providerId, config) ?: return null
         val date = item.str("date")
         val infobox = item["infobox"]?.jsonArray.orEmpty().mapNotNull { it as? JsonObject }
         fun infoValue(key: String): String? = infobox.firstOrNull { it.str("key") == key }
@@ -642,7 +675,7 @@ class BangumiScraper(repository: Repository?) : HttpScraper(repository), Metadat
 
     override fun episodes(providerId: String, config: ScraperConfig, maxAgeMs: Long): List<ScrapedEpisode> {
         val payload = getJson(
-            "$BASE/v0/episodes?subject_id=$providerId&type=0&limit=100",
+            "$base/v0/episodes?subject_id=$providerId&type=0&limit=100",
             headers(config),
             cacheKey = "bgm:episodes:$providerId",
             cacheMaxAgeMs = maxAgeMs
@@ -661,11 +694,80 @@ class BangumiScraper(repository: Repository?) : HttpScraper(repository), Metadat
         }
     }
 
-    private companion object {
-        const val BASE = "https://api.bgm.tv"
+    /**
+     * bangumi.tv files every season as a subject of its own, so the show's
+     * entry is only its first season and the rest are found by walking the
+     * links from one subject to the next. Season one is left out: it is the
+     * subject the show matched, whose summary the show already carries.
+     */
+    override fun seasons(providerId: String, upTo: Int, config: ScraperConfig, maxAgeMs: Long): List<ScrapedSeason> {
+        if (upTo < 2) return emptyList()
+        val show = subject(providerId, config) ?: return emptyList()
+        val titles = listOfNotNull(show.str("name_cn"), show.str("name"))
+        val seen = mutableSetOf(providerId)
+        val found = mutableListOf<ScrapedSeason>()
+        var current = providerId
+        for (season in 2..upTo) {
+            // Each step's links are reused for a week like any other answer.
+            // Only a step that comes up empty is asked again, and only when the
+            // caller wants fresh data: that is where a newly listed season hangs.
+            val next = nextSeason(current, titles, seen, config, SCRAPE_CACHE_MAX_AGE_MS)
+                ?: (if (maxAgeMs < SCRAPE_CACHE_MAX_AGE_MS) nextSeason(current, titles, seen, config, maxAgeMs) else null)
+                ?: break
+            val id = next.int("id")?.toString() ?: break
+            seen += id
+            found += ScrapedSeason(season, next.str("summary")?.trimEnd())
+            current = id
+        }
+        return found
+    }
 
+    /**
+     * The TV or web series that follows [id]: one linked as its sequel or,
+     * failing that, one linked as the same world whose title extends the
+     * show's, which is how a second season billed as a standalone story is
+     * filed (赛博朋克：边缘行者 2). Sequels come first because a franchise's
+     * spin-offs carry its title too (赛马娘 Pretty Derby 巅峰之路). Where several
+     * qualify, the earliest wins.
+     */
+    private fun nextSeason(
+        id: String,
+        titles: List<String>,
+        seen: Set<String>,
+        config: ScraperConfig,
+        maxAgeMs: Long
+    ): JsonObject? {
+        val related = getJson(
+            "$base/v0/subjects/$id/subjects",
+            headers(config),
+            cacheKey = "bgm:related:$id",
+            cacheMaxAgeMs = maxAgeMs
+        ).array.orEmpty().mapNotNull { it as? JsonObject }.filter { it.int("type") == SUBJECT_TYPE_ANIME }
+
+        fun earliestSeries(links: List<JsonObject>): JsonObject? = links
+            .mapNotNull { link -> link.int("id")?.toString()?.takeIf { it !in seen } }
+            .mapNotNull { subject(it, config) }
+            .filter { it.str("platform") in SERIES_PLATFORMS }
+            .minByOrNull { it.str("date") ?: "9999" }
+
+        return earliestSeries(related.filter { it.str("relation") == "续集" })
+            ?: earliestSeries(related.filter { it.str("relation") == "相同世界观" && extendsTitle(it, titles) })
+    }
+
+    private fun extendsTitle(link: JsonObject, titles: List<String>): Boolean =
+        listOfNotNull(link.str("name_cn"), link.str("name")).any { name ->
+            titles.any { title -> name.length > title.length && name.startsWith(title) }
+        }
+
+    private fun subject(id: String, config: ScraperConfig): JsonObject? =
+        getJson("$base/v0/subjects/$id", headers(config), cacheKey = "bgm:subject:$id").obj
+
+    private companion object {
         /** bangumi.tv subject types: 1 书籍, 2 动画, 3 音乐, 4 游戏, 6 三次元. */
         const val SUBJECT_TYPE_ANIME = 2
+
+        /** Where a season runs; a film or an OVA in the chain is not one. */
+        val SERIES_PLATFORMS = setOf("TV", "WEB")
     }
 }
 
