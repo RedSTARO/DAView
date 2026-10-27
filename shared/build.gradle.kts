@@ -3,8 +3,14 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.android.library)
 }
+
+// Android is optional in this build (settings.gradle.kts). When it is on, the
+// plugin is already on the class path, and the Android half of the module's
+// configuration lives in android.gradle.kts so that this script compiles
+// without the plugin's classes.
+val withAndroid = (gradle as ExtensionAware).extra["daviewAndroid"] as Boolean
+if (withAndroid) apply(plugin = "com.android.library")
 
 kotlin {
     compilerOptions {
@@ -15,8 +21,10 @@ kotlin {
         compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
     }
 
-    androidTarget {
-        compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+    if (withAndroid) {
+        androidTarget {
+            compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+        }
     }
 
     sourceSets {
@@ -26,14 +34,4 @@ kotlin {
     }
 }
 
-android {
-    namespace = "com.daview.shared"
-    compileSdk = libs.versions.androidCompileSdk.get().toInt()
-    defaultConfig {
-        minSdk = libs.versions.androidMinSdk.get().toInt()
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-}
+if (withAndroid) apply(from = "android.gradle.kts")

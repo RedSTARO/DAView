@@ -3,8 +3,14 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.android.library)
 }
+
+// Android is optional in this build (settings.gradle.kts). When it is on, the
+// plugin is already on the class path, and the Android half of the module's
+// configuration lives in android.gradle.kts so that this script compiles
+// without the plugin's classes.
+val withAndroid = (gradle as ExtensionAware).extra["daviewAndroid"] as Boolean
+if (withAndroid) apply(plugin = "com.android.library")
 
 /**
  * Scanning, scraping, the database, playback bookkeeping and cross-device sync
@@ -30,8 +36,10 @@ kotlin {
         }
     }
 
-    androidTarget {
-        compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+    if (withAndroid) {
+        androidTarget {
+            compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+        }
     }
 
     sourceSets {
@@ -50,15 +58,17 @@ kotlin {
             }
         }
 
-        androidMain {
-            kotlin.srcDir(core)
-            dependencies {
-                // API 26's platform SQLite predates the shared UPSERT queries.
-                implementation(libs.androidx.sqlite.bundled)
-                // slf4j-android is a 1.7-era binding that SLF4J 2 ignores, which
-                // left the server silent on the phone. slf4j-simple is a real 2.x
-                // provider and its stderr output lands in logcat.
-                implementation(libs.slf4j.simple)
+        if (withAndroid) {
+            androidMain {
+                kotlin.srcDir(core)
+                dependencies {
+                    // API 26's platform SQLite predates the shared UPSERT queries.
+                    implementation(libs.androidx.sqlite.bundled)
+                    // slf4j-android is a 1.7-era binding that SLF4J 2 ignores, which
+                    // left the server silent on the phone. slf4j-simple is a real 2.x
+                    // provider and its stderr output lands in logcat.
+                    implementation(libs.slf4j.simple)
+                }
             }
         }
 
@@ -72,7 +82,7 @@ kotlin {
 
         // Shared by both targets. These are all multiplatform artifacts or plain
         // JVM libraries that Android also ships.
-        val shared = listOf(jvmMain.get(), androidMain.get())
+        val shared = listOfNotNull(jvmMain.get(), if (withAndroid) androidMain.get() else null)
         shared.forEach { sourceSet ->
             sourceSet.dependencies {
                 api(project(":shared"))
@@ -89,17 +99,7 @@ kotlin {
     }
 }
 
-android {
-    namespace = "com.daview.core"
-    compileSdk = libs.versions.androidCompileSdk.get().toInt()
-    defaultConfig {
-        minSdk = libs.versions.androidMinSdk.get().toInt()
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-}
+if (withAndroid) apply(from = "android.gradle.kts")
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()

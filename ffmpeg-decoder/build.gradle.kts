@@ -1,5 +1,8 @@
+// By id and without a version: the Android plugin is on the root build
+// script's class path (build.gradle.kts), and this module is only included
+// when the build does Android at all (settings.gradle.kts).
 plugins {
-    alias(libs.plugins.android.library)
+    id("com.android.library")
 }
 
 /**

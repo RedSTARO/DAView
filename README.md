@@ -540,6 +540,11 @@ PotPlayer 的续播用命令行 `/seek=hh:mm:ss`（实测有效），VLC 用 `--
 ./gradlew :composeApp:packageReleaseMsi                 # 桌面安装包（Windows）
 ```
 
+没有 Android SDK 的机器（`ANDROID_HOME`、`ANDROID_SDK_ROOT` 与 `local.properties` 的 `sdk.dir`
+都没有）会自动只配置 JVM 目标：桌面端、`:core:jvmTest` 和 `:composeApp:desktopTest` 照常可用，
+Android 插件不加载，`:ffmpeg-decoder` 不参与构建。装了 SDK 也想这么做就传 `-PdaviewAndroid=false`，
+反过来 `-PdaviewAndroid=true` 会在找不到 SDK 时仍然配置 Android（然后由 AGP 报告缺什么）。
+
 安装包里带的版本号不是文件名上那个人看的标签，而是 **`MAJOR.MINOR.PATCH`**，
 默认 `1.0.<提交数>`，CI 传 `"-PdaviewPackageVersion=..."` 覆盖（PowerShell 下必须带引号，否则它会在第一个点上
 把参数切开）（主次号取最新 tag，

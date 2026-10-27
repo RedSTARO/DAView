@@ -5,6 +5,8 @@ compose = "1.12.0"
 # is still internal in the stable material3 1.9.0 that the Compose plugin pins,
 # so the module is declared explicitly.
 composeMaterial3 = "1.12.0-alpha03"
+# Put on the build script class path by the root build.gradle.kts, not a
+# plugins {} alias: the Android side of the build is optional (settings.gradle.kts).
 agp = "9.4.0"
 coroutines = "1.11.0"
 serialization = "1.11.0"
@@ -62,5 +64,3 @@ kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref 
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 compose-multiplatform = { id = "org.jetbrains.compose", version.ref = "compose" }
-android-application = { id = "com.android.application", version.ref = "agp" }
-android-library = { id = "com.android.library", version.ref = "agp" }

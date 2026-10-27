@@ -473,7 +473,7 @@ object MkvProbe {
     }
 
     private fun readString(bytes: ByteArray): String? =
-        String(bytes, Charsets.UTF_8).trimEnd(' ').takeIf { it.isNotBlank() }
+        String(bytes, Charsets.UTF_8).trimEnd('\u0000').takeIf { it.isNotBlank() }
 
     private fun indexOf(haystack: ByteArray, needle: ByteArray): Int? {
         if (needle.isEmpty() || haystack.size < needle.size) return null

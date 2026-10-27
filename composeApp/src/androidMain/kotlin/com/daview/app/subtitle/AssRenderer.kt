@@ -179,7 +179,7 @@ class AssRenderer(private val fonts: AssFonts) {
                         )
                     }
 
-                    // lur softens the border and leaves the letter itself
+                    // \blur softens the border and leaves the letter itself
                     // sharp — the glow around crisp text that these songs are
                     // typeset with. Only a line with no border at all has its
                     // interior blurred, which is what libass does and the

@@ -12,8 +12,14 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.compose.multiplatform)
-    alias(libs.plugins.android.application)
 }
+
+// Android is optional in this build (settings.gradle.kts). When it is on, the
+// plugin is already on the class path, and the Android half of the module's
+// configuration lives in android.gradle.kts so that this script compiles
+// without the plugin's classes.
+val withAndroid = (gradle as ExtensionAware).extra["daviewAndroid"] as Boolean
+if (withAndroid) apply(plugin = "com.android.application")
 
 /**
  * The version the installers carry, which is not the human label CI puts in the
@@ -147,8 +153,10 @@ kotlin {
         freeCompilerArgs.add("-Xexpect-actual-classes")
     }
 
-    androidTarget {
-        compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+    if (withAndroid) {
+        androidTarget {
+            compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+        }
     }
 
     jvm("desktop") {
@@ -173,17 +181,19 @@ kotlin {
             implementation(project(":shared"))
         }
 
-        androidMain {
-            kotlin.srcDir(app)
-            kotlin.srcDir(generatedBuildInfo)
-            dependencies {
-                implementation(project(":core"))
-                implementation(compose.preview)
-                implementation(libs.androidx.activity.compose)
-                implementation(libs.androidx.media3.exoplayer)
-                implementation(libs.androidx.media3.session)
-                implementation(libs.androidx.media3.ui)
-                implementation(project(":ffmpeg-decoder"))
+        if (withAndroid) {
+            androidMain {
+                kotlin.srcDir(app)
+                kotlin.srcDir(generatedBuildInfo)
+                dependencies {
+                    implementation(project(":core"))
+                    implementation(compose.preview)
+                    implementation(libs.androidx.activity.compose)
+                    implementation(libs.androidx.media3.exoplayer)
+                    implementation(libs.androidx.media3.session)
+                    implementation(libs.androidx.media3.ui)
+                    implementation(project(":ffmpeg-decoder"))
+                }
             }
         }
 
@@ -210,15 +220,17 @@ kotlin {
         // The ASS renderer draws with android.graphics, so the only place its
         // output can be checked is on a device. These need one attached and are
         // not part of CI: `./gradlew :composeApp:connectedDebugAndroidTest`.
-        val androidInstrumentedTest by getting
-        androidInstrumentedTest.dependencies {
-            implementation(libs.androidx.test.runner)
-            implementation(libs.androidx.test.junit)
+        if (withAndroid) {
+            val androidInstrumentedTest by getting
+            androidInstrumentedTest.dependencies {
+                implementation(libs.androidx.test.runner)
+                implementation(libs.androidx.test.junit)
+            }
         }
 
         // Needed by the shared source directory, which is compiled into both
         // JVM targets rather than into commonMain.
-        listOf(androidMain.get(), desktopMain).forEach { sourceSet ->
+        listOfNotNull(if (withAndroid) androidMain.get() else null, desktopMain).forEach { sourceSet ->
             sourceSet.dependencies {
                 implementation(compose.materialIconsExtended)
                 implementation(compose.components.resources)
@@ -230,56 +242,14 @@ kotlin {
     }
 }
 
-android {
-    namespace = "com.daview.app"
-    compileSdk = libs.versions.androidCompileSdk.get().toInt()
-
-    defaultConfig {
-        applicationId = "com.daview.app"
-        minSdk = libs.versions.androidMinSdk.get().toInt()
-        targetSdk = libs.versions.androidTargetSdk.get().toInt()
-        // The patch field is the commit count — see daviewPackageVersion — so
-        // every build's code is above the one before, which is what the package
-        // installer needs before it accepts an update.
-        versionCode = daviewPackageVersion.substringAfterLast('.').toIntOrNull()?.coerceAtLeast(1) ?: 1
-        versionName = daviewVersionLabel
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-    packaging {
-        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        // Build and tooling metadata nothing reads at run time. The coroutines
-        // debug probes are for an attached debugger, which a release has none of.
-        resources.excludes += listOf(
-            "/META-INF/*.version",
-            "/META-INF/*.kotlin_module",
-            "/kotlin-tooling-metadata.json",
-            "DebugProbesKt.bin"
-        )
-        // Native libraries compressed in the APK rather than stored for
-        // mapping in place: about half the size to download, extracted once at
-        // install. Every library is still built with 16 KB segment alignment,
-        // which is what 16 KB-page devices need of an extracted library.
-        jniLibs.useLegacyPackaging = true
-    }
-    buildTypes {
-        getByName("release") {
-            // Shrinking, optimisation and obfuscation. The APK was 24 MB, 17 of
-            // them dex — most of it Material's extended icon set and library
-            // code the app never calls. The rules that keep what is reached by
-            // name are in proguard-android.pro; the mapping file that turns an
-            // obfuscated stack trace back into names is kept by CI.
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-android.pro"
-            )
-        }
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
+// The Android application configuration, kept in a script of its own so that
+// this one compiles without the Android plugin's classes (settings.gradle.kts
+// decides whether the build does Android). The two version strings above are
+// handed over through the project's extra properties.
+if (withAndroid) {
+    extra["daviewPackageVersion"] = daviewPackageVersion
+    extra["daviewVersionLabel"] = daviewVersionLabel
+    apply(from = "android.gradle.kts")
 }
 
 // The packaging tasks treat `appResourcesRootDir` as an internal property, not
