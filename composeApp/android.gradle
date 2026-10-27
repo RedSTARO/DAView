@@ -1,0 +1,67 @@
+// The Android half of :composeApp, applied by build.gradle.kts only when the
+// build does Android (settings.gradle.kts).
+//
+// A Groovy script on purpose. A Kotlin script plugin is compiled against its
+// own class path, not the project's: without a buildscript block of its own
+// it cannot name the Android plugin's types at all, and with one it gets a
+// second copy of them from another class loader, which the extension the
+// applied plugin registered is not an instance of (both were tried on CI).
+// Groovy resolves `android` at run time on that very object. Script plugins
+// also have no `libs` accessor, hence the catalog lookup; the two version
+// strings are computed by build.gradle.kts and handed over as extra
+// properties.
+import org.gradle.api.artifacts.VersionCatalogsExtension
+
+def libs = project.extensions.getByType(VersionCatalogsExtension).named("libs")
+def daviewPackageVersion = project.ext.daviewPackageVersion as String
+def daviewVersionLabel = project.ext.daviewVersionLabel as String
+
+android {
+    namespace = "com.daview.app"
+    compileSdk = libs.findVersion("androidCompileSdk").get().requiredVersion.toInteger()
+
+    defaultConfig {
+        applicationId = "com.daview.app"
+        minSdk = libs.findVersion("androidMinSdk").get().requiredVersion.toInteger()
+        targetSdk = libs.findVersion("androidTargetSdk").get().requiredVersion.toInteger()
+        // The patch field is the commit count — see daviewPackageVersion in
+        // build.gradle.kts — so every build's code is above the one before,
+        // which is what the package installer needs before it accepts an update.
+        def patch = daviewPackageVersion.tokenize('.').last()
+        versionCode = patch.isInteger() ? Math.max(1, patch.toInteger()) : 1
+        versionName = daviewVersionLabel
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    packaging {
+        resources.excludes.add("/META-INF/{AL2.0,LGPL2.1}")
+        // Build and tooling metadata nothing reads at run time. The coroutines
+        // debug probes are for an attached debugger, which a release has none of.
+        resources.excludes.addAll([
+            "/META-INF/*.version",
+            "/META-INF/*.kotlin_module",
+            "/kotlin-tooling-metadata.json",
+            "DebugProbesKt.bin",
+        ])
+        // Native libraries compressed in the APK rather than stored for
+        // mapping in place: about half the size to download, extracted once at
+        // install. Every library is still built with 16 KB segment alignment,
+        // which is what 16 KB-page devices need of an extracted library.
+        jniLibs.useLegacyPackaging = true
+    }
+    buildTypes {
+        release {
+            // Shrinking, optimisation and obfuscation. The APK was 24 MB, 17 of
+            // them dex — most of it Material's extended icon set and library
+            // code the app never calls. The rules that keep what is reached by
+            // name are in proguard-android.pro; the mapping file that turns an
+            // obfuscated stack trace back into names is kept by CI.
+            minifyEnabled = true
+            shrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-android.pro")
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}

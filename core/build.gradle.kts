@@ -7,8 +7,8 @@ plugins {
 
 // Android is optional in this build (settings.gradle.kts). When it is on, the
 // plugin is already on the class path, and the Android half of the module's
-// configuration lives in android.gradle.kts so that this script compiles
-// without the plugin's classes.
+// configuration lives in android.gradle (a Groovy script: see the note there)
+// so that this script compiles without the plugin's classes.
 val withAndroid = (gradle as ExtensionAware).extra["daviewAndroid"] as Boolean
 if (withAndroid) apply(plugin = "com.android.library")
 
@@ -99,7 +99,7 @@ kotlin {
     }
 }
 
-if (withAndroid) apply(from = "android.gradle.kts")
+if (withAndroid) apply(from = "android.gradle")
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()

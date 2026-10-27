@@ -16,8 +16,8 @@ plugins {
 
 // Android is optional in this build (settings.gradle.kts). When it is on, the
 // plugin is already on the class path, and the Android half of the module's
-// configuration lives in android.gradle.kts so that this script compiles
-// without the plugin's classes.
+// configuration lives in android.gradle (a Groovy script: see the note there)
+// so that this script compiles without the plugin's classes.
 val withAndroid = (gradle as ExtensionAware).extra["daviewAndroid"] as Boolean
 if (withAndroid) apply(plugin = "com.android.application")
 
@@ -242,14 +242,15 @@ kotlin {
     }
 }
 
-// The Android application configuration, kept in a script of its own so that
-// this one compiles without the Android plugin's classes (settings.gradle.kts
-// decides whether the build does Android). The two version strings above are
-// handed over through the project's extra properties.
+// The Android application configuration, kept in a Groovy script of its own
+// so that this one compiles without the Android plugin's classes (see the note
+// in android.gradle; settings.gradle.kts decides whether the build does
+// Android). The two version strings above are handed over through the
+// project's extra properties.
 if (withAndroid) {
     extra["daviewPackageVersion"] = daviewPackageVersion
     extra["daviewVersionLabel"] = daviewVersionLabel
-    apply(from = "android.gradle.kts")
+    apply(from = "android.gradle")
 }
 
 // The packaging tasks treat `appResourcesRootDir` as an internal property, not

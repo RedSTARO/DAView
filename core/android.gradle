@@ -1,0 +1,25 @@
+// The Android half of :core, applied by build.gradle.kts only when the build
+// does Android (settings.gradle.kts).
+//
+// A Groovy script on purpose. A Kotlin script plugin is compiled against its
+// own class path, not the project's: without a buildscript block of its own
+// it cannot name the Android plugin's types at all, and with one it gets a
+// second copy of them from another class loader, which the extension the
+// applied plugin registered is not an instance of (both were tried on CI).
+// Groovy resolves `android` at run time on that very object. Script plugins
+// also have no `libs` accessor, hence the catalog lookup.
+import org.gradle.api.artifacts.VersionCatalogsExtension
+
+def libs = project.extensions.getByType(VersionCatalogsExtension).named("libs")
+
+android {
+    namespace = "com.daview.core"
+    compileSdk = libs.findVersion("androidCompileSdk").get().requiredVersion.toInteger()
+    defaultConfig {
+        minSdk = libs.findVersion("androidMinSdk").get().requiredVersion.toInteger()
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}

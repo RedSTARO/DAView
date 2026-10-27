@@ -52,10 +52,9 @@ val withAndroid: Boolean = run {
 }
 (gradle as ExtensionAware).extra["daviewAndroid"] = withAndroid
 
-// The Android Gradle plugin's coordinates, for the root build script and the
-// modules' android.gradle.kts, which each put it on a build script class path
-// (settings cannot use the `libs` accessor, so the version is read from the
-// catalog file directly).
+// The Android Gradle plugin's coordinates, which the root build script puts
+// on its class path in that case (settings cannot use the `libs` accessor,
+// so the version is read from the catalog file directly).
 val agpVersion = Regex("""^agp\s*=\s*"([^"]+)"""", RegexOption.MULTILINE)
     .find(rootDir.resolve("gradle/libs.versions.toml").readText())
     ?.groupValues?.get(1)
