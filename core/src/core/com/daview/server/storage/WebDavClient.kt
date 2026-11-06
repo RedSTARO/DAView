@@ -336,6 +336,18 @@ class WebDavClient(private val config: StorageConfig) : DirectoryLister {
         }
     }
 
+    /**
+     * Creates one folder. Used only for the folder the app keeps its own files
+     * in. `405` is the answer for a folder that already exists, which is what
+     * the caller wanted.
+     */
+    fun mkcol(relativePath: String): WriteResult {
+        val request = request(absoluteUrl(relativePath)).method("MKCOL", null).build()
+        val response = runCatching { http.newCall(request).execute() }
+            .getOrElse { return WriteResult(false, null, it.message) }
+        return response.use { WriteResult(it.isSuccessful || it.code == 405, it.code, null) }
+    }
+
     /** Deletes a single path. Used only to clean up files this app wrote. */
     fun delete(relativePath: String): WriteResult {
         val request = request(absoluteUrl(relativePath)).delete().build()

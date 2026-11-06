@@ -26,8 +26,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * There is no second server to talk to, so the devices agree through one file
  * on the storage they already share. It carries the settings, the library
- * definitions and the watch state — not the scraped catalogue, which every
- * device can rebuild by scanning and which would turn a 2 KB upload into 4 MB.
+ * definitions and the watch state. The scraped catalogue would turn its 2 KB
+ * into 4 MB, so that travels apart, a change at a time, and this file only says
+ * how far each device's log reaches: see [MetadataLog].
  *
  * Whether the storage accepts writes at all cannot be asked politely: the
  * 123pan gateway leaves `PUT` out of the `OPTIONS` `Allow` header even when it
@@ -46,6 +47,10 @@ class SyncService(
     }
     private val running = AtomicBoolean(false)
     private val startupClaimed = AtomicBoolean(false)
+
+    /** A new segment is announced by this file, so publishing one ends in an upload. */
+    val metadata = MetadataLog(context, davProvider) { upload(automatic = true).ok }
+
     private val startupResult = CompletableFuture<SyncResultDto?>()
 
     /** Fingerprint of everything the file carries, at the last successful upload. */
@@ -71,9 +76,9 @@ class SyncService(
     /**
      * Pulls on a schedule and uploads when something has actually changed.
      *
-     * Both halves have to be automatic. Every device now scans and scrapes on
-     * its own and the file is the only thing they share, so a device that only
-     * ever wrote would never learn what the others watched — which is what
+     * Both halves have to be automatic. Every device scans on its own and the
+     * share is the only thing they have in common, so a device that only ever
+     * wrote would never learn what the others watched — which is what
      * "press 从云端合并 yourself" amounted to.
      *
      * The database revision means no call site has to remember to notify
@@ -100,6 +105,7 @@ class SyncService(
         if (now - (config.lastPullAt ?: 0L) >= pullInterval && now - lastPullAttemptAt >= pullInterval) {
             lastPullAttemptAt = now
             runCatching { pull() }.onFailure { log.warn("自动拉取失败: {}", it.message) }
+            metadata.schedule()
         }
 
         val elapsed = System.currentTimeMillis() - (context.config.sync.lastUploadAt ?: 0L)
@@ -145,6 +151,7 @@ class SyncService(
                 startupResult.completeExceptionally(t)
                 throw t
             }
+            metadata.schedule()
         }
         return startupResult.join()
     }
@@ -274,6 +281,7 @@ class SyncService(
 
         val summary = runCatching { applyBackup(context, backup, mergeUserDataByTimestamp = true, machineLocal = true) }
             .getOrElse { return Merge.Unreadable(it.message ?: "格式不符") }
+        metadata.onManifest(backup.metadataLogs)
         context.updateConfig {
             it.copy(sync = it.sync.copy(lastPullAt = System.currentTimeMillis(), lastError = null))
         }
@@ -296,11 +304,20 @@ class SyncService(
             at == null || local.updatedAt > at
         }) return true
         val pinTimes = remote.pins.groupBy { it.itemId }.mapValues { (_, rows) -> rows.maxOf { it.updatedAt } }
-        return context.repository.allPins().any { local ->
+        if (context.repository.allPins().any { local ->
             // Backup export deliberately skips future provider values this
             // client cannot represent. Do not retry forever trying to send one.
             if (MetadataProvider.entries.none { it.name == local.provider }) false
             else pinTimes[local.itemId]?.let { local.updatedAt > it } ?: true
+        }) return true
+        // A build from before the logs drops this section when it writes the
+        // file. The rest of the devices stop hearing of new segments until a
+        // device that knows better puts it back.
+        val logs = remote.metadataLogs.associateBy { it.writer }
+        return context.repository.metadataLogs().any { local ->
+            val entry = logs[local.writer]
+            if (entry == null) local.seq > 0
+            else local.seq > entry.seq || (local.seq == entry.seq && local.baseSeq > entry.baseSeq)
         }
     }
 
@@ -340,6 +357,7 @@ class SyncService(
 
     override fun close() {
         scheduler.shutdownNow()
+        metadata.close()
     }
 
     private companion object {
@@ -357,10 +375,10 @@ class SyncService(
 
         /**
          * Settings, libraries, watch state and the hand-picked scrape entries.
-         * The catalogue is left out on purpose: it is reproducible by scanning
-         * and would make every upload three orders of magnitude bigger. The pins
-         * are the exception because they are not reproducible — they are the
-         * corrections to what scraping got wrong.
+         * The catalogue is left out on purpose: it would make every upload three
+         * orders of magnitude bigger, and read on every pull. What it says goes
+         * through the logs, which this file only points at. The pins stay here
+         * because every other device has to know them before it reads a row.
          */
         val SYNC_SECTIONS = BackupOptions(
             settings = true,
@@ -368,7 +386,8 @@ class SyncService(
             items = false,
             userData = true,
             pins = true,
-            secrets = false
+            secrets = false,
+            metadataLogs = true
         )
     }
 }

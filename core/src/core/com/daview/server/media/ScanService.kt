@@ -19,7 +19,14 @@ class ScanService(
     private val metadata: MetadataService,
     private val streams: StreamService,
     private val davProvider: () -> DirectoryLister?,
-    private val configProvider: () -> AppConfig
+    private val configProvider: () -> AppConfig,
+    /**
+     * Runs before a scan touches anything, with a way to say what it is doing.
+     * Reads what other devices have scraped, so this one does not repeat it.
+     */
+    private val beforeScan: ((String) -> Unit) -> Unit = {},
+    /** Runs when a scan is over, whatever became of it. */
+    private val afterScan: () -> Unit = {}
 ) {
     private val log = LoggerFactory.getLogger(ScanService::class.java)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -125,6 +132,14 @@ class ScanService(
         try {
             cancellation.checkCancelled()
             val dav = davProvider() ?: error("WebDAV 未配置")
+            try {
+                beforeScan { message -> update(library.id, "syncing", 0, 0, message) }
+            } catch (cancel: ScanCancelled) {
+                throw cancel
+            } catch (e: Exception) {
+                // Costs provider calls at worst; the scan itself is unaffected.
+                log.warn("扫描前读取其他设备的刮削数据失败: {}", e.message)
+            }
             val config = configProvider()
             val scraper = config.scraper.copy(
                 // Blank means "whatever the app is set to". Libraries used to
@@ -190,6 +205,7 @@ class ScanService(
             )
         } finally {
             cancellations.remove(library.id, cancellation)
+            runCatching { afterScan() }.onFailure { log.warn("扫描结束后的同步失败: {}", it.message) }
             synchronized(submissionLock) {
                 followUps.remove(library.id)?.let { next ->
                     repository.library(library.id)?.let { stored -> submit(stored, next) }
@@ -251,7 +267,8 @@ class ScanService(
 
     private fun scrape(library: LibraryDto, scraper: ScraperConfig, ids: List<String>, attempted: MutableSet<String>) {
         if (ids.isEmpty()) return
-        val items = ids.mapNotNull { repository.item(it) }
+        // What another device already scraped arrived with the scan.
+        val items = ids.mapNotNull { repository.item(it) }.filter { it.scrapedAt == null }
         attempted += ids
         metadata.enrichItems(library, scraper, items) { current, total, message ->
             update(library.id, "scraping", current, total, message)

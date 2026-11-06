@@ -120,7 +120,7 @@ class SeasonOverviewTest {
 
         assertNotNull(updated)
         assertNull(overview(2), "the synopsis described the wrong show")
-        assertNull(repository.itemRecord("season2")?.scrapedAt, "the scanner owns the row again")
+        assertNotNull(repository.itemRecord("season2")?.scrapedAt, "the devices holding the old synopsis have to hear of this")
     }
 
     @Test

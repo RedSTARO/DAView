@@ -9,10 +9,12 @@ import com.daview.shared.model.LibraryKind
 import com.daview.shared.model.ManualField
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.MediaStreamDto
+import com.daview.shared.model.MetadataLogDto
 import com.daview.shared.model.MetadataProvider
 import com.daview.shared.model.PersonDto
 import com.daview.shared.model.ScrapeStatus
 import com.daview.shared.model.UserDataDto
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -43,6 +45,65 @@ data class PinRow(
     val providerId: String,
     val updatedAt: Long
 )
+
+/**
+ * One item's scraped metadata as a scrape log carries it: every column the
+ * scraper owns and none the scanner does, so applying a row can never disturb
+ * what this device read off its own files.
+ *
+ * Provider and status travel as text. A value a newer build introduced must not
+ * stop this one reading the rest of the segment, and the row readers already
+ * skip names they do not recognise.
+ */
+@Serializable
+data class MetadataRow(
+    val id: String,
+    val libraryId: String,
+    /** The language it was scraped in; a device set to another one leaves it alone. */
+    val language: String,
+    val scrapedAt: Long,
+    val name: String,
+    val originalName: String? = null,
+    val sortName: String = "",
+    val overview: String? = null,
+    val year: Int? = null,
+    val premiereDate: String? = null,
+    val runtimeMs: Long? = null,
+    val communityRating: Double? = null,
+    val ratingSource: String? = null,
+    val officialRating: String? = null,
+    val genres: List<String> = emptyList(),
+    val studios: List<String> = emptyList(),
+    val people: List<PersonDto> = emptyList(),
+    val posterUrl: String? = null,
+    val backdropUrl: String? = null,
+    val logoUrl: String? = null,
+    val providerIds: Map<String, String> = emptyMap(),
+    val lockedProvider: String? = null,
+    val scrapeStatus: String? = null,
+    val manualFields: List<String> = emptyList()
+)
+
+/** What a row from a scrape log is checked against on this device. */
+data class MetadataTarget(val language: String, val lastScanAt: Long?)
+
+/** One device's scrape log: the announced position, then this device's own bookkeeping. */
+data class MetadataLogRow(
+    val writer: String,
+    val seq: Long = 0,
+    val baseSeq: Long = 0,
+    val firstSeq: Long = 1,
+    val flat: Boolean = false,
+    val updatedAt: Long = 0,
+    /** How far this device has read it. */
+    val appliedSeq: Long = 0,
+    /** For this device's own log: the segments below this are gone from the share. */
+    val trimmedSeq: Long = 0,
+    /** For this device's own log: a base file a newer one replaced, not yet deleted. */
+    val retiredBase: Long = 0
+) {
+    fun toDto() = MetadataLogDto(writer, seq, baseSeq, firstSeq, flat, updatedAt)
+}
 
 /** Row shape for [items], including bookkeeping columns the API never exposes. */
 /** What a `download_files` row is: the video itself, or a subtitle beside it. */
@@ -170,6 +231,8 @@ class Repository(private val db: Database) {
             connection.statement("DELETE FROM user_data WHERE item_id IN (SELECT id FROM items WHERE library_id = ?)")
                 .use { it.setString(1, id); it.executeUpdate() }
             connection.statement("DELETE FROM items WHERE library_id = ?")
+                .use { it.setString(1, id); it.executeUpdate() }
+            connection.statement("DELETE FROM metadata_held WHERE library_id = ?")
                 .use { it.setString(1, id); it.executeUpdate() }
             connection.statement("DELETE FROM libraries WHERE id = ?")
                 .use { it.setString(1, id); it.executeUpdate() }
@@ -496,9 +559,16 @@ class Repository(private val db: Database) {
         }
     }
 
+    /**
+     * Stamped, because giving a field back is a change too: a scrape that then
+     * returns the same words writes nothing new, and the devices holding the
+     * row would go on treating those fields as typed by hand.
+     */
     fun clearManualFields(itemId: String) = db.transaction { connection ->
-        connection.statement("UPDATE items SET manual_fields = NULL WHERE id = ?")
-            .use { it.setString(1, itemId); it.executeUpdate() }
+        connection.statement(
+            "UPDATE items SET manual_fields = NULL, " +
+                "scraped_at = CASE WHEN scraped_at IS NULL THEN NULL ELSE ? END WHERE id = ?"
+        ).use { it.setLong(1, System.currentTimeMillis()); it.setString(2, itemId); it.executeUpdate() }
     }
 
     /** Records whose score [MediaItemDto.communityRating] is. */
@@ -1274,6 +1344,383 @@ class Repository(private val db: Database) {
         }
     }
 
+    // ------------------------------------------------------------ scrape logs
+
+    fun metadataLogs(): List<MetadataLogRow> = db.read { connection ->
+        connection.statement("SELECT * FROM metadata_log ORDER BY writer").useQuery { it.map(::readMetadataLog) }
+    }
+
+    fun metadataLog(writer: String): MetadataLogRow? = db.read { connection ->
+        connection.statement("SELECT * FROM metadata_log WHERE writer = ?")
+            .apply { setString(1, writer) }
+            .useQuery { if (it.next()) readMetadataLog(it) else null }
+    }
+
+    private fun readMetadataLog(rs: SqlCursor) = MetadataLogRow(
+        writer = rs.requireString("writer"),
+        seq = rs.getLong("seq"),
+        baseSeq = rs.getLong("base_seq"),
+        firstSeq = rs.getLong("first_seq"),
+        flat = rs.getInt("flat") == 1,
+        updatedAt = rs.getLong("updated_at"),
+        appliedSeq = rs.getLong("applied_seq"),
+        trimmedSeq = rs.getLong("trimmed_seq"),
+        retiredBase = rs.getLong("retired_base")
+    )
+
+    /**
+     * Takes an entry from the sync file. Positions only grow, so the copy that
+     * reaches further is the current one; how far this device has read is not
+     * part of the entry and is left as it is.
+     */
+    fun mergeMetadataLog(entry: MetadataLogDto) = db.transaction { connection ->
+        connection.statement(
+            """
+            INSERT INTO metadata_log(writer, seq, base_seq, first_seq, flat, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(writer) DO UPDATE SET
+                seq = excluded.seq, base_seq = excluded.base_seq, first_seq = excluded.first_seq,
+                flat = excluded.flat, updated_at = excluded.updated_at
+            WHERE excluded.seq > metadata_log.seq
+               OR (excluded.seq = metadata_log.seq AND excluded.base_seq > metadata_log.base_seq)
+            """.trimIndent()
+        ).use {
+            it.setString(1, entry.writer)
+            it.setLong(2, entry.seq)
+            it.setLong(3, entry.baseSeq)
+            it.setLong(4, entry.firstSeq)
+            it.setInt(5, if (entry.flat) 1 else 0)
+            it.setLong(6, entry.updatedAt)
+            it.executeUpdate()
+        }
+    }
+
+    fun saveMetadataLog(row: MetadataLogRow) = db.transaction { connection ->
+        connection.statement(
+            """
+            INSERT INTO metadata_log(writer, seq, base_seq, first_seq, flat, updated_at, applied_seq, trimmed_seq, retired_base)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(writer) DO UPDATE SET
+                seq = excluded.seq, base_seq = excluded.base_seq, first_seq = excluded.first_seq,
+                flat = excluded.flat, updated_at = excluded.updated_at, applied_seq = excluded.applied_seq,
+                trimmed_seq = excluded.trimmed_seq, retired_base = excluded.retired_base
+            """.trimIndent()
+        ).use {
+            it.setString(1, row.writer)
+            it.setLong(2, row.seq)
+            it.setLong(3, row.baseSeq)
+            it.setLong(4, row.firstSeq)
+            it.setInt(5, if (row.flat) 1 else 0)
+            it.setLong(6, row.updatedAt)
+            it.setLong(7, row.appliedSeq)
+            it.setLong(8, row.trimmedSeq)
+            it.setLong(9, row.retiredBase)
+            it.executeUpdate()
+        }
+    }
+
+    fun setMetadataLogApplied(writer: String, seq: Long) = db.transaction { connection ->
+        connection.statement("UPDATE metadata_log SET applied_seq = ? WHERE writer = ?").use {
+            it.setLong(1, seq)
+            it.setString(2, writer)
+            it.executeUpdate()
+        }
+    }
+
+    /** The rows that changed here and have not gone out, oldest id first, at most [limit]. */
+    fun unpublishedMetadata(limit: Int, languageOf: (String) -> String): List<MetadataRow> = db.read { connection ->
+        connection.statement(
+            "SELECT $METADATA_COLUMNS FROM items " +
+                "WHERE scraped_at IS NOT NULL AND scraped_at IS NOT published_at ORDER BY id LIMIT ?"
+        ).apply { setInt(1, limit) }.useQuery { rs -> rs.map { readMetadataRow(it, languageOf) } }
+    }
+
+    /** One page of what [writer]'s log still has to say: the rows nobody has since replaced. */
+    fun publishedMetadata(writer: String, afterId: String, limit: Int, languageOf: (String) -> String): List<MetadataRow> =
+        db.read { connection ->
+            connection.statement(
+                "SELECT $METADATA_COLUMNS FROM items " +
+                    "WHERE metadata_origin = ? AND scraped_at IS NOT NULL AND scraped_at = published_at AND id > ? " +
+                    "ORDER BY id LIMIT ?"
+            ).apply { setString(1, writer); setString(2, afterId); setInt(3, limit) }
+                .useQuery { rs -> rs.map { readMetadataRow(it, languageOf) } }
+        }
+
+    /** A row scraped again while it was on its way stays waiting: only that stamp went out. */
+    fun markMetadataPublished(rows: List<MetadataRow>, writer: String) = db.transaction { connection ->
+        connection.statement(
+            "UPDATE items SET published_at = scraped_at, metadata_origin = ? WHERE id = ? AND scraped_at = ?"
+        ).use { statement ->
+            rows.forEach { row ->
+                statement.setString(1, writer)
+                statement.setString(2, row.id)
+                statement.setLong(3, row.scrapedAt)
+                statement.executeUpdate()
+            }
+        }
+    }
+
+    /** Puts everything in [writer]'s log back in the queue, for a log that has to be started over. */
+    fun republishMetadata(writer: String) = db.transaction { connection ->
+        connection.statement("UPDATE items SET published_at = NULL, metadata_origin = NULL WHERE metadata_origin = ?")
+            .use { it.setString(1, writer); it.executeUpdate() }
+    }
+
+    /** Forgets every log and what went into them, for a share location that holds none of them. */
+    fun resetMetadataLogs() = db.transaction { connection ->
+        connection.statement("DELETE FROM metadata_log").use { it.executeUpdate() }
+        connection.statement(
+            "UPDATE items SET published_at = NULL, metadata_origin = NULL " +
+                "WHERE published_at IS NOT NULL OR metadata_origin IS NOT NULL"
+        ).use { it.executeUpdate() }
+    }
+
+    /**
+     * Lays rows from [origin]'s log over this catalogue, a batch in one
+     * transaction.
+     *
+     * Rows in a language this device is not using, or for a library it does not
+     * have, are passed over: the ones for a library it deleted must not bring
+     * anything back, and a library that turns up later is simply scraped there.
+     *
+     * @return how many rows changed what this device shows.
+     */
+    fun applyMetadataRows(rows: List<MetadataRow>, origin: String, targets: Map<String, MetadataTarget>): Int =
+        db.transaction { connection ->
+            rows.count { row ->
+                val target = targets[row.libraryId]
+                target != null && target.language == row.language &&
+                    mergeMetadataRow(connection, row, origin, target.lastScanAt, holdIfMissing = true)
+            }
+        }
+
+    /**
+     * Fills [ids] from what was waiting for them, as the scan that created them
+     * writes them.
+     *
+     * @return the ids that got their metadata this way, which need no scraping.
+     */
+    fun applyHeldMetadata(ids: List<String>): Set<String> {
+        val held = ids.chunked(HELD_LOOKUP).flatMap { chunk ->
+            db.read { connection ->
+                connection.statement(
+                    "SELECT item_id, origin, payload FROM metadata_held " +
+                        "WHERE item_id IN (${chunk.joinToString { "?" }})"
+                ).apply { chunk.forEachIndexed { index, id -> setString(index + 1, id) } }
+                    .useQuery { rs ->
+                        rs.map { Triple(it.requireString("item_id"), it.requireString("origin"), it.requireString("payload")) }
+                    }
+            }
+        }
+        if (held.isEmpty()) return emptySet()
+        return db.transaction { connection ->
+            connection.statement("DELETE FROM metadata_held WHERE item_id = ?").use { delete ->
+                held.mapNotNullTo(HashSet()) { (id, origin, payload) ->
+                    delete.setString(1, id)
+                    delete.executeUpdate()
+                    val row = runCatching { json.decodeFromString(MetadataRow.serializer(), payload) }.getOrNull()
+                    id.takeIf { row != null && mergeMetadataRow(connection, row, origin, null, holdIfMissing = false) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Forgets rows older than a walk that read the whole library and did not
+     * find their items: whatever they described is no longer on the share.
+     */
+    fun pruneHeldMetadata(libraryId: String, olderThan: Long) = db.transaction { connection ->
+        connection.statement("DELETE FROM metadata_held WHERE library_id = ? AND scraped_at < ?").use {
+            it.setString(1, libraryId)
+            it.setLong(2, olderThan)
+            it.executeUpdate()
+        }
+    }
+
+    private class LocalMetadata(
+        val scrapedAt: Long?,
+        val publishedAt: Long?,
+        val posterUrl: String?,
+        val backdropUrl: String?,
+        val lockedProvider: String?,
+        val providerIds: Map<String, String>
+    )
+
+    /**
+     * The newest stamp wins the whole row, as it does for the watch state, with
+     * two exceptions that are both about a person having decided something.
+     *
+     * A pin outranks any scrape: a row that disagrees with it is turned away
+     * however new it is, and one that agrees replaces a local row that does
+     * not, however old. And a pin taken off stays off, so rows from before that
+     * are not let back in.
+     */
+    private fun mergeMetadataRow(
+        connection: SqlConnection,
+        row: MetadataRow,
+        origin: String,
+        scannedAt: Long?,
+        holdIfMissing: Boolean
+    ): Boolean {
+        val pin = pin(row.id)
+        val chosen = pin?.takeUnless { it.provider == MetadataProvider.NONE.name }
+        if (pin != null && chosen == null && row.scrapedAt < pin.updatedAt) return false
+        if (chosen != null && !honours(chosen, row.lockedProvider, row.providerIds)) return false
+
+        val local = connection.statement(
+            "SELECT scraped_at, published_at, poster_url, backdrop_url, locked_provider, provider_ids " +
+                "FROM items WHERE id = ?"
+        ).apply { setString(1, row.id) }.useQuery { rs ->
+            if (!rs.next()) null
+            else LocalMetadata(
+                scrapedAt = rs.getLongOrNull("scraped_at"),
+                publishedAt = rs.getLongOrNull("published_at"),
+                posterUrl = rs.getString("poster_url"),
+                backdropUrl = rs.getString("backdrop_url"),
+                lockedProvider = rs.getString("locked_provider"),
+                providerIds = runCatching { json.decodeFromString(stringMapSerializer, rs.requireString("provider_ids")) }
+                    .getOrDefault(emptyMap())
+            )
+        }
+        if (local == null) {
+            // A row older than this device's last walk describes something that
+            // walk did not find, so it stays out, and out of the table's growth.
+            if (holdIfMissing && (scannedAt == null || row.scrapedAt >= scannedAt)) hold(connection, row, origin)
+            return false
+        }
+
+        val overridesLocal = chosen != null && !honours(chosen, local.lockedProvider, local.providerIds)
+        if (local.scrapedAt != null && row.scrapedAt <= local.scrapedAt && !overridesLocal) {
+            // Two devices scraping the same film usually wrote the same words.
+            // That is not a change worth sending the other way.
+            if (local.scrapedAt != local.publishedAt && sameMetadata(connection, row)) {
+                connection.statement("UPDATE items SET published_at = scraped_at, metadata_origin = ? WHERE id = ?").use {
+                    it.setString(1, origin)
+                    it.setString(2, row.id)
+                    it.executeUpdate()
+                }
+            }
+            return false
+        }
+
+        // A picture chosen by hand is a file on the device it was chosen on.
+        // The one here stays, and the sender's placeholder asks for no change.
+        val ownPoster = local.posterUrl?.startsWith(LOCAL_ARTWORK) == true
+        val ownBackdrop = local.backdropUrl?.startsWith(LOCAL_ARTWORK) == true
+        val manual = row.manualFields +
+            listOfNotNull(ManualField.POSTER.takeIf { ownPoster }, ManualField.BACKDROP.takeIf { ownBackdrop })
+        connection.statement(
+            """
+            UPDATE items SET
+                name = ?, original_name = ?, sort_name = ?, overview = ?, year = ?, premiere_date = ?,
+                runtime_ms = COALESCE(runtime_ms, ?), community_rating = ?, rating_source = ?, official_rating = ?,
+                genres = ?, studios = ?, people = ?, people_names = ?,
+                poster_url = ?, backdrop_url = ?, logo_url = ?, provider_ids = ?,
+                locked_provider = ?, scrape_status = ?, manual_fields = ?,
+                scraped_at = ?, published_at = ?, metadata_origin = ?
+            WHERE id = ?
+            """.trimIndent()
+        ).use {
+            it.bind(
+                listOf(
+                    row.name, row.originalName, row.sortName, row.overview, row.year, row.premiereDate,
+                    row.runtimeMs
+                )
+            )
+            row.communityRating?.let { rating -> it.setDouble(8, rating) } ?: it.setNull(8)
+            it.setString(9, row.ratingSource)
+            it.setString(10, row.officialRating)
+            it.setString(11, json.encodeToString(stringListSerializer, row.genres))
+            it.setString(12, json.encodeToString(stringListSerializer, row.studios))
+            it.setString(13, json.encodeToString(personListSerializer, row.people))
+            it.setString(14, peopleNames(row.people))
+            it.setString(15, if (ownPoster || row.posterUrl == LOCAL_ARTWORK) local.posterUrl else row.posterUrl)
+            it.setString(16, if (ownBackdrop || row.backdropUrl == LOCAL_ARTWORK) local.backdropUrl else row.backdropUrl)
+            it.setString(17, row.logoUrl)
+            it.setString(18, json.encodeToString(stringMapSerializer, row.providerIds))
+            it.setString(19, row.lockedProvider)
+            it.setString(20, row.scrapeStatus)
+            it.setString(21, manual.distinct().takeIf { list -> list.isNotEmpty() }
+                ?.let { list -> json.encodeToString(stringListSerializer, list) })
+            it.setLong(22, row.scrapedAt)
+            it.setLong(23, row.scrapedAt)
+            it.setString(24, origin)
+            it.setString(25, row.id)
+            it.executeUpdate()
+        }
+        return true
+    }
+
+    private fun honours(pin: PinRow, lockedProvider: String?, providerIds: Map<String, String>): Boolean =
+        lockedProvider == pin.provider && providerIds[pin.provider.lowercase()] == pin.providerId
+
+    /** Whether this device's row says what [row] says. The runtime may have come from its own probe. */
+    private fun sameMetadata(connection: SqlConnection, row: MetadataRow): Boolean {
+        val mine = connection.statement("SELECT $METADATA_COLUMNS FROM items WHERE id = ?")
+            .apply { setString(1, row.id) }
+            .useQuery { rs -> if (rs.next()) readMetadataRow(rs) { row.language } else null }
+        return mine?.copy(scrapedAt = row.scrapedAt, runtimeMs = null) == row.copy(runtimeMs = null)
+    }
+
+    private fun hold(connection: SqlConnection, row: MetadataRow, origin: String) {
+        connection.statement(
+            """
+            INSERT INTO metadata_held(item_id, library_id, origin, scraped_at, payload) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(item_id) DO UPDATE SET
+                library_id = excluded.library_id, origin = excluded.origin,
+                scraped_at = excluded.scraped_at, payload = excluded.payload
+            WHERE excluded.scraped_at > metadata_held.scraped_at
+            """.trimIndent()
+        ).use {
+            it.setString(1, row.id)
+            it.setString(2, row.libraryId)
+            it.setString(3, origin)
+            it.setLong(4, row.scrapedAt)
+            it.setString(5, json.encodeToString(MetadataRow.serializer(), row))
+            it.executeUpdate()
+        }
+    }
+
+    private fun readMetadataRow(rs: SqlCursor, languageOf: (String) -> String): MetadataRow {
+        val libraryId = rs.requireString("library_id")
+        val poster = rs.getString("poster_url")
+        val backdrop = rs.getString("backdrop_url")
+        return MetadataRow(
+            id = rs.requireString("id"),
+            libraryId = libraryId,
+            language = languageOf(libraryId),
+            scrapedAt = rs.getLong("scraped_at"),
+            name = rs.requireString("name"),
+            originalName = rs.getString("original_name"),
+            sortName = rs.getString("sort_name").orEmpty(),
+            overview = rs.getString("overview"),
+            year = rs.getIntOrNull("year"),
+            premiereDate = rs.getString("premiere_date"),
+            runtimeMs = rs.getLongOrNull("runtime_ms"),
+            communityRating = rs.getDoubleOrNull("community_rating"),
+            ratingSource = rs.getString("rating_source"),
+            officialRating = rs.getString("official_rating"),
+            genres = decodeList(rs.getString("genres")),
+            studios = decodeList(rs.getString("studios")),
+            people = runCatching { json.decodeFromString(personListSerializer, rs.requireString("people")) }
+                .getOrDefault(emptyList()),
+            // The path of a picture chosen by hand means nothing anywhere else,
+            // and it has this device's account name in it. It goes as a mark
+            // that says only "keep what you have".
+            posterUrl = if (poster?.startsWith(LOCAL_ARTWORK) == true) LOCAL_ARTWORK else poster,
+            backdropUrl = if (backdrop?.startsWith(LOCAL_ARTWORK) == true) LOCAL_ARTWORK else backdrop,
+            logoUrl = rs.getString("logo_url"),
+            providerIds = runCatching { json.decodeFromString(stringMapSerializer, rs.requireString("provider_ids")) }
+                .getOrDefault(emptyMap()),
+            lockedProvider = rs.getString("locked_provider"),
+            scrapeStatus = rs.getString("scrape_status"),
+            manualFields = decodeList(rs.getString("manual_fields")).filterNot { field ->
+                (field == ManualField.POSTER && poster?.startsWith(LOCAL_ARTWORK) == true) ||
+                    (field == ManualField.BACKDROP && backdrop?.startsWith(LOCAL_ARTWORK) == true)
+            }
+        )
+    }
+
     /**
      * Cheap summary of the watch state, used to notice that something changed
      * without diffing every row: the newest timestamp plus the row count.
@@ -1770,6 +2217,18 @@ class Repository(private val db: Database) {
 
         /** How long a cached provider response is kept; see [pruneScrapeCache]. */
         const val SCRAPE_CACHE_KEPT_MS = 30L * 24 * 3600 * 1000
+
+        /** The scraper's columns, without the per-row subqueries of [SELECT_ITEM]. */
+        const val METADATA_COLUMNS =
+            "id, library_id, scraped_at, name, original_name, sort_name, overview, year, premiere_date, " +
+                "runtime_ms, community_rating, rating_source, official_rating, genres, studios, people, " +
+                "poster_url, backdrop_url, logo_url, provider_ids, locked_provider, scrape_status, manual_fields"
+
+        /** Marks a picture that lives on this device; see [com.daview.server.media.ImageCache]. */
+        const val LOCAL_ARTWORK = "file:"
+
+        /** Ids in one `IN` list. SQLite's own limit is far above this on every build in use. */
+        const val HELD_LOOKUP = 400
 
         /** Start positions of an eight-character slice inside a 24-character id. */
         const val ROTATION_SLICES = 17L

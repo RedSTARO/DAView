@@ -98,6 +98,9 @@ class Scanner(
 
         /** Ids written or deliberately kept during this walk. */
         private val seen = HashSet<String>()
+
+        /** New rows another device had already scraped; see [process]. */
+        private val filled = HashSet<String>()
         private var newTitles = 0
         private var newEpisodes = 0
         private var removed = 0
@@ -168,7 +171,7 @@ class Scanner(
                         }
                         record.dto.kind == ItemKind.EPISODE -> {
                             newEpisodes++
-                            record.dto.seriesId?.let { series += it }
+                            if (record.dto.id !in filled) record.dto.seriesId?.let { series += it }
                         }
                     }
                 }
@@ -192,6 +195,9 @@ class Scanner(
                 removed += orphans.size
             }
             repository.markScanned(library.id, startedAt)
+            // Everything on the share has now been read, so a row still waiting
+            // from before this walk began has nothing to wait for.
+            if (roots.isNotEmpty() && warnings.isEmpty()) repository.pruneHeldMetadata(library.id, startedAt)
 
             // The catalogue may just have changed size by orders of magnitude.
             // Leaving the planner on the statistics it had before the scan is
@@ -222,6 +228,9 @@ class Scanner(
             val previous = before.orEmpty().associateBy { it.id }
             val prepared = records.map { record -> previous[record.dto.id]?.let { keepProbe(record, it) } ?: record }
             repository.upsertScannedItems(prepared)
+            // A row another device scraped can be here before the item is. It
+            // goes on as the item is created, so nothing asks a provider for it.
+            filled += repository.applyHeldMetadata(prepared.map { it.dto.id })
             // Parentage was just rebuilt from the folder tree, so any merge the
             // user made has to be laid back on top of it — here, not once the
             // walk is over, or a merged show sits split for as long as the rest

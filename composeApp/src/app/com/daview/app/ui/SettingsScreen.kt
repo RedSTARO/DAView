@@ -883,7 +883,7 @@ private fun SyncSection(state: AppState) {
         SectionTitle("跨端同步")
         Hint(
             "把观看进度、收藏、媒体库定义和手动指定写成 WebDAV 上的一个文件，其它设备读回来合并；" +
-                "同一条记录以较新的一方为准。海报和简介不在里面，每台设备自己获取。"
+                "同一条记录以较新的一方为准。"
         )
 
         Spacer(Modifier.height(10.dp))
@@ -913,6 +913,14 @@ private fun SyncSection(state: AppState) {
                 options = listOf(5 to "5 分钟", 10 to "10 分钟", 30 to "30 分钟", 60 to "1 小时"),
                 selected = listOf(5, 10, 30, 60).minByOrNull { kotlin.math.abs(it - sync.minIntervalMinutes) } ?: 10
             ) { minutes -> update { it.copy(minIntervalMinutes = minutes) } }
+
+            SwitchRow(
+                label = "同步刮削数据",
+                checked = sync.metadata,
+                enabled = sync.enabled && !busy,
+                detail = "一台设备刮削过的条目，其它设备不必再问刮削源，也不需要 API Key。只传有变化的条目；" +
+                    "媒体库语言不同的设备互不影响。关闭后每台设备自己刮削"
+            ) { want -> update { it.copy(metadata = want) } }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -920,7 +928,7 @@ private fun SyncSection(state: AppState) {
             value = path,
             onValueChange = { path = it },
             label = { Text("WebDAV 上的同步文件") },
-            supportingText = { Text("相对于 WebDAV 根目录；DAView 只会写这一个文件") },
+            supportingText = { Text("相对于 WebDAV 根目录；刮削数据写在它旁边的 .metadata 目录，其余文件都不碰") },
             singleLine = true,
             enabled = !busy,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -973,6 +981,7 @@ private fun SyncSection(state: AppState) {
                 listOfNotNull(
                     it.lastUploadAt?.let { at -> "上次上传 ${formatAgo(at)}" } ?: "还没有上传过",
                     it.lastPullAt?.let { at -> "上次拉取 ${formatAgo(at)}" } ?: "还没有拉取过",
+                    it.lastMetadataAt?.let { at -> "刮削数据 ${formatAgo(at)}有变化" },
                     when (it.writable) {
                         true -> "存储可写"
                         false -> "存储只读，无法同步"
@@ -985,7 +994,7 @@ private fun SyncSection(state: AppState) {
             Spacer(Modifier.height(6.dp))
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
         }
-        (error ?: current?.lastError)?.let {
+        (error ?: current?.lastError ?: current?.metadataError)?.let {
             Spacer(Modifier.height(6.dp))
             Hint(it, error = true)
         }

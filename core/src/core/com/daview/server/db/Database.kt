@@ -367,7 +367,57 @@ class Database(private val sql: SqlDatabase) : AutoCloseable {
                 "audio_stream_index", "subtitle_stream_index", "updated_at"
             )) + syncRevisionTriggers("libraries", listOf(
                 "id", "name", "kind", "path", "provider_order", "language", "updated_at"
-            )) + syncRevisionTriggers("scrape_pins", listOf("item_id", "provider", "provider_id", "updated_at"))
+            )) + syncRevisionTriggers("scrape_pins", listOf("item_id", "provider", "provider_id", "updated_at")),
+            listOf(
+                // The stamp of this row's scraped columns that is known to be
+                // on the share, and whose log it is in. A row whose scraped_at
+                // differs has changed here and is what the next segment holds,
+                // so a publish costs what changed rather than the catalogue.
+                "ALTER TABLE items ADD COLUMN published_at INTEGER",
+                "ALTER TABLE items ADD COLUMN metadata_origin TEXT",
+                // Only the rows waiting to go out, which is usually none: asked
+                // for on a timer, and the two columns sit past the cast list.
+                "CREATE INDEX IF NOT EXISTS idx_items_unpublished ON items(id) " +
+                    "WHERE scraped_at IS NOT NULL AND scraped_at IS NOT published_at",
+                // Every device's log: what the sync file says of it, how far
+                // this device has read it, and for its own log what is left to
+                // tidy up. The last three columns are this device's business.
+                """
+                CREATE TABLE IF NOT EXISTS metadata_log (
+                    writer TEXT PRIMARY KEY,
+                    seq INTEGER NOT NULL DEFAULT 0,
+                    base_seq INTEGER NOT NULL DEFAULT 0,
+                    first_seq INTEGER NOT NULL DEFAULT 1,
+                    flat INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL DEFAULT 0,
+                    applied_seq INTEGER NOT NULL DEFAULT 0,
+                    trimmed_seq INTEGER NOT NULL DEFAULT 0,
+                    retired_base INTEGER NOT NULL DEFAULT 0
+                )
+                """.trimIndent(),
+                // Rows for items this device has not scanned yet, the way a pin
+                // can arrive first. The scan that creates the item finds its
+                // metadata here and has nothing left to ask a provider.
+                """
+                CREATE TABLE IF NOT EXISTS metadata_held (
+                    item_id TEXT PRIMARY KEY,
+                    library_id TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    scraped_at INTEGER NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """.trimIndent(),
+                "CREATE INDEX IF NOT EXISTS idx_metadata_held_library ON metadata_held(library_id)",
+                // Hand edits were never shared, so each device's sit under
+                // whatever stamp the row had, and a later automatic scrape on
+                // another device would beat them at the first merge. Moved to
+                // now so what somebody typed wins that once; after this they
+                // travel as they are made.
+                "UPDATE items SET scraped_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000 " +
+                    "WHERE scraped_at IS NOT NULL AND manual_fields IS NOT NULL AND manual_fields NOT IN ('', '[]')"
+            ) + syncRevisionTriggers("metadata_log", listOf(
+                "writer", "seq", "base_seq", "first_seq", "flat", "updated_at"
+            ))
         )
     }
 }

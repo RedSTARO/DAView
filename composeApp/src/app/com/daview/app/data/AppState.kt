@@ -897,17 +897,7 @@ class AppState internal constructor(
                                 // The usual launch: nothing on the share was newer. Every
                                 // page on screen would be read again for nothing.
                                 !result.changedAnything() -> Unit
-                                else -> {
-                                    val refreshSearch = searchResults.isNotEmpty() || searchEpisodes.isNotEmpty() ||
-                                        searchedFor != null || searchLoading
-                                    invalidateSearchCache()
-                                    refreshLibraries()
-                                    refreshHome()
-                                    if (refreshSearch && current !is Screen.Search) {
-                                        search(searchQuery, preserveLoaded = true)
-                                    }
-                                    if (current !is Screen.Home) refreshCurrent()
-                                }
+                                else -> refreshMergedData()
                             }
                         }
                         .onFailure { notify("启动进度同步失败，继续使用本地进度：${describe(it)}") }
@@ -917,10 +907,33 @@ class AppState internal constructor(
                 if (scanOnStartup) startupScan()
                 if (checkUpdatesOnStartup && canSelfUpdate()) startupUpdateCheck()
             }
+            // Metadata scraped elsewhere lands in the background, at no moment
+            // anybody asked for, so nothing else would tell a page that its
+            // titles and posters are out of date. A scan in progress reads
+            // everything again when it ends.
+            library.onMetadataChanged {
+                scope.launch { if (scanStatus.none { it.running }) refreshMergedData() }
+            }
             // A hit completes startup immediately; both refreshes continue in
             // the owning scope. A miss waits for the first local home as before.
             if (cached == null) initialHome.join()
         }.also { openingJob = it }
+    }
+
+    /**
+     * Reads everything on screen again after rows arrived from another device,
+     * keeping the page, the filters and the scroll position.
+     */
+    private fun refreshMergedData() {
+        val refreshSearch = searchResults.isNotEmpty() || searchEpisodes.isNotEmpty() ||
+            searchedFor != null || searchLoading
+        invalidateSearchCache()
+        refreshLibraries()
+        refreshHome()
+        if (refreshSearch && current !is Screen.Search) {
+            search(searchQuery, preserveLoaded = true)
+        }
+        if (current !is Screen.Home) refreshCurrent()
     }
 
     /** Loads whatever the current screen shows, again. */

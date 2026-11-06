@@ -31,7 +31,9 @@ data class BackupOptions(
     /** Entries the user pinned by hand. Tiny, and not reproducible by scraping. */
     val pins: Boolean = true,
     /** Include the WebDAV password and the scraper API keys. Off by default. */
-    val secrets: Boolean = false
+    val secrets: Boolean = false,
+    /** Where each device's scrape log stands. Means something to the sync loop alone. */
+    val metadataLogs: Boolean = false
 )
 
 private val backupJson = Json {
@@ -141,6 +143,9 @@ fun buildBackup(context: ServerContext, options: BackupOptions): String {
         pins = if (options.pins) context.repository.allPins().mapNotNull { it.toBackup() } else emptyList(),
         items = if (options.items) {
             context.repository.itemRecordsPage(Int.MAX_VALUE, 0).map { it.toBackup() }
+        } else emptyList(),
+        metadataLogs = if (options.metadataLogs) {
+            context.repository.metadataLogs().filter { it.seq > 0 }.map { it.toDto() }
         } else emptyList()
     )
     return backupJson.encodeToString(BackupFileDto.serializer(), file)

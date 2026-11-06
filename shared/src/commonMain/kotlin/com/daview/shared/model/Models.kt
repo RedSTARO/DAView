@@ -631,6 +631,30 @@ data class BackupPinDto(
     val updatedAt: Long = 0
 )
 
+/**
+ * How far one device's scrape log reaches, as the sync file announces it.
+ *
+ * The rows themselves live in that device's own files beside the sync file;
+ * this entry is what lets every other device tell, from the one file it reads
+ * anyway, whether there is anything new to fetch and exactly which segments
+ * hold it. Positions only ever grow, so two copies of an entry merge by taking
+ * the one that reaches further.
+ */
+@Serializable
+data class MetadataLogDto(
+    /** The device that writes this log. Nobody else ever writes to it. */
+    val writer: String,
+    /** The last segment published. */
+    val seq: Long = 0,
+    /** The position the compacted base file covers; zero when there is none yet. */
+    val baseSeq: Long = 0,
+    /** The oldest segment still on the share. */
+    val firstSeq: Long = 1,
+    /** The share refused a folder, so the files sit beside the sync file instead. */
+    val flat: Boolean = false,
+    val updatedAt: Long = 0
+)
+
 @Serializable
 data class BackupFileDto(
     val format: String = BACKUP_FORMAT,
@@ -643,7 +667,9 @@ data class BackupFileDto(
     val libraries: List<LibraryDto> = emptyList(),
     val userData: List<BackupUserDataDto> = emptyList(),
     val pins: List<BackupPinDto> = emptyList(),
-    val items: List<BackupItemDto> = emptyList()
+    val items: List<BackupItemDto> = emptyList(),
+    /** Sync only: where each device's scrape log stands. A backup leaves it out. */
+    val metadataLogs: List<MetadataLogDto> = emptyList()
 )
 
 @Serializable
@@ -668,7 +694,12 @@ data class SyncSettingsDto(
     val lastPullAt: Long? = null,
     val lastError: String? = null,
     /** Whether the storage accepts writes. Null until something has tried. */
-    val writable: Boolean? = null
+    val writable: Boolean? = null,
+    /** Whether scraped metadata travels too, on top of the sync file. */
+    val metadata: Boolean = true,
+    /** When rows last went out or came in. */
+    val lastMetadataAt: Long? = null,
+    val metadataError: String? = null
 )
 
 @Serializable
@@ -681,6 +712,8 @@ data class SyncResultDto(
     val userData: Int? = null,
     /** Scraping corrections taken from the file; with the two above, what a pull changed here. */
     val pins: Int? = null,
+    /** Scraped rows taken from other devices' logs. */
+    val metadata: Int? = null,
     /** Set when the storage itself refused the write, as opposed to a network error. */
     val readOnlyStorage: Boolean = false
 )

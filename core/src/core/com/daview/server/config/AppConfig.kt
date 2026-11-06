@@ -43,7 +43,17 @@ data class SyncConfig(
     val minIntervalMinutes: Int = 10,
     val lastUploadAt: Long? = null,
     val lastPullAt: Long? = null,
-    val lastError: String? = null
+    val lastError: String? = null,
+    /** Whether scraped metadata is shared as well, through the logs beside the file. */
+    val metadata: Boolean = true,
+    /**
+     * Names this device's scrape log. Blank until the first time it has
+     * something to publish, and never copied to another device: two devices
+     * writing the same log would overwrite each other's segments.
+     */
+    val deviceId: String = "",
+    val lastMetadataAt: Long? = null,
+    val metadataError: String? = null
 )
 
 @Serializable

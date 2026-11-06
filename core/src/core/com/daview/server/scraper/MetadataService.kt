@@ -205,31 +205,35 @@ class MetadataService(
         fun <T> keep(field: String, typed: T, scraped: T): T = if (field in manual) typed else scraped
         val name = keep(ManualField.NAME, item.name, metadata.name.ifBlank { item.name })
 
+        val scraped = item.copy(
+            name = name,
+            originalName = keep(ManualField.ORIGINAL_NAME, item.originalName, metadata.originalName ?: item.originalName),
+            sortName = NameParser.sortName(name),
+            overview = keep(ManualField.OVERVIEW, item.overview, metadata.overview ?: item.overview),
+            year = keep(ManualField.YEAR, item.year, metadata.year ?: item.year),
+            premiereDate = metadata.premiereDate ?: item.premiereDate,
+            runtimeMs = item.runtimeMs ?: metadata.runtimeMs,
+            communityRating = metadata.communityRating ?: item.communityRating,
+            officialRating = metadata.officialRating ?: item.officialRating,
+            genres = keep(ManualField.GENRES, item.genres, metadata.genres.ifEmpty { item.genres }),
+            studios = metadata.studios.ifEmpty { item.studios },
+            people = metadata.people.ifEmpty { item.people },
+            posterUrl = keep(ManualField.POSTER, item.posterUrl, metadata.posterUrl ?: item.posterUrl),
+            backdropUrl = keep(ManualField.BACKDROP, item.backdropUrl, metadata.backdropUrl ?: item.backdropUrl),
+            logoUrl = metadata.logoUrl ?: item.logoUrl,
+            providerIds = providerIds,
+            // A pin that arrived from another device has to land on the
+            // row too, or the next scrape would search again and undo it.
+            lockedProvider = locked,
+            scrapeStatus = status
+        )
         repository.upsertItem(
             existing.copy(
-                dto = item.copy(
-                    name = name,
-                    originalName = keep(ManualField.ORIGINAL_NAME, item.originalName, metadata.originalName ?: item.originalName),
-                    sortName = NameParser.sortName(name),
-                    overview = keep(ManualField.OVERVIEW, item.overview, metadata.overview ?: item.overview),
-                    year = keep(ManualField.YEAR, item.year, metadata.year ?: item.year),
-                    premiereDate = metadata.premiereDate ?: item.premiereDate,
-                    runtimeMs = item.runtimeMs ?: metadata.runtimeMs,
-                    communityRating = metadata.communityRating ?: item.communityRating,
-                    officialRating = metadata.officialRating ?: item.officialRating,
-                    genres = keep(ManualField.GENRES, item.genres, metadata.genres.ifEmpty { item.genres }),
-                    studios = metadata.studios.ifEmpty { item.studios },
-                    people = metadata.people.ifEmpty { item.people },
-                    posterUrl = keep(ManualField.POSTER, item.posterUrl, metadata.posterUrl ?: item.posterUrl),
-                    backdropUrl = keep(ManualField.BACKDROP, item.backdropUrl, metadata.backdropUrl ?: item.backdropUrl),
-                    logoUrl = metadata.logoUrl ?: item.logoUrl,
-                    providerIds = providerIds,
-                    // A pin that arrived from another device has to land on the
-                    // row too, or the next scrape would search again and undo it.
-                    lockedProvider = locked,
-                    scrapeStatus = status
-                ),
-                scrapedAt = now
+                dto = scraped,
+                // The stamp says when this row last changed, and a change is
+                // what the other devices are sent. Re-scraping a library that
+                // came back the same used to re-date every row in it.
+                scrapedAt = existing.scrapedAt.takeIf { scraped == existing.dto } ?: now
             )
         )
         if (metadata.communityRating != null) {
@@ -405,13 +409,18 @@ class MetadataService(
      * Episodes the new series does not cover would otherwise keep the titles and
      * stills of the wrong one, so they go back to their file names first, and
      * its seasons drop the wrong one's synopses.
+     *
+     * Stamped rather than left without a stamp: the rows they replace are still
+     * in somebody's scrape log, and only a newer row tells a device that has
+     * those, or will read them, that they no longer stand.
      */
     private fun resetSeasonsAndEpisodes(seriesId: String) {
+        val now = System.currentTimeMillis()
         val seasons = repository.children(seriesId)
             .filter { it.kind == ItemKind.SEASON && it.overview != null }
             .mapNotNull { season ->
                 val record = repository.itemRecord(season.id) ?: return@mapNotNull null
-                record.copy(dto = record.dto.copy(overview = null), scrapedAt = null)
+                record.copy(dto = record.dto.copy(overview = null), scrapedAt = now)
             }
         val episodes = repository.episodesOfSeries(seriesId).mapNotNull { episode ->
             val record = repository.itemRecord(episode.id) ?: return@mapNotNull null
@@ -426,7 +435,7 @@ class MetadataService(
                     communityRating = null,
                     posterUrl = null
                 ),
-                scrapedAt = null
+                scrapedAt = now
             )
         }
         repository.upsertItems(seasons + episodes)
@@ -463,17 +472,18 @@ class MetadataService(
                 ?: (if (singleSeason && season != 0) bySeasonEpisode[scraped.first().season to number] else null)
                 ?: return@mapNotNull null
             val record = repository.itemRecord(episode.id) ?: return@mapNotNull null
-            record.copy(
-                dto = episode.copy(
-                    name = match.name?.takeIf { it.isNotBlank() } ?: episode.name,
-                    overview = match.overview ?: episode.overview,
-                    premiereDate = match.airDate ?: episode.premiereDate,
-                    communityRating = match.rating ?: episode.communityRating,
-                    runtimeMs = episode.runtimeMs ?: match.runtimeMs,
-                    posterUrl = match.stillUrl ?: episode.posterUrl
-                ),
-                scrapedAt = now
+            val scraped = episode.copy(
+                name = match.name?.takeIf { it.isNotBlank() } ?: episode.name,
+                overview = match.overview ?: episode.overview,
+                premiereDate = match.airDate ?: episode.premiereDate,
+                communityRating = match.rating ?: episode.communityRating,
+                runtimeMs = episode.runtimeMs ?: match.runtimeMs,
+                posterUrl = match.stillUrl ?: episode.posterUrl
             )
+            // One new episode must not re-date the other thousand: every row
+            // stamped here is a row the other devices are sent.
+            if (record.scrapedAt != null && scraped == record.dto) return@mapNotNull null
+            record.copy(dto = scraped, scrapedAt = now)
         }
         repository.upsertItems(updates)
     }
@@ -516,6 +526,7 @@ class MetadataService(
         val updates = seasons.mapNotNull { season ->
             val overview = season.indexNumber?.let { overviews[it] } ?: return@mapNotNull null
             val record = repository.itemRecord(season.id) ?: return@mapNotNull null
+            if (record.scrapedAt != null && record.dto.overview == overview) return@mapNotNull null
             // Stamped, or the scanner's next pass writes its own empty synopsis back.
             record.copy(dto = record.dto.copy(overview = overview), scrapedAt = now)
         }

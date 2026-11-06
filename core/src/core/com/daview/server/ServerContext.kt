@@ -68,7 +68,13 @@ class ServerContext(dataDir: Path, sql: SqlDatabase) : AutoCloseable {
 
     val playback = PlaybackService(repository, streams) { config.externalSessionIdleTimeoutSec }
     val pipe = com.daview.server.media.PlaybackPipe(repository, streams, playback)
-    val scans = ScanService(repository, metadata, streams, { dav }, { config })
+    val scans = ScanService(
+        repository, metadata, streams, { dav }, { config },
+        beforeScan = { report -> sync.metadata.catchUp(report) },
+        // Straight away rather than at the next tick: this is when there is
+        // most to tell the other devices, and they would otherwise scrape it too.
+        afterScan = { sync.metadata.schedule(force = true) }
+    )
     val sync = com.daview.server.sync.SyncService(this) { dav }
     val updates = com.daview.server.update.UpdateService(dataDir)
 

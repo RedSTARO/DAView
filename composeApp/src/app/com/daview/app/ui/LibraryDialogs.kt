@@ -68,6 +68,7 @@ import kotlinx.coroutines.launch
  */
 internal fun scanPhaseLabel(phase: String): String = when (phase) {
     "queued" -> "排队中"
+    "syncing" -> "同步刮削数据"
     "listing" -> "读取目录"
     "scanning" -> "扫描新目录"
     "checking" -> "检查已有目录"

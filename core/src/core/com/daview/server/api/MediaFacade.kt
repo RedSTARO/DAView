@@ -705,7 +705,10 @@ class MediaFacade(private val context: ServerContext) {
             lastUploadAt = context.config.sync.lastUploadAt,
             lastPullAt = context.config.sync.lastPullAt,
             lastError = result?.takeIf { !it.ok }?.message ?: context.config.sync.lastError,
-            writable = context.sync.storageWritable
+            writable = context.sync.storageWritable,
+            metadata = context.config.sync.metadata,
+            lastMetadataAt = context.config.sync.lastMetadataAt,
+            metadataError = context.config.sync.metadataError
         )
     }
 
@@ -714,14 +717,19 @@ class MediaFacade(private val context: ServerContext) {
      * upload; turning it off is unconditional.
      */
     suspend fun updateSyncSettings(incoming: SyncSettingsDto): SyncSettingsDto = io {
+        val previousPath = context.config.sync.remotePath
         context.updateConfig { current ->
             current.copy(
                 sync = current.sync.copy(
                     remotePath = incoming.remotePath.ifBlank { current.sync.remotePath },
-                    minIntervalMinutes = incoming.minIntervalMinutes.coerceIn(1, 24 * 60)
+                    minIntervalMinutes = incoming.minIntervalMinutes.coerceIn(1, 24 * 60),
+                    metadata = incoming.metadata,
+                    // A log that is switched off has nothing left to complain about.
+                    metadataError = current.sync.metadataError.takeIf { incoming.metadata }
                 )
             )
         }
+        if (context.config.sync.remotePath != previousPath) context.sync.metadata.restart()
         val result = when {
             incoming.enabled && !context.config.sync.enabled -> context.sync.enable()
             !incoming.enabled -> {
@@ -731,12 +739,29 @@ class MediaFacade(private val context: ServerContext) {
 
             else -> null
         }
+        context.sync.metadata.schedule()
         syncSettings(result)
     }
 
-    suspend fun syncUpload(): SyncResultDto = io { context.sync.upload() }
+    suspend fun syncUpload(): SyncResultDto = io { withMetadata(context.sync.upload()) }
 
-    suspend fun syncPull(): SyncResultDto = io { context.sync.pull() }
+    suspend fun syncPull(): SyncResultDto = io { withMetadata(context.sync.pull()) }
+
+    /** Pressed by hand, so the scraped rows move now rather than on the timer. */
+    private fun withMetadata(result: SyncResultDto): SyncResultDto {
+        if (!result.ok) return result
+        val moved = runCatching { context.sync.metadata.cycle(force = true) }.getOrElse { return result }
+        if (moved.sent == 0 && moved.received == 0) return result
+        return result.copy(
+            message = "${result.message}；刮削数据发出 ${moved.sent} 条、收到 ${moved.received} 条",
+            metadata = moved.received
+        )
+    }
+
+    /** The listener runs on a background thread each time rows from another device land. */
+    suspend fun onMetadataChanged(listener: () -> Unit) = io {
+        context.sync.metadata.onChanged = listener
+    }
 
     /** Launch in the app's background scope; refresh visible data when it completes. */
     suspend fun syncOnStartup(): SyncResultDto? = io { context.sync.pullOnStartup() }
