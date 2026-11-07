@@ -1,0 +1,33 @@
+{
+  "version": "ae926c3",
+  "packageVersion": "1.0.134",
+  "publishedAt": "2026-11-07T14:07:12Z",
+  "pageUrl": "https://github.com/RedSTARO/DAView/releases/tag/ci",
+  "notes": "CI 构建 ae926c3（ae926c30d12be6924954d7caf47ce07241ff0761）\n\n- fix(ci): fetch the pinned libmpv from this repository's own release\n- feat(sync): share scraped metadata through per-device incremental logs\n- feat: show the selected season's synopsis on a multi-season show\n- fix: repair release enum lookups, stale-progress sync paths and review findings\n- docs: state only what the Windows and update checks showed\n- fix(linux): install and remove the .deb on systems without a desktop menu\n- fix(linux): let the .deb install on Debian 12 and Ubuntu 22.04\n- fix(desktop): prevent ProGuard startup verification errors",
+  "assets": {
+    "android": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-ae926c3.apk",
+      "name": "DAView-ae926c3.apk",
+      "sha256": "2646471ce47edd8f43220790baff515fb2ff7ff1f3c2ad8f0aa1d57027b3a38f",
+      "size": 8768349
+    },
+    "linux": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-ae926c3.deb",
+      "name": "DAView-ae926c3.deb",
+      "sha256": "736b2f5e7d1d14b91d53a4a0efe4a6ef96e8d00c7c1ee5bff885e9a773f09d37",
+      "size": 56797356
+    },
+    "macos": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-ae926c3.dmg",
+      "name": "DAView-ae926c3.dmg",
+      "sha256": "b4d214b78c569fdafba4fc9ef140dd0a6a2409600f88e4ccc647d0c2337b550c",
+      "size": 75846959
+    },
+    "windows": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-ae926c3.msi",
+      "name": "DAView-ae926c3.msi",
+      "sha256": "4a478a991146ef72bb4ca1e5c371ab18bf1d20dbdf59d29c2eca9e7a626ec2b6",
+      "size": 112913748
+    }
+  }
+}
