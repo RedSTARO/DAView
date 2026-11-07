@@ -354,6 +354,7 @@ WebDAV 上的一个文件，别的设备读回来合并。
 - **MSI 需要 WiX Toolset 3**。jpackage 用它生成 MSI，且不接受 WiX 4/5；runner 镜像里有 3.x 就直接用，
   没有才用 choco 装。
 - **Windows job 校验固定版本 libmpv**（`scripts/libmpv-windows.json`），同时核对下载归档与 DLL 的 SHA-256。
+  归档取自本仓库的 `libmpv-<日期>` Release，不依赖上游保留。
   下载失败、缓存损坏或校验失败都会阻止打包；不会发布缺少内置播放器的 MSI。
   `:composeApp:desktopTest` 也挂在这个 job 上，因为它是唯一已经在配置并构建 composeApp 的 runner。
 - **APK release 启用 R8 压缩、混淆和资源裁剪，桌面 release 包启用 ProGuard**。反射、JNI、服务加载器的
@@ -504,9 +505,12 @@ Windows 包内置 `libmpv-2.dll`（约 115 MB），但它不在 git 里：
 CI 在打 MSI 前运行这一步，失败即停止打包。固定版本和两层 SHA-256 在 `scripts/libmpv-windows.json`；
 归档缓存于 `build/native-cache/`，也可用 `-ArchivePath` 提供同哈希的离线归档。`libmpv-build.json`
 随 DLL 打包，记录 mpv 和构建脚本的提交。升级固定版本后须重新做播放与全屏失焦验收。
-上游会清理旧 GitHub release；缓存并不保证永久可用。旧归档失效时须恢复原归档或验证后更新 pin，
-脚本不会自动改用另一个版本。mpv 的许可文本在 `app/resources/licenses/mpv/`；完整依赖的对应源码
-材料仍需发布验收，版本与哈希记录不能替代这项工作。
+上游只保留最近 30 个每日 release，Actions 缓存闲置 7 天也会被清掉，所以归档放在本仓库的
+`libmpv-<日期>` Release 里，升级时把验收过的版本传上去再改 pin。当前这份只含 `libmpv-2.dll`：
+上游的原归档已被清理，它由哈希一致的 DLL 重新打包而成，所以 `archiveSha256` 是这份的，
+`dllSha256` 仍是上游构建的，原归档的哈希留在 `upstreamArchiveSha256`。脚本不会自动改用另一个版本。
+mpv 的许可文本在 `app/resources/licenses/mpv/`；完整依赖的对应源码材料仍需发布验收，
+版本与哈希记录不能替代这项工作。
 运行时的查找顺序是：设置里手动指定的路径 → 安装目录的 `app/resources` →
 源码树的 `composeApp/nativeResources/<os>/` → 系统安装位置 → 系统库搜索路径。
 Linux / macOS 不内置，用系统装的 libmpv（`libmpv.so.2` / `libmpv.2.dylib`）；

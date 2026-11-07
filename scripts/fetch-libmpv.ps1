@@ -6,6 +6,12 @@ The pin is scripts/libmpv-windows.json. Update it deliberately after playback
 validation. A successful build must not silently substitute a new engine.
 ArchivePath allows an offline, hash-checked copy; OutputDirectory is useful
 for isolated validation. The default cache is build/native-cache.
+
+The archive comes from a release in this repository rather than from upstream,
+which keeps only its latest 30 daily releases: a pin older than a month has
+nowhere to come from once the Actions cache has gone. Publish the validated
+build there when updating the pin. The DLL digest is the upstream build's; the
+archive digest belongs to the copy kept here.
 #>
 [CmdletBinding()]
 param(
@@ -19,7 +25,8 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $pin = Get-Content -LiteralPath $PinFile -Raw | ConvertFrom-Json
 if ($pin.repository -ne 'shinchiro/mpv-winbuild-cmake' -or
     $pin.tag -notmatch '^\d{8}$' -or $pin.architecture -ne 'x86_64' -or
-    $pin.archive -notmatch '^mpv-dev-x86_64-\d{8}-git-[0-9a-f]+\.7z$' -or
+    $pin.mirrorRepository -ne 'RedSTARO/DAView' -or $pin.mirrorTag -ne "libmpv-$($pin.tag)" -or
+    $pin.archive -notmatch '^libmpv-x86_64-\d{8}-git-[0-9a-f]+\.7z$' -or
     $pin.archiveSha256 -notmatch '^[0-9a-f]{64}$' -or $pin.dllSha256 -notmatch '^[0-9a-f]{64}$' -or
     $pin.archiveSize -le 0 -or $pin.dllSize -le 0) {
     throw 'Invalid libmpv pin. Use an explicit release, archive name and SHA-256 digests.'
@@ -40,7 +47,7 @@ if (-not $ArchivePath) {
     if (-not (Test-Path -LiteralPath $ArchivePath)) {
         $download = Join-Path $cache ('.download-' + [Guid]::NewGuid().ToString('N'))
         try {
-            $url = "https://github.com/$($pin.repository)/releases/download/$($pin.tag)/$($pin.archive)"
+            $url = "https://github.com/$($pin.mirrorRepository)/releases/download/$($pin.mirrorTag)/$($pin.archive)"
             Write-Host "Downloading pinned libmpv $($pin.tag)"
             # Public release assets need no token. Do not forward credentials
             # to GitHub's redirected download host.

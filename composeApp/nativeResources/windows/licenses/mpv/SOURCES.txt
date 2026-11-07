@@ -13,8 +13,10 @@ Build scripts and dependency recipes:
 https://github.com/shinchiro/mpv-winbuild-cmake/tree/cd1edc11dc6887a50f705717619d879f5a93a488
 Upstream build run:
 https://github.com/shinchiro/mpv-winbuild-cmake/actions/runs/33697571182
-Binary release:
+Binary release (since removed upstream, which keeps only its latest 30 releases):
 https://github.com/shinchiro/mpv-winbuild-cmake/releases/tag/20260903
+The same DLL, matching the SHA-256 in libmpv-build.json, is kept at:
+https://github.com/RedSTARO/DAView/releases/tag/libmpv-20260903
 
 Copyright and LICENSE.GPL in this directory are unchanged copies from the mpv
 source commit above. The project's own GPLv3 text is also in ../DAView-GPL-3.0.txt.
