@@ -1,6 +1,8 @@
 package com.daview.app.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -14,9 +16,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -47,19 +51,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
 import com.daview.app.data.PlaybackController
-import com.daview.app.data.Screen
 import com.daview.app.data.tracksTextInput
 import com.daview.shared.model.MediaItemDto
 import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun SearchScreen(state: AppState, playback: PlaybackController) {
+fun SearchScreen(state: AppState, playback: PlaybackController, showBack: Boolean = state.canGoBack) {
     // The field owns its own text. Routing every keystroke through the query
     // meant the character you typed only appeared once a coroutine had run,
     // which an IME makes very obvious.
@@ -92,87 +97,90 @@ fun SearchScreen(state: AppState, playback: PlaybackController) {
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).padding(start = 8.dp, end = 20.dp, top = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val short = maxHeight < 360.dp
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(start = 8.dp, end = 20.dp, top = if (short) 4.dp else 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (showBack) {
+                    TipIconButton("返回（Alt + ←）", onClick = { state.back() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                }
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    // A label still names the editor when it has text in it.
+                    label = { Text("搜索片名、原名、演员或类型", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = {
+                        state.rememberSearch(query)
+                        keyboard?.hide()
+                    }),
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(Icons.Filled.Close, contentDescription = "清空搜索")
+                            }
+                        }
+                    },
+                    shape = MaterialTheme.shapes.extraLarge,
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .widthIn(max = 760.dp)
+                        .fillMaxWidth()
+                        .padding(start = if (showBack) 4.dp else 12.dp)
+                        .focusRequester(focusRequester)
+                        .trackBrowseEditorFocus()
+                        .tracksTextInput()
+                )
+            }
+
+            // Keep the current results in place while the next query runs.
+            Box(Modifier.fillMaxWidth().height(3.dp).padding(horizontal = 20.dp)) {
+                if (state.searchLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+
+            when {
+                query.isBlank() -> SearchStart(state) { query = it }
+                state.searchResults.isEmpty() && state.searchEpisodes.isEmpty() && !state.searchLoading ->
+                    EmptyState(title = "没有匹配的结果", description = "换个关键词试试：片名、原名、演员名或类型都可以。")
+                else -> SearchResults(state, playback, gridState)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchResults(state: AppState, playback: PlaybackController, gridState: LazyGridState) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+        // An artwork-first tile can fill the whole usable height without showing its
+        // title. Keep the same keyed lazy grid, using text-first rows in that case.
+        val list = maxHeight < (400f + 120f * (fontScale - 1f)).dp || maxWidth < 340.dp
+        LazyVerticalGrid(
+            state = gridState,
+            columns = if (list) GridCells.Fixed(1) else GridCells.Adaptive(minSize = 150.dp),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(if (list) 8.dp else 18.dp)
         ) {
-            if (state.canGoBack) {
-                TipIconButton("返回（Alt + ←）", onClick = { state.back() }) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                }
+            if (state.searchResults.isNotEmpty()) {
+                header("影片与剧集" + if (state.searchTotal > 0) "（${state.searchTotal}）" else "")
+                results(state, playback, state.searchResults, list)
             }
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                // A label rather than only a placeholder: once there is text in the
-                // box the placeholder is gone and a screen reader has nothing left
-                // to say the field is for.
-                label = { Text("搜索片名、原名、演员或类型") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                // Results follow the typing; the key records the search and puts
-                // the keyboard away from over them.
-                keyboardActions = KeyboardActions(onSearch = {
-                    state.rememberSearch(query)
-                    keyboard?.hide()
-                }),
-                trailingIcon = {
-                    if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) {
-                            Icon(Icons.Filled.Close, contentDescription = "清空搜索")
-                        }
-                    }
-                },
-                shape = MaterialTheme.shapes.extraLarge,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = if (state.canGoBack) 4.dp else 12.dp)
-                    .focusRequester(focusRequester)
-                    .tracksTextInput()
-            )
-        }
-
-        // Earlier results stay while a new query runs; a thin bar says so.
-        // Swapping them for a spinner made them blink out at every keystroke.
-        Box(Modifier.fillMaxWidth().height(3.dp).padding(horizontal = 20.dp)) {
-            if (state.searchLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
-        }
-
-        when {
-            query.isBlank() -> SearchStart(state) { query = it }
-
-            state.searchResults.isEmpty() && state.searchEpisodes.isEmpty() && !state.searchLoading ->
-                EmptyState(title = "没有匹配的结果", description = "换个关键词试试：片名、原名、演员名或类型都可以。")
-
-            else -> Box(Modifier.fillMaxSize()) {
-                Box(Modifier.fillMaxSize()) {
-                    LazyVerticalGrid(
-                        state = gridState,
-                        columns = GridCells.Adaptive(minSize = 150.dp),
-                        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(18.dp)
-                    ) {
-                        if (state.searchResults.isNotEmpty()) {
-                            header(
-                                "影片与剧集" + if (state.searchTotal > 0) "（${state.searchTotal}）" else ""
-                            )
-                            results(state, playback, state.searchResults)
-                        }
-                        if (state.searchEpisodes.isNotEmpty()) {
-                            // Only the best matches are fetched; the number is how
-                            // many are shown, not how many there are.
-                            val shown = state.searchEpisodes.size
-                            header(if (shown >= EPISODE_RESULTS) "分集（最相关的 $shown 条）" else "分集（$shown）")
-                            results(state, playback, state.searchEpisodes, episodes = true)
-                        }
-                    }
-                    VerticalScrollbarFor(gridState, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
-                }
+            if (state.searchEpisodes.isNotEmpty()) {
+                val shown = state.searchEpisodes.size
+                header(if (shown >= EPISODE_RESULTS) "分集（最相关的 $shown 条）" else "分集（$shown）")
+                results(state, playback, state.searchEpisodes, list, episodes = true)
             }
         }
+        VerticalScrollbarFor(gridState, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
     }
 }
 
@@ -186,30 +194,40 @@ private fun LazyGridScope.results(
     state: AppState,
     playback: PlaybackController,
     items: List<MediaItemDto>,
+    list: Boolean,
     episodes: Boolean = false
 ) {
-    // An episode's picture is a 16:9 still; in a poster-shaped card it was cut
-    // down to a strip. Two cells wide, it keeps its shape.
     items(items, key = { it.id }, span = { GridItemSpan(if (episodes) minOf(2, maxLineSpan) else 1) }) { item ->
-        // As wide as the cell, like the library grid; pinned to 150dp it left a
-        // strip of dead space on the right of every card.
-        BoxWithConstraints {
-            val libraryName = state.libraries.firstOrNull { it.id == item.libraryId }?.name
-            PosterCard(
-                item,
-                width = maxWidth,
-                shape = if (episodes) CardShape.LANDSCAPE else CardShape.PORTRAIT,
-                // Which library it is in is part of the answer when two of them
-                // hold the same title. An episode already names its series, and
-                // the library name at the end of that line was always cut off.
-                subtitle = if (episodes) subtitleFor(item) else listOfNotNull(subtitleFor(item).takeIf { it.isNotBlank() }, libraryName)
-                    .joinToString(" · "),
+        val libraryName = state.libraries.firstOrNull { it.id == item.libraryId }?.name
+        val subtitle = if (episodes) listOfNotNull(item.seriesName, subtitleFor(item).takeIf { it.isNotBlank() })
+            .joinToString(" · ") else listOfNotNull(subtitleFor(item).takeIf { it.isNotBlank() }, libraryName).joinToString(" · ")
+        val open = {
+            state.rememberSearch(state.searchQuery)
+            state.openBrowseDetail(item.id)
+        }
+        if (list) {
+            ListEntry(
+                item = item,
+                selected = null,
                 downloaded = state.isDownloaded(item),
                 menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) },
+                onClick = open,
+                subtitle = subtitle,
                 onPlay = { playback.play(item) }
-            ) {
-                state.rememberSearch(state.searchQuery)
-                state.navigate(Screen.Detail(item.id))
+            )
+        } else {
+            BoxWithConstraints {
+                PosterCard(
+                    item,
+                    width = maxWidth,
+                    shape = if (episodes) CardShape.LANDSCAPE else CardShape.PORTRAIT,
+                    subtitle = if (episodes) subtitleFor(item) else subtitle,
+                    downloaded = state.isDownloaded(item),
+                    detailOpen = LocalSelectedBrowseItem.current == item.id,
+                    menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) },
+                    onPlay = { playback.play(item) },
+                    onClick = open
+                )
             }
         }
     }
@@ -222,7 +240,7 @@ private fun SearchStart(state: AppState, onPick: (String) -> Unit) {
         EmptyState(title = "搜索媒体库", description = "按片名、原名、演员名或类型搜索，所有媒体库一起找。")
         return
     }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("最近搜索", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             TextButton(onClick = { state.clearSearchHistory() }) { Text("清空") }

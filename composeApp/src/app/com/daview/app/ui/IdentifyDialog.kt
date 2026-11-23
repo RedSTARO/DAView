@@ -19,7 +19,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalIconButton
@@ -171,7 +170,7 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
         }
     }
 
-    AlertDialog(
+    AdaptiveAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("手动指定刮削条目") },
         text = {

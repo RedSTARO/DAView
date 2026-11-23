@@ -16,6 +16,7 @@ import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -35,6 +37,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -351,6 +355,7 @@ fun PosterCard(
      * tile cannot keep.
      */
     onPlay: (() -> Unit)? = null,
+    detailOpen: Boolean = false,
     onClick: () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
@@ -429,7 +434,7 @@ fun PosterCard(
                 stateDescription = when (selected) {
                     true -> "已选中，$watchState"
                     false -> "未选中，$watchState"
-                    null -> watchState
+                    null -> if (detailOpen) "正在查看，$watchState" else watchState
                 }
             }
     ) {
@@ -439,7 +444,7 @@ fun PosterCard(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             tonalElevation = if (lifted) 6.dp else 0.dp,
             border = when {
-                selected == true || focused -> BorderStroke(3.dp, MaterialTheme.colorScheme.primary)
+                selected == true || focused || detailOpen -> BorderStroke(3.dp, MaterialTheme.colorScheme.primary)
                 else -> null
             }
         ) {
@@ -718,24 +723,26 @@ private fun RowArrow(visible: Boolean, left: Boolean, modifier: Modifier, onClic
 
 @Composable
 fun EmptyState(title: String, description: String, action: @Composable (() -> Unit)? = null) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            description,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            // Centred like the title above it; it wrapped flush left under a
-            // centred heading.
-            textAlign = TextAlign.Center
-        )
-        action?.let {
-            Spacer(Modifier.height(20.dp))
-            it()
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val viewportHeight = maxHeight
+        Column(
+            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                .heightIn(min = viewportHeight).padding(horizontal = 24.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            action?.let {
+                Spacer(Modifier.height(20.dp))
+                it()
+            }
         }
     }
 }
@@ -854,8 +861,15 @@ fun AppMenu(
     offset: DpOffset = DpOffset(0.dp, 0.dp),
     content: @Composable ColumnScope.() -> Unit
 ) {
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismissRequest, modifier = modifier, offset = offset) {
-        com.daview.app.data.ModalMarker()
-        content()
+    val pane = LocalBrowsePane.current
+    if (pane != null) {
+        if (expanded && pane.width > 0.dp && pane.height > 0.dp) {
+            PaneMenu(pane, onDismissRequest, modifier, offset, content)
+        }
+    } else {
+        DropdownMenu(expanded = expanded, onDismissRequest = onDismissRequest, modifier = modifier, offset = offset) {
+            com.daview.app.data.ModalMarker()
+            content()
+        }
     }
 }

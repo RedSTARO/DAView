@@ -1,14 +1,19 @@
 package com.daview.app.player
 
+import android.graphics.Rect
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.Uri
 import android.os.SystemClock
+import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -16,7 +21,19 @@ import androidx.media3.ui.PlayerView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.daview.app.AdaptiveCatalogueFixture
+import com.daview.app.AdaptiveDeviceHarness
+import com.daview.app.AdaptiveDeviceWindow
+import com.daview.app.AdaptiveMatrixReceipt
 import com.daview.app.MainActivity
+import com.daview.app.hasLabel
+import com.daview.app.isDetailHeading
+import com.daview.app.screenBounds
+import com.daview.app.ui.AppFold
+import com.daview.app.ui.AppWindowInfo
+import com.daview.app.ui.FoldAxis
+import com.daview.app.ui.FoldPosture
+import com.daview.app.ui.LocalAppWindowInfo
 import com.daview.app.ui.InternalPlayer
 import com.daview.app.ui.PipRequest
 import com.daview.app.ui.PlayerScreenState
@@ -43,6 +60,8 @@ import java.util.concurrent.atomic.AtomicLong
 class PlaybackLifecycleOnDeviceTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val media = File(instrumentation.targetContext.cacheDir, "lifecycle-${UUID.randomUUID()}.wav")
+    private val video = File(instrumentation.targetContext.cacheDir, "fold-${UUID.randomUUID()}.mp4")
+    private val windowInfo = mutableStateOf(AppWindowInfo())
     private var scenario: ActivityScenario<MainActivity>? = null
     private lateinit var activity: MainActivity
     private lateinit var player: Player
@@ -54,11 +73,15 @@ class PlaybackLifecycleOnDeviceTest {
     fun cleanUp() {
         scenario?.close()
         media.delete()
+        video.delete()
     }
 
     @Test
     fun stoppedActivityPausesAndDisposalReportsTheFinalPositionOnce() {
         startPlayer()
+        scenario!!.moveToState(Lifecycle.State.STARTED)
+        val visibleAt = onMain { player.currentPosition }
+        await("visible activity after ON_PAUSE keeps playing") { player.isPlaying && player.currentPosition > visibleAt + 250 }
         scenario!!.moveToState(Lifecycle.State.CREATED)
         await("player paused after ON_STOP") { !player.playWhenReady && !player.isPlaying }
         val stoppedAt = onMain { player.currentPosition }
@@ -102,28 +125,222 @@ class PlaybackLifecycleOnDeviceTest {
     }
 
     @Test
-    fun visiblePictureInPictureKeepsProgressAndFinishingItReleasesTheSession() {
-        startPlayer()
-        assumeTrue("Device has no PiP feature", onMain { PipRequest.supported(activity) })
-        assertTrue("The platform rejected PiP", onMain { PipRequest.enter(activity) })
-        await("PiP became visible") { activity.isInPictureInPictureMode && player.isPlaying }
-        val before = onMain { player.currentPosition }
-        await("progress while in PiP") { activity.isInPictureInPictureMode && player.currentPosition > before + 300 }
-        onMain { activity.finish() }
-        assertTrue("PiP session was not disposed", closed.await(10, TimeUnit.SECONDS))
-        instrumentation.waitForIdleSync()
-        assertEquals(1, closeCount.get())
-        assertTrue(closePosition.get() >= before)
-        assertFalse(onMain { PipRequest.wanted })
-        assertNull(onMain { PipRequest.aspect })
+    fun visiblePictureInPictureKeepsProgressAndFinishingItReleasesTheSession() = verifyPip(paused = false)
+
+    @Test
+    fun deliberatelyPausedVideoCanEnterPictureInPictureWithoutResuming() = verifyPip(paused = true)
+
+    private fun verifyPip(paused: Boolean) {
+        val receipt = AdaptiveMatrixReceipt(instrumentation, if (paused) "player-pip-paused" else "player-pip-playing")
+        receipt.emit("BEGIN")
+        try {
+            val supportsPip = instrumentation.targetContext.packageManager
+                .hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE)
+            if (!supportsPip) receipt.emit("SKIP", "Platform has no PiP feature")
+            assumeTrue("Device has no PiP feature", supportsPip)
+            startVideoPlayer()
+            await("video has a real PiP aspect") { PipRequest.aspect != null }
+            val view = onMain { checkNotNull(findPlayerView(activity.window.decorView)) }
+            val renderer = onMain { checkNotNull(view.videoSurfaceView) }
+            if (paused) onMain { player.pause() }
+            await("playback intent before entering PiP") { player.playWhenReady != paused }
+            assertTrue("The platform rejected PiP", onMain { PipRequest.enter(activity) })
+            await("PiP is visible without in-app controller") { activity.isInPictureInPictureMode && !view.useController }
+            val before = onMain { player.currentPosition }
+            if (!paused) await("progress while in PiP") {
+                activity.isInPictureInPictureMode && player.isPlaying && player.currentPosition > before + 300
+            } else {
+                SystemClock.sleep(450)
+                assertEquals("Paused PiP must not advance", before, onMain { player.currentPosition })
+                assertFalse(onMain { player.playWhenReady })
+            }
+            assertSame(view, onMain { findPlayerView(activity.window.decorView) })
+            assertSame(renderer, onMain { view.videoSurfaceView })
+            assertSame(player, onMain { view.player })
+            assertEquals(0, closeCount.get())
+            onMain { activity.finish() }
+            assertTrue("PiP session was not disposed", closed.await(10, TimeUnit.SECONDS))
+            instrumentation.waitForIdleSync()
+            assertEquals(1, closeCount.get())
+            assertTrue(closePosition.get() >= before)
+            assertFalse(onMain { PipRequest.wanted })
+            assertNull(onMain { PipRequest.aspect })
+            receipt.emit("PASS")
+        } catch (skip: org.junit.AssumptionViolatedException) {
+            throw skip
+        } catch (failure: Throwable) {
+            receipt.emit("FAIL", failure.message.orEmpty().lineSequence().first())
+            throw failure
+        }
     }
 
-    private fun startPlayer() {
-        writeSilentWave()
+    @Test
+    fun halfOpenTabletopAndBookKeepTheSameVideoSurfaceAndProgress() {
+        startVideoPlayer()
+        val view = onMain { checkNotNull(findPlayerView(activity.window.decorView)) }
+        val videoSurface = onMain { view.videoSurfaceView }
+        assertNotNull(videoSurface)
+        val density = onMain { activity.resources.displayMetrics.density }
+        val (width, height) = onMain { (view.width / density).dp to (view.height / density).dp }
+        assumeTrue("The test window needs room for both tabletop panels", height >= 400.dp)
+        val y = height / 2
+        val x = width / 2
+        val before = onMain { player.currentPosition }
+        onMain {
+            windowInfo.value = AppWindowInfo(fold = AppFold(
+                0.dp, y, width, y, FoldAxis.Horizontal, FoldPosture.HalfOpened, true, false
+            ))
+        }
+        await("same player view above the horizontal fold") {
+            findPlayerView(activity.window.decorView) === view && view.height <= (y.value * density + 1).toInt() &&
+                player.isPlaying && player.currentPosition > before + 300
+        }
+        val inTabletop = onMain { player.currentPosition }
+        onMain {
+            windowInfo.value = AppWindowInfo(fold = AppFold(
+                x, 0.dp, x, height, FoldAxis.Vertical, FoldPosture.HalfOpened, true, false
+            ))
+        }
+        await("same player view beside the vertical fold") {
+            findPlayerView(activity.window.decorView) === view && view.width <= (x.value * density + 1).toInt() &&
+                player.isPlaying && player.currentPosition > inTabletop + 300
+        }
+        onMain { windowInfo.value = AppWindowInfo() }
+        await("full window restored") { view.width >= (width.value * density - 1).toInt() && player.isPlaying }
+        assertSame(videoSurface, onMain { view.videoSurfaceView })
+        assertSame(player, onMain { view.player })
+        assertEquals(0, closeCount.get())
+    }
+
+    @Test
+    fun realAppPlaybackSurvivesWindowMatrix() {
+        val receipt = AdaptiveMatrixReceipt(instrumentation, "player-continuity")
+        receipt.emit("BEGIN")
+        try {
+            AdaptiveCatalogueFixture.seed(instrumentation.targetContext, instrumentation.context)
+            AdaptiveDeviceHarness.run(AdaptiveDeviceWindow.SMALL, receipt) { verifyWindowMatrix() }
+            receipt.emit("PASS")
+        } catch (failure: Throwable) {
+            receipt.emit("FAIL", failure.message.orEmpty().lineSequence().first())
+            throw failure
+        }
+    }
+
+    private fun AdaptiveDeviceHarness.verifyWindowMatrix() {
+        val title = AdaptiveCatalogueFixture.PLAYABLE_FILM_TITLE
+        ui.click("搜索")
+        val editor = ui.awaitVisible("search editor") { it.isEditable }
+        val args = android.os.Bundle().apply {
+            putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, title)
+        }
+        assertTrue("Could not search for the fixture", editor.performAction(
+            android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, args
+        ))
+        val result = ui.awaitAction("offline film search result, not the query field") {
+            !it.isEditable && it.hasLabel(title)
+        }
+        ui.click(result, title)
+        ui.awaitVisible("offline film detail") { it.isDetailHeading(title) }
+        val launch = ui.awaitAction("start offline film") { it.hasLabel("播放") || it.hasLabel("从头播放") }
+        ui.click(launch, "start offline film")
+
+        onActivity { activity = it }
+        await("real app rendered playable video") {
+            val view = findPlayerView(activity.window.decorView)
+            val engine = view?.player
+            engine != null && engine.videoSize.width > 0 && engine.isPlaying && engine.currentPosition > 300L
+        }
+        val view = onMain { checkNotNull(findPlayerView(activity.window.decorView)) }
+        val renderer = onMain { checkNotNull(view.videoSurfaceView) }
+        val engine = onMain { checkNotNull(view.player) }
+        val item = onMain { engine.currentMediaItem }
+        onMain { engine.volume = 0f }
+
+        val profiles = listOf(
+            AdaptiveDeviceWindow.SMALL, AdaptiveDeviceWindow.LARGE_PORTRAIT, AdaptiveDeviceWindow.LARGE_LANDSCAPE,
+            AdaptiveDeviceWindow.BOOK, AdaptiveDeviceWindow.TABLETOP, AdaptiveDeviceWindow.SPLIT,
+            AdaptiveDeviceWindow.TINY_PLAYBACK_SPLIT
+        )
+        for (profile in profiles) {
+            val previous = onMain { engine.currentPosition }
+            if (profile != frame.profile) resize(profile)
+            val geometry = frame
+            val hinge = geometry.hinge
+            val wantNative = hinge == null && profile != AdaptiveDeviceWindow.TINY_PLAYBACK_SPLIT
+            await("$profile same video and unobstructed playback") {
+                val rect = renderer.screenRect()
+                val shell = Rect(geometry.shell).apply { inset(-1, -1) }
+                val contiguous = hinge == null || if (profile == AdaptiveDeviceWindow.TABLETOP) {
+                    rect.bottom <= hinge.top + 1
+                } else {
+                    rect.right <= hinge.left + 1 || rect.left >= hinge.right - 1
+                }
+                val largeEnough = rect.width() >= (geometry.density * 80).toInt() &&
+                    rect.height() >= (geometry.density * 80).toInt()
+                val surfaceReady = renderer !is SurfaceView || renderer.holder.surface.isValid
+                findPlayerView(activity.window.decorView) === view && view.videoSurfaceView === renderer &&
+                    view.player === engine && engine.currentMediaItem === item && view.useController == wantNative &&
+                    contiguous && largeEnough && surfaceReady && shell.contains(rect) && engine.isPlaying &&
+                    engine.currentPosition > previous + 250
+            }
+            if (wantNative) onMain { view.showController() }
+            val back = ui.awaitAction("返回")
+            val pause = transportAction(playing = true, native = wantNative)
+            assertUsable("$profile Back", back)
+            assertUsable("$profile pause", pause)
+            val backBounds = back.screenBounds()
+            val pauseBounds = pause.screenBounds()
+            assertFalse("$profile Back and play/pause overlap", Rect.intersects(backBounds, pauseBounds))
+            if (profile == AdaptiveDeviceWindow.TABLETOP) {
+                checkNotNull(hinge)
+                assertTrue("Tabletop Back and play/pause belong below the hinge",
+                    backBounds.top >= hinge.bottom - 1 && pauseBounds.top >= hinge.bottom - 1)
+                assertUsable("tabletop scrubber", ui.awaitVisible("播放进度"))
+            } else {
+                if (profile == AdaptiveDeviceWindow.BOOK) {
+                    checkNotNull(hinge)
+                    val picture = onMain { renderer.screenRect() }
+                    val pictureOnLeft = picture.right <= hinge.left + 1
+                    assertTrue("Book overlay must be in the same pane as the picture", if (pictureOnLeft) {
+                        backBounds.right <= hinge.left + 1 && pauseBounds.right <= hinge.left + 1
+                    } else backBounds.left >= hinge.right - 1 && pauseBounds.left >= hinge.right - 1)
+                }
+            }
+        }
+
+        ui.click(transportAction(playing = true, native = false), "pause in tiny split")
+        await("pause in tiny split changed the actual player") { !engine.playWhenReady && !engine.isPlaying }
+        val pausedAt = onMain { engine.currentPosition }
+        ui.click(transportAction(playing = false, native = false), "play in tiny split")
+        await("play in tiny split advances the actual player") { engine.isPlaying && engine.currentPosition > pausedAt + 300 }
+        ui.click("返回")
+        ui.awaitVisible("return to offline film detail") { it.isDetailHeading(title) }
+        await("Back removed the player view") { findPlayerView(activity.window.decorView) == null }
+    }
+
+    private fun AdaptiveDeviceHarness.transportAction(playing: Boolean, native: Boolean) =
+        if (!native) ui.awaitAction(if (playing) "暂停" else "播放")
+        else ui.awaitAction("Media3 play/pause") { it.viewIdResourceName?.endsWith(":id/exo_play_pause") == true }
+
+    private fun View.screenRect(): Rect {
+        val point = IntArray(2)
+        getLocationOnScreen(point)
+        return Rect(point[0], point[1], point[0] + width, point[1] + height)
+    }
+
+    private fun startVideoPlayer() {
+        instrumentation.context.assets.open("fold-sample.mp4").use { input ->
+            video.outputStream().use { input.copyTo(it) }
+        }
+        startPlayer(video)
+    }
+
+    private fun startPlayer(file: File = media) {
+        if (file == media) writeSilentWave()
         val info = PlaybackInfoDto(
             sessionId = UUID.randomUUID().toString(),
             item = MediaItemDto(id = "lifecycle", libraryId = "test", kind = ItemKind.MOVIE, name = "Lifecycle test"),
-            streamUrl = Uri.fromFile(media).toString(),
+            streamUrl = Uri.fromFile(file).toString(),
             startPositionMs = 0
         )
         scenario = ActivityScenario.launch(MainActivity::class.java)
@@ -131,19 +348,21 @@ class PlaybackLifecycleOnDeviceTest {
             activity = host
             host.setContent {
                 MaterialTheme {
-                    InternalPlayer(
-                        info = info,
-                        screen = androidx.compose.runtime.remember { PlayerScreenState() },
-                        subtitleScale = 1f,
-                        onProgress = { _, _, _, _ -> },
-                        onClose = { position ->
-                            closePosition.set(position)
-                            closeCount.incrementAndGet()
-                            closed.countDown()
-                        },
-                        onEnded = {},
-                        onSkip = { _, _ -> }
-                    )
+                    CompositionLocalProvider(LocalAppWindowInfo provides windowInfo.value) {
+                        InternalPlayer(
+                            info = info,
+                            screen = androidx.compose.runtime.remember { PlayerScreenState() },
+                            subtitleScale = 1f,
+                            onProgress = { _, _, _, _ -> },
+                            onClose = { position ->
+                                closePosition.set(position)
+                                closeCount.incrementAndGet()
+                                closed.countDown()
+                            },
+                            onEnded = {},
+                            onSkip = { _, _ -> }
+                        )
+                    }
                 }
             }
         }
@@ -153,10 +372,12 @@ class PlaybackLifecycleOnDeviceTest {
         await("actual media progress") { player.isPlaying && player.currentPosition >= 300 }
     }
 
-    private fun findPlayer(view: View): Player? {
-        if (view is PlayerView) return view.player
+    private fun findPlayer(view: View): Player? = findPlayerView(view)?.player
+
+    private fun findPlayerView(view: View): PlayerView? {
+        if (view is PlayerView) return view
         if (view is ViewGroup) for (i in 0 until view.childCount) {
-            findPlayer(view.getChildAt(i))?.let { return it }
+            findPlayerView(view.getChildAt(i))?.let { return it }
         }
         return null
     }

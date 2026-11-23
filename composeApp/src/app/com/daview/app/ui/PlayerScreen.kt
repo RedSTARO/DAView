@@ -4,14 +4,20 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.absoluteOffset
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -32,9 +38,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -42,6 +54,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
 import com.daview.app.data.PlaybackController
@@ -66,20 +79,21 @@ fun PlayerScreen(state: AppState, playback: PlaybackController) {
     if (!external) PlaybackPresentation(screen.orientation, fullscreen = state.autoFullscreen)
 
     Box(Modifier.fillMaxSize().background(if (external) MaterialTheme.colorScheme.background else Color.Black)) {
+        val inPip = LocalAppWindowInfo.current.isInPictureInPicture
         when {
-            // Once the next episode is opening, the card that offered it goes:
-            // pressing it again would start a second one.
-            upNext != null && !playback.starting -> UpNextCard(playback, upNext)
-            info == null -> if (playback.starting) Switching(playback.startingName) else EmptyState(
-                "没有正在播放的内容",
-                "回到媒体库选择要播放的影片。"
-            ) {
-                Button(onClick = { state.back() }) { Text("返回") }
-            }
-            external || !PlatformInfo.hasInternalPlayer -> ExternalPlaybackPanel(state, playback)
-            playback.starting -> Switching(playback.startingName)
-            // One player per session. Reusing one across episodes is what left
-            // the Android player on the last frame of the episode before.
+            // The countdown still runs in PiP, but never draws a minuscule card in the tile.
+            upNext != null && !playback.starting -> UpNextCard(playback, upNext, showCard = !inPip)
+            info == null -> if (!inPip) PlayerAuxiliaryPane {
+                if (playback.starting) Switching(playback.startingName) else EmptyState(
+                    "没有正在播放的内容",
+                    "回到媒体库选择要播放的影片。"
+                ) {
+                    Button(onClick = { state.back() }) { Text("返回") }
+                }
+            } else Unit
+            external || !PlatformInfo.hasInternalPlayer -> PlayerAuxiliaryPane { ExternalPlaybackPanel(state, playback) }
+            playback.starting -> if (!inPip) PlayerAuxiliaryPane { Switching(playback.startingName) } else Unit
+            // One engine per session, not per window size, layout or posture.
             else -> key(info.sessionId) {
                 InternalPlayer(
                     info = info,
@@ -101,6 +115,106 @@ fun PlayerScreen(state: AppState, playback: PlaybackController) {
                 )
             }
         }
+    }
+}
+
+internal data class PlayerPanes(val picture: WindowPane, val tabletopControls: WindowPane? = null) {
+    val controls: WindowPane get() = tabletopControls ?: picture
+}
+
+/**
+ * All rectangles are in window coordinates. Partition at the real divider; evaluate candidates
+ * after insets, without applying a window-edge inset again along the hinge edge. A screen with
+ * no known video (for example Up Next) only needs a single contiguous pane.
+ */
+internal fun playerPanes(
+    viewport: WindowPane,
+    fold: AppFold?,
+    rtl: Boolean = false,
+    pictureBounds: WindowPane = viewport,
+    controlBounds: WindowPane = viewport,
+    videoAspect: Float? = null
+): PlayerPanes {
+    if (fold == null || !fold.dividesWindow || fold.left >= viewport.right || fold.right <= viewport.left ||
+        fold.top >= viewport.bottom || fold.bottom <= viewport.top
+    ) return PlayerPanes(viewport)
+
+    val vertical = fold.axis == FoldAxis.Vertical
+    val before = if (vertical) viewport.copy(right = fold.left.coerceIn(viewport.left, viewport.right))
+    else viewport.copy(bottom = fold.top.coerceIn(viewport.top, viewport.bottom))
+    val after = if (vertical) viewport.copy(left = fold.right.coerceIn(viewport.left, viewport.right))
+    else viewport.copy(top = fold.bottom.coerceIn(viewport.top, viewport.bottom))
+    val aspect = videoAspect?.takeIf { it.isFinite() && it > 0f }
+    val beforePicture = before.clampTo(pictureBounds).fitVideo(aspect)
+    val afterPicture = after.clampTo(pictureBounds).fitVideo(aspect)
+    val beforeControls = before.clampTo(controlBounds)
+    val afterControls = after.clampTo(controlBounds)
+
+    if (!vertical && fold.posture == FoldPosture.HalfOpened && aspect != null &&
+        minOf(beforePicture.first, beforePicture.second) >= 96.dp &&
+        maxOf(beforePicture.first, beforePicture.second) >= 160.dp &&
+        // Four 48dp targets including Back, plus 16dp side padding; the seek strip
+        // must also fit before any optional toolbar content in the scrollable deck.
+        afterControls.width >= 224.dp && afterControls.height >= 144.dp
+    ) return PlayerPanes(before, tabletopControls = after)
+
+    val beforeActions = beforeControls.hasRoomForPlayerActions()
+    val afterActions = afterControls.hasRoomForPlayerActions()
+    val beforeArea = beforePicture.first.value * beforePicture.second.value
+    val afterArea = afterPicture.first.value * afterPicture.second.value
+    val beforeControlArea = beforeControls.width.value * beforeControls.height.value
+    val afterControlArea = afterControls.width.value * afterControls.height.value
+    val useBefore = when {
+        beforeActions != afterActions -> beforeActions
+        beforeArea != afterArea -> beforeArea > afterArea
+        beforeControlArea != afterControlArea -> beforeControlArea > afterControlArea
+        else -> !vertical || !rtl // Prefer reading-start on a vertical tie; never mirror the hinge.
+    }
+    return PlayerPanes(if (useBefore) before else after)
+}
+
+internal fun WindowPane.clampTo(bounds: WindowPane): WindowPane = WindowPane(
+    left = bounds.left.coerceIn(left, right),
+    top = bounds.top.coerceIn(top, bottom),
+    right = bounds.right.coerceIn(left, right),
+    bottom = bounds.bottom.coerceIn(top, bottom)
+)
+
+private fun WindowPane.fitVideo(aspect: Float?): Pair<Dp, Dp> =
+    if (aspect == null) width to height else minOf(width, height * aspect) to minOf(height, width / aspect)
+
+private fun WindowPane.hasRoomForPlayerActions(): Boolean =
+    width >= 96.dp && height >= 48.dp || width >= 48.dp && height >= 96.dp
+
+/** Absolute positioning is important: the feature does not move in RTL. */
+internal fun Modifier.playerPane(pane: WindowPane, viewport: WindowPane): Modifier =
+    absoluteOffset(x = pane.left - viewport.left, y = pane.top - viewport.top)
+        .width(pane.width).height(pane.height).clipToBounds()
+
+@Composable
+private fun PlayerAuxiliaryPane(content: @Composable () -> Unit) {
+    val fold = LocalAppWindowInfo.current.fold?.takeIf { it.dividesWindow }
+    if (fold == null) {
+        Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.Center) {
+            content()
+        }
+        return
+    }
+    val density = LocalDensity.current
+    val rtl = LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
+    var origin by remember { mutableStateOf(Offset.Zero) }
+    BoxWithConstraints(
+        Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)
+            .onGloballyPositioned { origin = it.positionInWindow() },
+        contentAlignment = androidx.compose.ui.AbsoluteAlignment.TopLeft
+    ) {
+        val viewport = with(density) {
+            val left = origin.x.toDp()
+            val top = origin.y.toDp()
+            WindowPane(left, top, left + maxWidth, top + maxHeight)
+        }
+        val pane = playerPanes(viewport, fold, rtl).controls
+        Box(Modifier.playerPane(pane, viewport), contentAlignment = Alignment.Center) { content() }
     }
 }
 
@@ -128,7 +242,7 @@ private fun Switching(name: String?) {
  * touched it waits to be asked.
  */
 @Composable
-private fun UpNextCard(playback: PlaybackController, upNext: UpNext) {
+private fun UpNextCard(playback: PlaybackController, upNext: UpNext, showCard: Boolean) {
     var remaining by remember(upNext) { mutableStateOf(upNext.startsAt?.let { ((it - System.currentTimeMillis()) / 1000).coerceAtLeast(0) }) }
     LaunchedEffect(upNext) {
         val deadline = upNext.startsAt ?: return@LaunchedEffect
@@ -138,6 +252,12 @@ private fun UpNextCard(playback: PlaybackController, upNext: UpNext) {
         }
         playback.playUpNext(auto = true)
     }
+    if (!showCard) return
+    PlayerAuxiliaryPane { UpNextControls(playback, upNext, remaining) }
+}
+
+@Composable
+private fun UpNextControls(playback: PlaybackController, upNext: UpNext, remaining: Long?) {
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 

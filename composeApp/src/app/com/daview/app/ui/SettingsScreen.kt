@@ -3,7 +3,6 @@ package com.daview.app.ui
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -33,7 +32,6 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -134,7 +132,7 @@ fun SettingsScreen(state: AppState) {
 
     pendingTab?.let { next ->
         ModalMarker()
-        AlertDialog(
+        AdaptiveAlertDialog(
             onDismissRequest = { pendingTab = null },
             title = { Text("有未保存的设置") },
             text = { Text("切到「${next.label}」后，这一组里改了但没保存的内容会丢失。") },
@@ -148,58 +146,50 @@ fun SettingsScreen(state: AppState) {
         )
     }
 
-    Column(Modifier.fillMaxSize()) {
-        ScreenTopBar(title = "设置", onBack = if (state.canGoBack) ({ state.back() }) else null)
-        UpdateBanner(state)
-        Row(
-            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            SettingsTab.entries.forEach { entry ->
-                FilterChip(
-                    selected = tab == entry,
-                    // Moving to another group drops this one's unsaved edits,
-                    // so it asks first, as leaving the page does.
-                    onClick = { if (state.unsavedSettings && entry != tab) pendingTab = entry else tab = entry },
-                    label = { Text(entry.label) }
-                )
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        Box(Modifier.fillMaxSize()) {
-            Column(
-                // Edge to edge means adjustResize no longer moves the window, so a
-                // field in the lower third of this page sat under the soft keyboard
-                // with no way to scroll it into view.
-                Modifier
-                    .fillMaxSize()
-                    .imePadding()
-                    .verticalScroll(scroll)
-                    .padding(bottom = 32.dp)
+    Box(Modifier.fillMaxSize().imePadding()) {
+        // In a short pane the heading, tabs and update notes can be taller than
+        // the space above the keyboard. Scroll them with the form, keeping the
+        // same form/scroll node when resize or posture changes.
+        Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(bottom = 32.dp)) {
+            ScreenTopBar(title = "设置", onBack = if (state.canGoBack) ({ state.back() }) else null)
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Forms read best at a form's width, not at the window's.
-                Column(Modifier.fillMaxWidth().wrapContentWidth(Alignment.Start).widthIn(max = 840.dp)) {
-                    when (tab) {
-                        SettingsTab.LIBRARIES -> LibrariesTab(state, storageReady) { tab = SettingsTab.STORAGE }
-                        SettingsTab.STORAGE -> {
-                            StorageSection(state)
-                            ScraperSection(state)
-                        }
-                        SettingsTab.PLAYBACK -> {
-                            PlaybackSection(state)
-                            PlatformPlayerSettings()
-                        }
-                        SettingsTab.SYNC -> {
-                            SyncSection(state)
-                            BackupSection(state)
-                        }
-                        SettingsTab.OFFLINE -> DownloadsSection(state)
-                        SettingsTab.GENERAL -> GeneralSection(state)
-                    }
+                SettingsTab.entries.forEach { entry ->
+                    FilterChip(
+                        selected = tab == entry,
+                        // Moving to another group drops this one's unsaved edits,
+                        // so it asks first, as leaving the page does.
+                        onClick = { if (state.unsavedSettings && entry != tab) pendingTab = entry else tab = entry },
+                        label = { Text(entry.label) }
+                    )
                 }
             }
-            VerticalScrollbarFor(scroll, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
+            Spacer(Modifier.height(8.dp))
+            // Forms read best at a form's width, not at the window's.
+            Column(Modifier.fillMaxWidth().wrapContentWidth(Alignment.Start).widthIn(max = 840.dp)) {
+                UpdateBanner(state)
+                when (tab) {
+                    SettingsTab.LIBRARIES -> LibrariesTab(state, storageReady) { tab = SettingsTab.STORAGE }
+                    SettingsTab.STORAGE -> {
+                        StorageSection(state)
+                        ScraperSection(state)
+                    }
+                    SettingsTab.PLAYBACK -> {
+                        PlaybackSection(state)
+                        PlatformPlayerSettings()
+                    }
+                    SettingsTab.SYNC -> {
+                        SyncSection(state)
+                        BackupSection(state)
+                    }
+                    SettingsTab.OFFLINE -> DownloadsSection(state)
+                    SettingsTab.GENERAL -> GeneralSection(state)
+                }
+            }
         }
+        VerticalScrollbarFor(scroll, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
     }
 }
 
@@ -344,7 +334,7 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
         // This button sits next to the scan button and used to fire straight
         // through, taking every scraped record and every watch position in
         // the library with it.
-        AlertDialog(
+        AdaptiveAlertDialog(
             onDismissRequest = { confirmDelete = false },
             title = { Text("删除媒体库「${library.name}」？") },
             text = {
@@ -545,6 +535,7 @@ private fun StoredSecret(state: AppState, key: String, label: String, isSet: Boo
 
 // ---------------------------------------------------------------- storage and scrapers
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StorageSection(state: AppState) {
     val settings = state.serverSettings ?: return
@@ -613,7 +604,7 @@ private fun StorageSection(state: AppState) {
         )
         StoredSecret(state, "password", "密码", settings.storage.passwordSet) { confirmClear = true }
         Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), itemVerticalAlignment = Alignment.CenterVertically) {
             // Asked of the share with what is in the boxes now, saved or not.
             FilledTonalButton(
                 enabled = url.isNotBlank() && !testing,
@@ -646,7 +637,7 @@ private fun StorageSection(state: AppState) {
     }
     if (confirmClear) {
         ModalMarker()
-        AlertDialog(
+        AdaptiveAlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("清除保存的 WebDAV 密码？") },
             text = { Text("清除后无法访问网盘，直到重新填写。") },
@@ -1114,7 +1105,7 @@ private fun BackupSection(state: AppState) {
 
     preview?.let { backup ->
         ModalMarker()
-        AlertDialog(
+        AdaptiveAlertDialog(
             onDismissRequest = { preview = null },
             title = { Text("导入这个备份？") },
             text = {
@@ -1514,10 +1505,10 @@ private fun ImageCacheRow(state: AppState) {
 // ---------------------------------------------------------------- updates
 
 /**
- * A newer build, above the tabs, so it is seen whichever group is open: the
- * check runs on start-up, and its answer should not hide at the foot of one.
+ * A newer build, near the top whichever group is open: the check runs on
+ * start-up, and its answer should not hide at the foot of one form.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun UpdateBanner(state: AppState) {
     val update = state.update
@@ -1545,7 +1536,10 @@ private fun UpdateBanner(state: AppState) {
             }
             Spacer(Modifier.height(10.dp))
             when (update) {
-                is UpdateState.Available -> Row(verticalAlignment = Alignment.CenterVertically) {
+                is UpdateState.Available -> FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically
+                ) {
                     val asset = update.asset
                     if (asset != null) {
                         Button(onClick = { state.downloadUpdate() }) {
@@ -1555,7 +1549,6 @@ private fun UpdateBanner(state: AppState) {
                         Hint("这个版本没有给 ${PlatformInfo.name} 的安装包")
                     }
                     manifest.pageUrl?.let { url ->
-                        Spacer(Modifier.width(8.dp))
                         TextButton(onClick = { openUrl(url) }) { Text("发布页") }
                     }
                 }

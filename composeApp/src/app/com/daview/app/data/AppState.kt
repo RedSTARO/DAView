@@ -89,6 +89,8 @@ enum class ShelfKind(val title: String) {
  */
 data class BackStackEntry(val screen: Screen, val key: Long)
 
+internal fun Screen.isBrowseSource(): Boolean = this is Screen.Library || this is Screen.Search || this is Screen.Shelf
+
 /** The home page's rows, in the order and with the visibility the viewer chose. */
 enum class HomeSection(val key: String, val label: String) {
     HERO("hero", "顶部大图"),
@@ -287,7 +289,8 @@ class AppState internal constructor(
     val backStack: SnapshotStateList<BackStackEntry> = mutableStateListOf(entry(Screen.Home))
     val currentEntry: BackStackEntry get() = backStack.last()
     val current: Screen get() = currentEntry.screen
-    val canGoBack: Boolean get() = backStack.size > 1
+    val browseDestination: Screen get() = backStack.lastOrNull { it.screen !is Screen.Detail }?.screen ?: current
+    val canGoBack: Boolean get() = backStack.size > 1 || (current is Screen.Settings && unsavedSettings)
 
     var libraries by mutableStateOf<List<LibraryDto>>(emptyList())
     var home by mutableStateOf(HomeData())
@@ -613,6 +616,10 @@ class AppState internal constructor(
     var detailEpisodes by mutableStateOf<List<MediaItemDto>>(emptyList())
     var detailSeasonId by mutableStateOf<String?>(null)
     var detailLoading by mutableStateOf(false)
+    var seasonLoading by mutableStateOf(false)
+        private set
+    var seasonError by mutableStateOf<String?>(null)
+        private set
 
     /**
      * The episode "play" on a series or a season lands on: whatever was left
@@ -713,10 +720,6 @@ class AppState internal constructor(
      */
     var leavingPlayer: (() -> Unit)? = null
 
-    /** Which way the last move went, so the transition can say so. */
-    var movingForward by mutableStateOf(true)
-        private set
-
     /**
      * Set by the settings page while it holds edits nobody saved. Leaving then
      * asks first instead of dropping them without a word.
@@ -757,9 +760,24 @@ class AppState internal constructor(
         // Already there: pressing a destination you are on should do nothing,
         // not push a second copy that the back arrow then has to walk out of.
         if (current == screen) return@guarded
-        movingForward = true
         backStack.add(entry(screen))
         onEnter(screen, returning = false)
+    }
+
+    /** Selecting another row in a visible source pane replaces its detail trail. */
+    fun openBrowseDetail(itemId: String) = guarded {
+        val target = Screen.Detail(itemId)
+        if (current == target) return@guarded
+        val source = browseSourceIndex()
+        if (source >= 0) backStack.removeRange(source + 1, backStack.size)
+        backStack.add(entry(target))
+        onEnter(target, returning = false)
+    }
+
+    private fun browseSourceIndex(): Int {
+        if (current !is Screen.Detail) return -1
+        val index = backStack.indexOfLast { it.screen !is Screen.Detail }
+        return index.takeIf { it >= 0 && backStack[it].screen.isBrowseSource() } ?: -1
     }
 
     /**
@@ -769,26 +787,45 @@ class AppState internal constructor(
      * between 首页 and 搜索 a few times built a stack the back arrow had to be
      * pressed once per bounce to unwind, with no limit on how deep it went.
      */
-    fun switchTo(screen: Screen) = guarded {
-        if (current == screen) return@guarded
-        // Anything that leaves the player has to stop it first; otherwise the
-        // engine kept running under the new page, the transition went round the
-        // houses, and the stack came to rest one level below where it started.
-        leavingPlayer?.takeIf { current is Screen.Player }?.invoke()
-        // A tab switch is a move sideways, not back: it slides the way a step
-        // forward does, whichever way the move before it went.
-        movingForward = true
-        backStack.clear()
-        backStack.add(entry(screen))
-        onEnter(screen, returning = false)
+    fun switchTo(screen: Screen) = switchDestination(screen, sourceVisible = false)
+
+    /**
+     * The active source tab is already on screen in a pair. If only its detail is
+     * visible, take the user back to that same entry, not a fresh copy of the tab.
+     */
+    internal fun selectBrowseDestination(screen: Screen, sourceVisible: Boolean) = switchDestination(screen, sourceVisible)
+
+    private fun switchDestination(screen: Screen, sourceVisible: Boolean) {
+        if (current == screen) return
+        val source = browseSourceIndex()
+        if (source >= 0 && backStack[source].screen == screen) {
+            if (!sourceVisible) {
+                backStack.removeRange(source + 1, backStack.size)
+                onEnter(screen, returning = true)
+            }
+            return
+        }
+        guarded {
+            // Anything that leaves the player has to stop it first rather than
+            // keeping the engine running under the new page.
+            leavingPlayer?.takeIf { current is Screen.Player }?.invoke()
+            backStack.clear()
+            backStack.add(entry(screen))
+            onEnter(screen, returning = false)
+        }
     }
 
     fun back(): Boolean {
-        if (backStack.size <= 1) return false
-        guarded {
-            movingForward = false
-            backStack.removeAt(backStack.lastIndex)
-            onEnter(current, returning = true)
+        if (!canGoBack) return false
+        if (backStack.size == 1) {
+            // Back may just background an Android task at its root. When Settings
+            // is dirty, return to Home on confirmation so the form is truly discarded.
+            switchTo(Screen.Home)
+        } else {
+            guarded {
+                backStack.removeAt(backStack.lastIndex)
+                onEnter(current, returning = true)
+            }
         }
         return true
     }
@@ -813,6 +850,14 @@ class AppState internal constructor(
         backStack.clear()
         backStack.addAll(entries)
         nextKey = maxOf(nextKey, entries.maxOf { it.key } + 1)
+        if (current is Screen.Detail) {
+            // The expanded window may show the source and the restored detail together.
+            when (val source = backStack.lastOrNull { it.screen !is Screen.Detail }?.screen) {
+                is Screen.Library -> loadLibrary(source.libraryId)
+                is Screen.Shelf -> loadShelf(source)
+                else -> Unit
+            }
+        }
         onEnter(current, returning = false)
     }
 
@@ -1333,6 +1378,8 @@ class AppState internal constructor(
         ++detailGeneration
         detailJob?.cancel()
         detailLoading = false
+        seasonLoading = false
+        seasonError = null
         return detailGeneration
     }
 
@@ -1395,6 +1442,7 @@ class AppState internal constructor(
     fun selectSeason(seasonId: String) {
         val itemId = detailItem?.id ?: return
         val generation = invalidateDetail()
+        seasonLoading = true
         seasonChoices[itemId] = seasonId
         detailSeasonId = seasonId
         detailEpisodes = emptyList()
@@ -1406,7 +1454,9 @@ class AppState internal constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (generation == detailGeneration && isActive) notify(describe(e))
+                if (generation == detailGeneration && isActive) seasonError = describe(e)
+            } finally {
+                if (generation == detailGeneration) seasonLoading = false
             }
         }
     }

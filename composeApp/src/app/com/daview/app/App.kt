@@ -1,16 +1,9 @@
 package com.daview.app
 
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
@@ -18,13 +11,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -37,11 +29,9 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VideoLibrary
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -61,6 +51,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,6 +64,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.ImageLoader
@@ -87,7 +80,10 @@ import com.daview.app.data.PlaybackController
 import com.daview.app.data.Screen
 import com.daview.app.data.ThemeMode
 import com.daview.app.theme.DaViewTheme
+import com.daview.app.ui.AdaptiveAlertDialog
+import com.daview.app.ui.AdaptiveBrowse
 import com.daview.app.ui.AppMenu
+import com.daview.app.ui.browseSource
 import com.daview.app.ui.DetailScreen
 import com.daview.app.ui.HomeScreen
 import com.daview.app.ui.LibraryScreen
@@ -206,71 +202,58 @@ private fun Library(state: AppState) {
         if (result == SnackbarResult.ActionPerformed) toast.action?.invoke()
     }
 
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        // M3's medium window class: a rail earns its place from 600dp, and
-        // waiting until 720 left 600-719dp phones in landscape on the bottom
-        // bar, which is the one layout that cannot reach a library.
-        val wide = maxWidth >= 600.dp
-        val immersive = state.current is Screen.Player
+    // The holder must live above both the browsing layout and immersive player.
+    val holder = rememberSaveableStateHolder()
+    val live = state.backStack.map { it.key }.toSet()
+    val known = remember { mutableSetOf<Long>() }
+    LaunchedEffect(live) {
+        (known - live).forEach { holder.removeState(it) }
+        known.retainAll(live)
+        known.addAll(live)
+    }
 
-        // Android's back gesture is the primary way back; unhandled it finishes
-        // the activity from whatever screen the user is on.
-        PlatformBackHandler(enabled = state.canGoBack) {
-            if (immersive) playback.stopAndLeave() else state.back()
+    val immersive = state.current is Screen.Player
+    PlatformBackHandler(enabled = state.canGoBack) {
+        if (immersive) playback.stopAndLeave() else state.back()
+    }
+    if (immersive) {
+        key(state.currentEntry.key) {
+            holder.SaveableStateProvider(state.currentEntry.key) { PlayerScreen(state, playback) }
         }
-
-        Box(Modifier.fillMaxSize()) {
-            when {
-                // The player asked for the screen, so it gets all of it: no bar
-                // above, no navigation below, and no insets carved out of it.
-                immersive -> Content(state, playback)
-
-                // Every screen draws its own top bar now, so the art on the home
-                // and detail pages runs to the top of the window and each page
-                // says what it is. The width is capped inside the screens that
-                // hold text, not around the whole app: a cap of 1180dp around
-                // everything left the poster walls and shelves floating in the
-                // middle of a wide window with empty bands on either side.
-                wide -> Row(Modifier.fillMaxSize()) {
-                    SideNavigation(state)
-                    Box(Modifier.fillMaxSize()) {
-                        androidx.compose.runtime.CompositionLocalProvider(com.daview.app.ui.LocalRailShown provides true) {
-                            Content(state, playback)
-                        }
-                    }
+        AppDialogs(state, playback)
+    } else {
+        val source = browseSource(state.backStack)
+        AdaptiveBrowse(
+            current = state.currentEntry,
+            source = source,
+            page = { entry ->
+                holder.SaveableStateProvider(entry.key) {
+                    Page(state, playback, entry, showBack = entry == state.currentEntry && state.canGoBack)
                 }
-
-                else -> Column(Modifier.fillMaxSize()) {
-                    Box(Modifier.weight(1f)) { Content(state, playback) }
-                    BottomNavigation(state)
-                }
-            }
-
-            if (!immersive) {
-                Column(
-                    Modifier
-                        .align(Alignment.BottomCenter)
-                        .windowInsetsPadding(WindowInsets.navigationBars)
-                        // Clear of the bottom bar rather than on top of it: it
-                        // used to cover all three destinations and swallow taps
-                        // meant for them.
-                        .padding(start = 16.dp, end = 16.dp, bottom = if (wide) 24.dp else 96.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
+            },
+            navigation = { rail, labels, sourceVisible ->
+                val select = { screen: Screen -> state.selectBrowseDestination(screen, sourceVisible) }
+                if (rail) SideNavigation(state, labels, select) else BottomNavigation(state, labels, select)
+            },
+            messages = {
+                Column(Modifier.padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     ExternalPlayingBanner(state, playback)
                     SnackbarHost(hostState = snackbar)
                 }
-            }
-
-            if (playback.starting && !immersive) StartingOverlay(playback)
-        }
+            },
+            blocking = { if (playback.starting) StartingOverlay(playback) },
+            dialogs = { AppDialogs(state, playback) }
+        )
     }
 
-    // Each of these owns the keyboard while it is up: Esc and Backspace must
-    // close it, not the page behind it.
+}
+
+@Composable
+private fun AppDialogs(state: AppState, playback: PlaybackController) {
+    // Each dialog owns the keyboard, not the page behind it.
     playback.resumePrompt?.let { item ->
         ModalMarker()
-        AlertDialog(
+        AdaptiveAlertDialog(
             onDismissRequest = { playback.dismissResumePrompt() },
             title = { Text(item.seriesName?.let { "$it · ${item.name}" } ?: item.name) },
             text = { Text("上次看到 ${formatDuration(item.userData.positionMs)}。") },
@@ -287,7 +270,7 @@ private fun Library(state: AppState) {
 
     state.confirmation?.let { question ->
         ModalMarker()
-        AlertDialog(
+        AdaptiveAlertDialog(
             onDismissRequest = { state.answerConfirmation(false) },
             title = { Text(question.title) },
             text = { Text(question.text) },
@@ -305,7 +288,7 @@ private fun Library(state: AppState) {
 
     if (state.pendingLeave != null) {
         ModalMarker()
-        AlertDialog(
+        AdaptiveAlertDialog(
             onDismissRequest = { state.cancelLeave() },
             title = { Text("有未保存的设置") },
             text = { Text("离开后，这一页上改了但没保存的内容会丢失。") },
@@ -394,48 +377,15 @@ private fun ExternalPlayingBanner(state: AppState, playback: PlaybackController)
 }
 
 @Composable
-private fun Content(state: AppState, playback: PlaybackController) {
-    // Each page's own remembered state — above all where it was scrolled to —
-    // is filed under its stack entry while it is out of sight. Without this the
-    // page was rebuilt from nothing on the way back, and the grid the viewer
-    // had scrolled through was back at its top.
-    val holder = rememberSaveableStateHolder()
-    val live = state.backStack.map { it.key }.toSet()
-    val known = remember { mutableSetOf<Long>() }
-    LaunchedEffect(live) {
-        (known - live).forEach { holder.removeState(it) }
-        known.retainAll(live)
-        known.addAll(live)
-    }
-
-    AnimatedContent(
-        targetState = state.currentEntry,
-        contentKey = { it.key },
-        // Going in and coming back played the same animation, so the two
-        // directions were indistinguishable and the middle of every transition
-        // had both screens half-drawn over each other. A short slide says which
-        // way the stack moved; the fade is offset so they do not overlap.
-        transitionSpec = {
-            val forward = state.movingForward
-            val offset = { size: Int -> if (forward) size / 12 else -size / 12 }
-            (
-                fadeIn(animationSpec = tween(180, delayMillis = 90)) +
-                    slideInHorizontally(animationSpec = tween(240), initialOffsetX = offset)
-                ) togetherWith fadeOut(animationSpec = tween(120))
-        },
-        label = "screen"
-    ) { entry: BackStackEntry ->
-        holder.SaveableStateProvider(entry.key) {
-            when (val screen = entry.screen) {
-                is Screen.Home -> HomeScreen(state, playback)
-                is Screen.Library -> LibraryScreen(state, playback, screen.libraryId)
-                is Screen.Detail -> DetailScreen(state, playback, screen.itemId)
-                is Screen.Search -> SearchScreen(state, playback)
-                is Screen.Settings -> SettingsScreen(state)
-                is Screen.Player -> PlayerScreen(state, playback)
-                is Screen.Shelf -> ShelfScreen(state, playback, screen)
-            }
-        }
+private fun Page(state: AppState, playback: PlaybackController, entry: BackStackEntry, showBack: Boolean) {
+    when (val screen = entry.screen) {
+        is Screen.Home -> HomeScreen(state, playback)
+        is Screen.Library -> LibraryScreen(state, playback, screen.libraryId, showBack)
+        is Screen.Detail -> DetailScreen(state, playback, screen.itemId, entry.key)
+        is Screen.Search -> SearchScreen(state, playback, showBack)
+        is Screen.Settings -> SettingsScreen(state)
+        is Screen.Shelf -> ShelfScreen(state, playback, screen, showBack)
+        is Screen.Player -> Unit // Owned by the immersive host, not a browse pane.
     }
 }
 
@@ -480,91 +430,91 @@ private fun SettingsIcon(state: AppState) {
 }
 
 @Composable
-private fun SideNavigation(state: AppState) {
+private fun SideNavigation(state: AppState, labels: Boolean, select: (Screen) -> Unit) {
+    val active = state.browseDestination
     NavigationRail(
         modifier = Modifier.fillMaxHeight(),
+        windowInsets = WindowInsets(0, 0, 0, 0),
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
-        Spacer(Modifier.height(12.dp))
-        NavigationRailItem(
-            selected = state.current is Screen.Home,
-            onClick = { state.switchTo(Screen.Home) },
-            icon = { Icon(Icons.Filled.Home, contentDescription = null) },
-            label = { Text("首页") },
-            colors = railColors()
-        )
-        NavigationRailItem(
-            selected = state.current is Screen.Search,
-            onClick = { state.switchTo(Screen.Search) },
-            icon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            label = { Text("搜索") },
-            colors = railColors()
-        )
-        Spacer(Modifier.height(12.dp))
-        // The libraries sit with the other places to browse; settings goes to
-        // the foot of the rail, where desktop applications keep it. It used to
-        // sit between 搜索 and the libraries.
-        Column(
-            Modifier.weight(1f, fill = true).verticalScroll(rememberScrollState())
-        ) {
+        // All destinations must be reachable even when a freeform or split window
+        // is too short for four items. Scroll the whole rail, not only the libraries.
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Spacer(Modifier.height(8.dp))
+            RailDestination("首页", labels, active is Screen.Home, { select(Screen.Home) }) {
+                Icon(Icons.Filled.Home, contentDescription = null)
+            }
+            RailDestination("搜索", labels, active is Screen.Search, { select(Screen.Search) }) {
+                Icon(Icons.Filled.Search, contentDescription = null)
+            }
+            if (state.libraries.isEmpty()) {
+                RailDestination("媒体库", labels, false, { select(Screen.Settings) }) {
+                    Icon(Icons.Filled.VideoLibrary, contentDescription = null)
+                }
+            }
             state.libraries.forEach { library ->
-                NavigationRailItem(
-                    selected = (state.current as? Screen.Library)?.libraryId == library.id,
-                    onClick = { state.switchTo(Screen.Library(library.id)) },
-                    icon = { Icon(libraryIcon(library.kind), contentDescription = null) },
-                    label = {
-                        // Capped, or one long library name drags the whole rail
-                        // wider and takes the width out of the content beside it.
-                        Tooltip(library.name) {
-                            Text(
-                                library.name,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.widthIn(max = 72.dp)
-                            )
-                        }
-                    },
-                    colors = railColors()
-                )
+                val target = Screen.Library(library.id)
+                RailDestination(library.name, labels, active == target, { select(target) }) {
+                    Icon(libraryIcon(library.kind), contentDescription = null)
+                }
+            }
+            RailDestination("设置", labels, active is Screen.Settings, { select(Screen.Settings) }) {
+                SettingsIcon(state)
             }
         }
-        NavigationRailItem(
-            selected = state.current is Screen.Settings,
-            onClick = { state.switchTo(Screen.Settings) },
-            icon = { SettingsIcon(state) },
-            label = { Text("设置") },
-            colors = railColors()
-        )
-        Spacer(Modifier.height(12.dp))
     }
 }
 
 @Composable
-private fun BottomNavigation(state: AppState) {
-    NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
-        NavigationBarItem(
-            selected = state.current is Screen.Home,
-            onClick = { state.switchTo(Screen.Home) },
-            icon = { Icon(Icons.Filled.Home, contentDescription = null) },
-            label = { Text("首页") },
-            colors = barColors()
-        )
-        LibrariesItem(state)
-        NavigationBarItem(
-            selected = state.current is Screen.Search,
-            onClick = { state.switchTo(Screen.Search) },
-            icon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            label = { Text("搜索") },
-            colors = barColors()
-        )
-        NavigationBarItem(
-            selected = state.current is Screen.Settings,
-            onClick = { state.switchTo(Screen.Settings) },
-            icon = { SettingsIcon(state) },
-            label = { Text("设置") },
-            colors = barColors()
+private fun RailDestination(name: String, labels: Boolean, selected: Boolean, onClick: () -> Unit, icon: @Composable () -> Unit) {
+    Tooltip(name) {
+        NavigationRailItem(
+            selected = selected,
+            onClick = onClick,
+            icon = icon,
+            label = if (labels) ({ NavigationLabel(name) }) else null,
+            modifier = if (labels) Modifier else Modifier.semantics { contentDescription = name },
+            colors = railColors()
         )
     }
+}
+
+@Composable
+private fun NavigationLabel(name: String) {
+    Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 72.dp))
+}
+
+@Composable
+private fun BottomNavigation(state: AppState, labels: Boolean, select: (Screen) -> Unit) {
+    val active = state.browseDestination
+    NavigationBar(
+        modifier = Modifier.fillMaxHeight(),
+        windowInsets = WindowInsets(0, 0, 0, 0),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+    ) {
+        BarDestination("首页", labels, active is Screen.Home, { select(Screen.Home) }) {
+            Icon(Icons.Filled.Home, contentDescription = null)
+        }
+        LibrariesItem(state, labels, select)
+        BarDestination("搜索", labels, active is Screen.Search, { select(Screen.Search) }) {
+            Icon(Icons.Filled.Search, contentDescription = null)
+        }
+        BarDestination("设置", labels, active is Screen.Settings, { select(Screen.Settings) }) {
+            SettingsIcon(state)
+        }
+    }
+}
+
+@Composable
+private fun RowScope.BarDestination(name: String, labels: Boolean, selected: Boolean, onClick: () -> Unit, icon: @Composable () -> Unit) {
+    NavigationBarItem(
+        selected = selected,
+        onClick = onClick,
+        icon = icon,
+        label = if (labels) ({ NavigationLabel(name) }) else null,
+        modifier = if (labels) Modifier else Modifier.semantics { contentDescription = name },
+        colors = barColors()
+    )
 }
 
 /**
@@ -579,14 +529,16 @@ private fun BottomNavigation(state: AppState) {
  * quietly switching to another tab.
  */
 @Composable
-private fun RowScope.LibrariesItem(state: AppState) {
+private fun RowScope.LibrariesItem(state: AppState, labels: Boolean, select: (Screen) -> Unit) {
     var open by remember { mutableStateOf(false) }
     val libraries = state.libraries
 
-    NavigationBarItem(
-        selected = state.current is Screen.Library,
+    BarDestination(
+        name = "媒体库",
+        labels = labels,
+        selected = state.browseDestination is Screen.Library,
         onClick = {
-            if (libraries.size == 1) state.switchTo(Screen.Library(libraries.first().id)) else open = true
+            if (libraries.size == 1) select(Screen.Library(libraries.first().id)) else open = true
         },
         icon = {
             Box {
@@ -602,7 +554,7 @@ private fun RowScope.LibrariesItem(state: AppState) {
                             text = { Text("去设置里添加…") },
                             onClick = {
                                 open = false
-                                state.switchTo(Screen.Settings)
+                                select(Screen.Settings)
                             }
                         )
                     }
@@ -614,14 +566,12 @@ private fun RowScope.LibrariesItem(state: AppState) {
                             text = { Text(library.name) },
                             onClick = {
                                 open = false
-                                state.switchTo(Screen.Library(library.id))
+                                select(Screen.Library(library.id))
                             }
                         )
                     }
                 }
             }
-        },
-        label = { Text("媒体库") },
-        colors = barColors()
+        }
     )
 }

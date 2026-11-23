@@ -24,7 +24,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.ImeAction
 import com.daview.app.data.ModalMarker
 import com.daview.app.data.tracksTextInput
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -102,7 +101,7 @@ fun MergeDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
         }
     }
 
-    AlertDialog(
+    AdaptiveAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("合并重复条目") },
         text = {

@@ -13,20 +13,18 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -48,18 +46,14 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Timelapse
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -69,19 +63,31 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.paneTitle
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -99,164 +105,450 @@ import com.daview.shared.model.DownloadDto
 import com.daview.shared.model.DownloadState
 import com.daview.shared.model.ItemKind
 import com.daview.shared.model.MediaItemDto
-import com.daview.shared.model.MediaStreamDto
 import com.daview.shared.model.PlayedState
 import com.daview.shared.model.SUBTITLE_OFF
 import com.daview.shared.model.ScrapeStatus
 import com.daview.shared.model.StreamType
 import kotlinx.coroutines.launch
 
-/** The widest the text-bearing parts of the page run on a wide window. */
-private val ReadingWidth = 1100.dp
+private val SingleReadingWidth = 880.dp
+private val SplitReadingWidth = 1320.dp
+private const val HeroKey = "hero"
+private const val PeopleKey = "people"
+private const val SeasonKey = "seasons"
+private const val RelatedKey = "related"
+private const val FileKey = "files"
+private const val EpisodeKeyPrefix = "episode:"
+private fun episodeKey(id: String) = "$EpisodeKeyPrefix$id"
+private fun String.episodeId() = removePrefix(EpisodeKeyPrefix).takeIf { it != this }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun DetailScreen(state: AppState, playback: PlaybackController, itemId: String) {
+fun DetailScreen(state: AppState, playback: PlaybackController, itemId: String, entryKey: Long? = null) {
+    // The host saves this page under its back-stack entry key, not its media id.
+    val bookmark = rememberSaveable(itemId, stateSaver = detailBookmarkSaver) { mutableStateOf(DetailBookmark()) }
+    var chosenSeason by rememberSaveable(itemId) { mutableStateOf<String?>(null) }
+    var expandedSynopsis by rememberSaveable(itemId) { mutableStateOf<String?>(null) }
     val item = state.detailItem?.takeIf { it.id == itemId }
-    if (item == null) {
-        Column(Modifier.fillMaxSize()) {
-            ScreenTopBar(title = null, onBack = if (state.canGoBack) ({ state.back() }) else null)
-            val error = state.detailError
-            when {
-                error != null -> EmptyState(title = "读取失败", description = error) {
-                    Button(onClick = { state.loadDetail(itemId) }) { Text("重试") }
-                }
-                else -> LoadingPane()
-            }
-        }
-        return
-    }
-    val seasons = state.detailChildren.filter { it.kind == ItemKind.SEASON }
-    val relatedMovies = state.detailChildren.filter { it.kind == ItemKind.MOVIE }
-    val selectedSeason = seasons.firstOrNull { it.id == state.detailSeasonId }
-    val listState = rememberLazyListState()
+    val active = state.current == Screen.Detail(itemId) && (entryKey == null || state.currentEntry.key == entryKey)
+    val canGoBack = active && state.canGoBack
 
-    // Opened from its own episode's row on a busy series, the page scrolls to
-    // the episodes rather than the cast.
-    Box(Modifier.fillMaxSize()) {
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
-            item { DetailHeader(state, playback, item) }
-
-            // The episodes come first: on a series page they are what the page
-            // is for, and they used to sit under the cast and the file details.
-            if (seasons.isNotEmpty()) {
-                item {
-                    Column(Modifier.readingWidth()) {
-                        SectionHeader("剧集")
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            items(seasons, key = { it.id }) { season ->
-                                ToggleButton(
-                                    checked = state.detailSeasonId == season.id,
-                                    onCheckedChange = { state.selectSeason(season.id) }
-                                ) {
-                                    Text(season.name)
-                                    val total = season.episodeCount ?: 0
-                                    if (total > 0) {
-                                        Text(
-                                            "  ${season.playedEpisodeCount ?: 0}/$total",
-                                            style = MaterialTheme.typography.labelSmall
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        selectedSeason?.let { season -> SeasonActions(state, season) }
-                        selectedSeason?.path?.takeIf { it.isNotBlank() }?.let {
-                            Text(
-                                "目录: $it",
-                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Spacer(Modifier.height(8.dp))
-                    }
-                }
-                items(state.detailEpisodes, key = { it.id }) { episode ->
-                    Box(Modifier.readingWidth()) {
-                        EpisodeRow(
-                            episode,
-                            basePath = selectedSeason?.path,
-                            isNext = episode.id == state.detailNextUp?.id,
-                            download = state.downloadOf(episode.id),
-                            onPlay = { playback.play(episode) },
-                            onOpen = { state.navigate(Screen.Detail(episode.id)) },
-                            menu = { dismiss -> ItemMenuItems(state, playback, episode, dismiss) }
-                        ) {
-                            state.togglePlayed(episode)
-                        }
-                    }
-                }
-            }
-
-            if (item.kind == ItemKind.EPISODE && state.detailEpisodes.isNotEmpty()) {
-                item { SeasonEpisodesRow(state, playback, item, state.detailEpisodes) }
-            }
-
-            if (relatedMovies.isNotEmpty()) {
-                item {
-                    MediaRow(
-                        "相关影片",
-                        relatedMovies,
-                        menu = cardMenu(state, playback),
-                        onItemPlay = { playback.play(it) }
-                    ) {
-                        state.navigate(Screen.Detail(it.id))
-                    }
-                }
-            }
-
-            if (item.people.isNotEmpty()) {
-                item { PeopleRow(state, item) }
-            }
-
-            item { Box(Modifier.readingWidth()) { FileInfoSection(item) } }
-        }
-        VerticalScrollbarFor(listState, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
-
-        // Over the art rather than in a band above it, so the picture runs to
-        // the top of the window.
-        if (state.canGoBack) {
-            Tooltip("返回（Alt + ←）") {
-                FilledIconButton(
-                    onClick = { state.back() },
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
-                        contentColor = MaterialTheme.colorScheme.onSurface
-                    ),
-                    modifier = Modifier
-                        .windowInsetsPadding(WindowInsets.statusBars)
-                        .padding(start = 12.dp, top = 12.dp)
-                ) {
+    Column(Modifier.fillMaxSize()) {
+        // One Back target, even while the detail is loading or its lists are rearranged.
+        if (canGoBack) {
+            Row(Modifier.fillMaxWidth().height(48.dp).padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                TipIconButton("返回（Alt + ←）", onClick = { state.back() }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                 }
             }
         }
+        if (item == null) {
+            val error = state.detailError
+            if (error != null) {
+                LazyColumn(Modifier.readingWidth(SingleReadingWidth).fillMaxHeight().padding(horizontal = 16.dp)) {
+                    item {
+                        DetailHeading("读取失败", horizontal = 0.dp)
+                        Text(error, style = MaterialTheme.typography.bodyMedium)
+                        Button(onClick = { if (active) state.loadDetail(itemId) }) { Text("重试") }
+                    }
+                }
+            } else LoadingPane()
+        } else {
+            val children = state.detailChildren
+            val seasons = remember(children) { children.filter { it.kind == ItemKind.SEASON } }
+            val related = remember(children) { children.filter { it.kind == ItemKind.MOVIE } }
+            val modelSeason = state.detailSeasonId
+            val selected = seasons.firstOrNull { it.id == chosenSeason } ?: seasons.firstOrNull { it.id == modelSeason }
+            val restoringSeason = selected != null && selected.id != modelSeason
+            LaunchedEffect(active, selected?.id, modelSeason) {
+                if (active && selected != null) {
+                    chosenSeason = selected.id
+                    if (restoringSeason) state.selectSeason(selected.id)
+                }
+            }
+            val episodeSource = when {
+                restoringSeason -> emptyList()
+                item.kind == ItemKind.SEASON -> children
+                else -> state.detailEpisodes
+            }
+            val episodes = remember(episodeSource) { episodeSource.filter { it.kind == ItemKind.EPISODE } }
+            val loading = restoringSeason || state.seasonLoading || (state.detailLoading && episodes.isEmpty())
+            val error = state.seasonError.takeUnless { restoringSeason }
+            val seasonOverview = selected?.overview?.takeIf { overview ->
+                overview.isNotBlank() && seasons.mapNotNull { it.indexNumber }.filter { it > 0 }.distinct().size >= 2
+            }
+            val synopsisId = selected?.id?.takeIf { seasonOverview != null } ?: item.id
+            DetailBody(
+                state, playback, item, seasons, selected, episodes, related, bookmark, loading, error,
+                overview = seasonOverview ?: item.overview?.takeIf { it.isNotBlank() },
+                expanded = expandedSynopsis == synopsisId,
+                onToggleOverview = { expandedSynopsis = if (expandedSynopsis == synopsisId) null else synopsisId },
+                onSeason = { id ->
+                    if (active && (id != selected?.id || error != null)) {
+                        chosenSeason = id
+                        state.selectSeason(id)
+                    }
+                }
+            )
+        }
     }
 }
 
-/** Left-aligned, capped to a reading width, on a window of any size. */
-private fun Modifier.readingWidth() = fillMaxWidth().wrapContentWidth(Alignment.Start).widthIn(max = ReadingWidth)
+@Composable
+private fun DetailBody(
+    state: AppState,
+    playback: PlaybackController,
+    item: MediaItemDto,
+    seasons: List<MediaItemDto>,
+    selected: MediaItemDto?,
+    episodes: List<MediaItemDto>,
+    related: List<MediaItemDto>,
+    bookmark: MutableState<DetailBookmark>,
+    loading: Boolean,
+    error: String?,
+    overview: String?,
+    expanded: Boolean,
+    onToggleOverview: () -> Unit,
+    onSeason: (String) -> Unit
+) {
+    val seasonStrip = rememberLazyListState(seasons.indexOfFirst { it.id == selected?.id }.coerceAtLeast(0))
+    val peopleStrip = rememberLazyListState()
+    val episodesById = remember(episodes) { episodes.associateBy { it.id } }
+    val episodeIds = remember(episodesById) { episodesById.keys.toList() }
+    val currentEpisode = item.id.takeIf { item.kind == ItemKind.EPISODE && it in episodesById }
+    val hasEpisodeSection = item.kind == ItemKind.SERIES || item.kind == ItemKind.SEASON || episodes.isNotEmpty()
+    val hasSeasonChoices = seasons.size >= 2 && (episodes.isNotEmpty() || seasons.any { (it.episodeCount ?: 0) > 0 })
+
+    // This is already the safe contiguous pane assigned by Browse, less the Back row.
+    // Do not infer geometry from window metrics or subtract a hinge/system bar again.
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val extraText = (LocalDensity.current.fontScale - 1f).coerceAtLeast(0f)
+        val twoPanes = detailUsesTwoPanes(
+            maxWidth, maxHeight, LocalDensity.current.fontScale, LocalBrowseCompanionVisible.current,
+            episodeCount = if (loading) maxOf(episodes.size, selected?.episodeCount ?: 0) else episodes.size,
+            hasSeasonChoices = hasSeasonChoices, relatedCount = related.size
+        )
+        val short = maxHeight < detailMinHeight(extraText)
+        val narrow = maxWidth < (340f + 140f * extraText).dp
+        val horizontal = if (narrow) 12.dp else 20.dp
+        val compact = short || narrow
+        val shelf = !twoPanes && item.kind == ItemKind.EPISODE && hasEpisodeSection
+        val rows = remember(episodeIds, hasEpisodeSection, related.isNotEmpty(), item.people.isNotEmpty(), shelf) {
+            detailRows(hasEpisodeSection, episodeIds, related.isNotEmpty(), item.people.isNotEmpty(), shelf)
+        }
+        val primaryKeys = if (twoPanes) rows.contents else rows.stacked
+        val primary = rememberDetailList(primaryKeys, selected?.id) {
+            bookmark.value.primaryAnchor(twoPanes, currentEpisode)
+        }
+        val siblings = if (shelf) {
+            rememberDetailList(episodeIds) { bookmark.value.siblingAnchor(currentEpisode ?: item.id) }
+        } else null
+        TrackDetailScroll(primary) { anchor ->
+            val shelfPosition = siblings?.takeIf { anchor.key == SeasonKey }?.visibleDetailAnchor()
+            bookmark.value = bookmark.value.record(anchor, shelfPosition)
+        }
+        if (siblings != null) {
+            TrackDetailScroll(siblings) { anchor -> bookmark.value = bookmark.value.recordSibling(anchor) }
+        }
+
+        val renderRow: @Composable (String) -> Unit = { key ->
+            when (key) {
+                HeroKey -> DetailHeader(state, playback, item, short, overview, expanded, onToggleOverview)
+                PeopleKey -> PeopleRow(state, item, peopleStrip, compact)
+                SeasonKey -> if (siblings != null) {
+                    val cardWidth = (maxWidth - horizontal * 2).coerceIn(48.dp, if (compact) 148.dp else 232.dp)
+                    SiblingEpisodes(state, playback, item, episodes, siblings, cardWidth, horizontal)
+                } else {
+                    DetailSeasonControls(state, item, seasons, selected, seasonStrip, episodes.size, loading, error, horizontal) { id ->
+                        if (id != selected?.id) bookmark.value = bookmark.value.changeSeason(twoPanes)
+                        onSeason(id)
+                    }
+                }
+                RelatedKey -> MediaRow(
+                    "相关影片", related, itemWidth = if (compact) 116.dp else 152.dp,
+                    menu = cardMenu(state, playback), onItemPlay = { playback.play(it) }
+                ) { state.navigate(Screen.Detail(it.id)) }
+                FileKey -> FileInfoSection(item, horizontal)
+                else -> episodesById[key.episodeId()]?.let { episode ->
+                    EpisodeRow(
+                        episode,
+                        basePath = selected?.path ?: item.path.takeIf { item.kind == ItemKind.SEASON },
+                        isNext = episode.id == state.detailNextUp?.id,
+                        isCurrent = episode.id == item.id,
+                        dense = short,
+                        download = state.downloadOf(episode.id),
+                        onPlay = { playback.play(episode) },
+                        onOpen = { state.navigate(Screen.Detail(episode.id)) },
+                        menu = { dismiss -> ItemMenuItems(state, playback, episode, dismiss) }
+                    ) { state.togglePlayed(episode) }
+                }
+            }
+        }
+
+        Row(Modifier.readingWidth(if (twoPanes) SplitReadingWidth else SingleReadingWidth).fillMaxHeight()) {
+            if (twoPanes) {
+                val summary = rememberDetailList(rows.summary) { bookmark.value.summary }
+                TrackDetailScroll(summary) { anchor -> bookmark.value = bookmark.value.record(anchor) }
+                DetailColumn(summary, rows.summary, Modifier.weight(0.46f), "媒体简介", renderRow)
+                Box(Modifier.fillMaxHeight().width(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
+            }
+            DetailColumn(
+                primary, primaryKeys, Modifier.weight(0.54f),
+                pane = if (!twoPanes) null else if (hasEpisodeSection) "剧集与文件信息" else "相关影片与文件信息",
+                renderRow = renderRow
+            )
+        }
+    }
+}
+
+private fun detailMinHeight(extraText: Float) = (500f + 80f * extraText).dp
+
+internal fun detailUsesTwoPanes(
+    width: Dp,
+    height: Dp,
+    fontScale: Float,
+    hasBrowseCompanion: Boolean,
+    episodeCount: Int,
+    hasSeasonChoices: Boolean,
+    relatedCount: Int
+): Boolean {
+    val extraText = (fontScale - 1f).coerceAtLeast(0f)
+    return !hasBrowseCompanion && (episodeCount >= 2 || hasSeasonChoices || relatedCount >= 2) &&
+        width.coerceAtMost(SplitReadingWidth) >= (880f + 220f * extraText).dp && height >= detailMinHeight(extraText)
+}
+
+internal data class DetailRows(val summary: List<String>, val contents: List<String>) {
+    val stacked: List<String> = summary.take(1) + contents.dropLast(1) + summary.drop(1) + FileKey
+}
+
+internal fun detailRows(
+    hasEpisodes: Boolean, episodeIds: List<String>, related: Boolean, people: Boolean, shelf: Boolean = false
+): DetailRows = DetailRows(
+    summary = if (people) listOf(HeroKey, PeopleKey) else listOf(HeroKey),
+    contents = buildList {
+        if (hasEpisodes) {
+            add(SeasonKey)
+            if (!shelf) episodeIds.forEach { add(episodeKey(it)) }
+        }
+        if (related) add(RelatedKey)
+        add(FileKey)
+    }
+)
+
+internal data class DetailAnchor(val key: String, val offset: Int = 0)
+
+internal data class DetailBookmark(
+    val summary: DetailAnchor = DetailAnchor(HeroKey),
+    val contents: DetailAnchor? = null,
+    val sibling: DetailAnchor? = null,
+    val readingContents: Boolean = false
+) {
+    fun primaryAnchor(split: Boolean, currentEpisode: String?): DetailAnchor? {
+        if (!split) return if (readingContents) contents else summary
+        // A shelf's horizontal offset is meaningless to a vertical list.
+        if (contents?.key == SeasonKey && currentEpisode != null && sibling != null) {
+            return DetailAnchor(episodeKey(sibling.key))
+        }
+        return contents ?: currentEpisode?.let { DetailAnchor(episodeKey(it)) }
+    }
+
+    fun siblingAnchor(currentEpisode: String): DetailAnchor {
+        val episode = contents?.key?.episodeId() ?: sibling?.key ?: currentEpisode
+        return sibling?.takeIf { it.key == episode } ?: DetailAnchor(episode)
+    }
+
+    fun record(anchor: DetailAnchor, shelfPosition: DetailAnchor? = null): DetailBookmark = when (anchor.key) {
+        HeroKey, PeopleKey -> copy(summary = anchor, readingContents = false)
+        else -> copy(contents = anchor, sibling = shelfPosition ?: sibling, readingContents = true)
+    }
+
+    fun recordSibling(anchor: DetailAnchor) = copy(
+        contents = contents?.takeIf { it.key == SeasonKey } ?: DetailAnchor(SeasonKey),
+        sibling = anchor,
+        readingContents = true
+    )
+
+    fun changeSeason(split: Boolean) = copy(contents = DetailAnchor(SeasonKey), readingContents = split || readingContents)
+}
+
+private val detailBookmarkSaver = listSaver<DetailBookmark, Any>(
+    save = { bookmark ->
+        listOf(bookmark.summary, bookmark.contents, bookmark.sibling).flatMap {
+            listOf(it?.key.orEmpty(), it?.offset ?: 0)
+        } + bookmark.readingContents
+    },
+    restore = { saved ->
+        fun anchor(index: Int) = (saved[index] as String).takeIf { it.isNotEmpty() }
+            ?.let { DetailAnchor(it, saved[index + 1] as Int) }
+        DetailBookmark(anchor(0) ?: DetailAnchor(HeroKey), anchor(2), anchor(4), saved[6] as Boolean)
+    }
+)
+
+/** Resolve a missing episode to its section without changing the saved key. */
+internal fun resolveDetailAnchor(keys: List<String>, wanted: DetailAnchor?): Pair<Int, Int> {
+    val exact = keys.indexOf(wanted?.key)
+    if (exact >= 0 && wanted != null) return exact to wanted.offset
+    val section = if (wanted?.key?.episodeId() != null) keys.indexOf(SeasonKey) else -1
+    return section.coerceAtLeast(0) to 0
+}
+
+@Composable
+private fun rememberDetailList(keys: List<String>, seasonId: String? = null, anchor: () -> DetailAnchor?) =
+    remember(keys, seasonId) {
+        // Read the bookmark only when the list's shape changes, not at every scroll pixel.
+        val (index, offset) = resolveDetailAnchor(keys, anchor())
+        LazyListState(index, offset)
+    }
+
+private fun LazyListState.visibleDetailAnchor(): DetailAnchor? {
+    val index = firstVisibleItemIndex
+    val key = layoutInfo.visibleItemsInfo.firstOrNull { it.index == index }?.key as? String
+    return key?.let { DetailAnchor(it, firstVisibleItemScrollOffset) }
+}
+
+@Composable
+private fun TrackDetailScroll(list: LazyListState, onScroll: (DetailAnchor) -> Unit) {
+    val record by rememberUpdatedState(onScroll)
+    LaunchedEffect(list) {
+        var previous: DetailAnchor? = null
+        var wasScrolling = false
+        snapshotFlow { list.visibleDetailAnchor() to list.isScrollInProgress }.collect { (visible, scrolling) ->
+            // Reflow or an empty/loading fallback can clamp the measured list. It is not
+            // a read position the user chose, so don't save it over a pending bookmark.
+            if (visible != null && visible != previous && (scrolling || wasScrolling)) record(visible)
+            previous = visible
+            wasScrolling = scrolling
+        }
+    }
+}
+
+private fun Modifier.readingWidth(max: Dp) = fillMaxWidth().wrapContentWidth(Alignment.Start).widthIn(max = max)
+
+@Composable
+private fun DetailColumn(
+    state: LazyListState,
+    rows: List<String>,
+    modifier: Modifier,
+    pane: String?,
+    renderRow: @Composable (String) -> Unit
+) {
+    Box(
+        modifier.fillMaxHeight().clipToBounds().semantics {
+            if (pane != null) {
+                paneTitle = pane
+                isTraversalGroup = true
+            }
+        }
+    ) {
+        LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 24.dp)) {
+            items(rows, key = { it }, contentType = { if (it.episodeId() == null) it else EpisodeKeyPrefix }) { renderRow(it) }
+        }
+        VerticalScrollbarFor(state, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
+    }
+}
+
+@Composable
+private fun DetailHeading(title: String, horizontal: Dp = 20.dp) {
+    Text(
+        title, Modifier.padding(horizontal = horizontal, vertical = 8.dp).semantics { heading() },
+        style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold
+    )
+}
+
+private fun episodeSectionTitle(item: MediaItemDto): String = when {
+    item.kind != ItemKind.EPISODE -> "剧集"
+    item.parentIndexNumber == 0 -> "特别篇"
+    item.parentIndexNumber != null -> "第 ${item.parentIndexNumber} 季"
+    else -> "本季剧集"
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun DetailSeasonControls(
+    state: AppState,
+    item: MediaItemDto,
+    seasons: List<MediaItemDto>,
+    selected: MediaItemDto?,
+    strip: LazyListState,
+    episodeCount: Int,
+    loading: Boolean,
+    error: String?,
+    horizontal: Dp,
+    onSeason: (String) -> Unit
+) {
+    Column(Modifier.fillMaxWidth()) {
+        DetailHeading(episodeSectionTitle(item), horizontal)
+        if (seasons.isNotEmpty()) {
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val chipWidth = (maxWidth - horizontal * 2).coerceIn(48.dp, 280.dp)
+                LazyRow(
+                    state = strip,
+                    modifier = Modifier.wheelScrollsHorizontally(strip),
+                    contentPadding = PaddingValues(horizontal = horizontal),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(seasons, key = { it.id }) { season ->
+                        val total = season.episodeCount ?: 0
+                        ToggleButton(
+                            checked = selected?.id == season.id,
+                            onCheckedChange = { onSeason(season.id) },
+                            modifier = Modifier.widthIn(max = chipWidth).semantics {
+                                if (total > 0) stateDescription = watchedLabel(season)
+                            }
+                        ) {
+                            Text(season.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            if (total > 0 && chipWidth >= 180.dp) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("${season.playedEpisodeCount ?: 0}/$total", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            }
+            selected?.let { season -> SeasonActions(state, season) }
+            selected?.path?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    "目录: $it", Modifier.padding(horizontal = horizontal, vertical = 6.dp),
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
+        } else if (episodeCount > 0) {
+            Text("$episodeCount 集", Modifier.padding(horizontal = horizontal), style = MaterialTheme.typography.bodySmall)
+        }
+        when {
+            loading -> Text(
+                "正在加载剧集…", Modifier.padding(horizontal = horizontal, vertical = 4.dp),
+                style = MaterialTheme.typography.bodyMedium
+            )
+            error != null -> Column(Modifier.padding(horizontal = horizontal, vertical = 4.dp)) {
+                Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                selected?.id?.let { id -> TextButton(onClick = { onSeason(id) }) { Text("重试") } }
+            }
+            episodeCount == 0 -> Text(
+                "暂无剧集", Modifier.padding(horizontal = horizontal, vertical = 4.dp),
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
 
 /** 「整季标记」 for the season on screen, which asks before changing a whole season. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SeasonActions(state: AppState, season: MediaItemDto) {
-    var confirm by remember { mutableStateOf(false) }
+    var confirm by remember(season.id) { mutableStateOf(false) }
     val played = season.playedState == PlayedState.PLAYED
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
+    FlowRow(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        itemVerticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             watchedLabel(season),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.padding(horizontal = 8.dp)
         )
         SeasonDownloadButton(state, season)
         TextButton(onClick = { confirm = true }) {
@@ -277,7 +569,7 @@ fun ConfirmMarkDialog(item: MediaItemDto, onConfirm: () -> Unit, onDismiss: () -
     ModalMarker()
     val played = item.playedState == PlayedState.PLAYED
     val count = item.episodeCount ?: 0
-    AlertDialog(
+    AdaptiveAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (played) "把 $count 集都标记为未观看？" else "把 $count 集都标记为已观看？") },
         text = {
@@ -340,121 +632,109 @@ private fun providerUrl(key: String, id: String, item: MediaItemDto): String? = 
     else -> null
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun DetailHeader(state: AppState, playback: PlaybackController, item: MediaItemDto) {
-    // A season or an episode names the show it belongs to; the show itself has
-    // no parent to point at, so the label stays plain text there.
-    val openSeries: (() -> Unit)? = item.seriesId?.let { id ->
-        { state.navigate(Screen.Detail(id)) }
-    }
-
-    BoxWithConstraints(Modifier.fillMaxWidth().heightIn(min = 320.dp)) {
-        // The band is only as tall as the column beside the poster, and that
-        // height is not known until the column has been measured.
-        // `matchParentSize` runs in Box's second pass and so picks it up;
-        // `fillMaxSize` cannot, because a LazyColumn item is measured with an
-        // unbounded height and the art then falls back to its own pixel size.
+private fun DetailHeader(
+    state: AppState,
+    playback: PlaybackController,
+    item: MediaItemDto,
+    short: Boolean,
+    overview: String?,
+    expanded: Boolean,
+    onToggleOverview: () -> Unit
+) {
+    val openSeries: (() -> Unit)? = item.seriesId?.let { id -> { state.navigate(Screen.Detail(id)) } }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        // Measured from the content, not from the image: LazyColumn gives this
+        // item an unbounded height. The scrim keeps text readable over any art.
         val art = item.backdropUrl ?: item.posterUrl
         if (art != null) {
-            AsyncImage(
-                model = art,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.matchParentSize()
-            )
-        }
-        // Title and overview sit over the whole band rather than just its foot,
-        // so the scrim stays dense all the way up.
-        Box(
-            Modifier.matchParentSize().background(
-                Brush.verticalGradient(
-                    0f to MaterialTheme.colorScheme.background.copy(alpha = 0.55f),
-                    0.5f to MaterialTheme.colorScheme.background.copy(alpha = 0.88f),
-                    1f to MaterialTheme.colorScheme.background
+            AsyncImage(art, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
+            Box(
+                Modifier.matchParentSize().background(
+                    Brush.verticalGradient(
+                        0f to MaterialTheme.colorScheme.background.copy(alpha = 0.78f),
+                        0.55f to MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
+                        1f to MaterialTheme.colorScheme.background
+                    )
                 )
             )
-        )
+        }
 
-        // A phone cannot carry the poster and everything beside it at once. At
-        // 400dp wide the poster and the padding leave that column about 130dp
-        // — narrower than the play button on its own — so the row of actions
-        // ran off the screen with the external-player button squeezed into a
-        // stack of single characters. Under the threshold the blurb and the
-        // actions take the full width instead, below a smaller poster.
-        val sideBySide = maxWidth >= 600.dp
-        // Clear of the status bar and of the back button that floats over the art.
-        val top = Modifier.windowInsetsPadding(WindowInsets.statusBars).padding(top = 56.dp)
-
-        if (sideBySide) {
-            Row(top.padding(24.dp).widthIn(max = ReadingWidth), verticalAlignment = Alignment.Bottom) {
-                HeroPoster(item, width = 160.dp, height = 240.dp, gap = 20.dp)
+        val fontScale = LocalDensity.current.fontScale
+        val narrow = maxWidth < (340f + 140f * (fontScale - 1f).coerceAtLeast(0f)).dp
+        val compact = short || narrow
+        val wideHero = maxWidth >= 600.dp && fontScale <= 1.4f && !short
+        val posterWidth = when {
+            maxWidth < 220.dp || (narrow && fontScale > 1.4f) -> 0.dp
+            wideHero -> 144.dp
+            short -> 64.dp
+            narrow -> 76.dp
+            else -> 112.dp
+        }
+        val horizontal = if (narrow) 12.dp else 20.dp
+        val inset = Modifier.padding(start = horizontal, top = 12.dp, end = horizontal, bottom = if (short) 12.dp else 20.dp)
+        if (wideHero) {
+            Row(inset, horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.Bottom) {
+                HeroPoster(item, posterWidth)
                 Column(Modifier.weight(1f)) {
-                    HeroTitle(state, item, openSeries)
-                    HeroBlurb(state, item)
-                    Spacer(Modifier.height(18.dp))
-                    PlayActions(state, playback, item)
+                    HeroTitle(item, openSeries, compact = false)
+                    HeroFacts(state, item)
+                    Spacer(Modifier.height(10.dp))
+                    PlayActions(state, playback, item, compact = false)
+                    HeroBlurb(state, item, overview, expanded, onToggleOverview, short = false)
                 }
             }
         } else {
-            Column(top.padding(20.dp)) {
-                Row(verticalAlignment = Alignment.Bottom) {
-                    HeroPoster(item, width = 120.dp, height = 180.dp, gap = 16.dp)
-                    Column(Modifier.weight(1f)) { HeroTitle(state, item, openSeries) }
+            Column(inset) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (posterWidth > 0.dp) HeroPoster(item, posterWidth)
+                    Column(Modifier.weight(1f)) { HeroTitle(item, openSeries, compact = compact) }
                 }
-                HeroBlurb(state, item)
-                Spacer(Modifier.height(16.dp))
-                PlayActions(state, playback, item)
+                // Keep the primary action ahead of the metadata in a narrow or short pane.
+                if (!compact) HeroFacts(state, item)
+                Spacer(Modifier.height(if (compact) 8.dp else 10.dp))
+                PlayActions(state, playback, item, compact)
+                if (compact) HeroFacts(state, item)
+                HeroBlurb(state, item, overview, expanded, onToggleOverview, short)
             }
         }
     }
 }
 
 @Composable
-private fun HeroPoster(item: MediaItemDto, width: Dp, height: Dp, gap: Dp) {
+private fun HeroPoster(item: MediaItemDto, width: Dp) {
     Surface(
-        modifier = Modifier.width(width).height(height),
+        modifier = Modifier.width(width).aspectRatio(2f / 3f),
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
-        // Holds its place when there is no artwork. Bailing out here took the
-        // gap with it, so a title with a poster and one without laid the whole
-        // header out 180dp apart.
         if (item.posterUrl == null) {
             ArtworkPlaceholder(item.kind, Modifier.fillMaxSize())
         } else {
-            AsyncImage(
-                model = item.posterUrl,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
+            AsyncImage(item.posterUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         }
     }
-    Spacer(Modifier.width(gap))
 }
 
-/** What names the item: the show it belongs to, its own title, and its facts. */
+/** The series link and full title remain readable independently of the poster. */
+@Composable
+private fun HeroTitle(item: MediaItemDto, openSeries: (() -> Unit)?, compact: Boolean) {
+    item.seriesName?.let { name ->
+        LinkText(name, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.secondary, onClick = openSeries)
+    }
+    Text(
+        item.name, Modifier.semantics { heading() },
+        style = if (compact) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.headlineMedium,
+        fontWeight = FontWeight.Bold
+    )
+    item.originalName?.takeIf { it != item.name }?.let {
+        Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ColumnScope.HeroTitle(state: AppState, item: MediaItemDto, openSeries: (() -> Unit)?) {
-    item.seriesName?.let { name ->
-        LinkText(
-            name,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.secondary,
-            onClick = openSeries
-        )
-    }
-    Text(item.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-    item.originalName?.takeIf { it != item.name }?.let {
-        Text(
-            it,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-
+private fun HeroFacts(state: AppState, item: MediaItemDto) {
     Spacer(Modifier.height(10.dp))
     // A film carries up to five of these, which is more than sits beside a
     // poster on a phone, so they wrap instead of running off the edge.
@@ -494,23 +774,12 @@ private fun ColumnScope.HeroTitle(state: AppState, item: MediaItemDto, openSerie
     }
 }
 
-/**
- * The synopsis under the title. A show with more than one season shows the
- * picked season's own, where it has one, and its own synopsis otherwise.
- */
-private fun shownOverview(state: AppState, item: MediaItemDto): String? {
-    val own = item.overview?.takeIf { it.isNotBlank() }
-    if (item.kind != ItemKind.SERIES) return own
-    val seasons = state.detailChildren.filter { it.kind == ItemKind.SEASON }
-    // Specials are not a season of the run.
-    if (seasons.mapNotNull { it.indexNumber }.filter { it > 0 }.distinct().size < 2) return own
-    return seasons.firstOrNull { it.id == state.detailSeasonId }?.overview?.takeIf { it.isNotBlank() } ?: own
-}
-
 /** Genres and synopsis — the part that reads best across the full width. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ColumnScope.HeroBlurb(state: AppState, item: MediaItemDto) {
+private fun HeroBlurb(
+    state: AppState, item: MediaItemDto, overview: String?, expanded: Boolean, onToggle: () -> Unit, short: Boolean
+) {
     if (item.genres.isNotEmpty()) {
         Spacer(Modifier.height(10.dp))
         // Each genre leads to the other titles that carry it.
@@ -521,26 +790,21 @@ private fun ColumnScope.HeroBlurb(state: AppState, item: MediaItemDto) {
         }
     }
 
-    shownOverview(state, item)?.let { overview ->
+    if (overview != null) {
         Spacer(Modifier.height(12.dp))
-        // Keyed on the text: picking another season swaps it, and the
-        // expanded state and the overflow check belong to the old one.
-        var expanded by remember(overview) { mutableStateOf(false) }
         var overflowing by remember(overview) { mutableStateOf(false) }
         SelectionContainer {
             Text(
                 overview,
                 style = MaterialTheme.typography.bodyMedium,
-                maxLines = if (expanded) Int.MAX_VALUE else 5,
+                maxLines = if (expanded) Int.MAX_VALUE else if (short) 3 else 5,
                 overflow = TextOverflow.Ellipsis,
                 onTextLayout = { if (!expanded) overflowing = it.hasVisualOverflow },
                 modifier = Modifier.widthIn(max = 760.dp)
             )
         }
-        // Said in words: tapping the text did expand it, but nothing on the
-        // page told anyone that it could.
         if (overflowing || expanded) {
-            TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+            TextButton(onClick = onToggle, contentPadding = PaddingValues(horizontal = 0.dp)) {
                 Text(if (expanded) "收起" else "展开全文")
             }
         }
@@ -549,7 +813,7 @@ private fun ColumnScope.HeroBlurb(state: AppState, item: MediaItemDto) {
 
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun PlayActions(state: AppState, playback: PlaybackController, item: MediaItemDto) {
+private fun PlayActions(state: AppState, playback: PlaybackController, item: MediaItemDto, compact: Boolean) {
     // A series or season plays where the viewer is up to across every season —
     // the same episode the core would land on — not the first unwatched episode
     // of whichever season happens to be selected.
@@ -559,8 +823,8 @@ private fun PlayActions(state: AppState, playback: PlaybackController, item: Med
 
     Column {
         FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 10.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 8.dp),
             itemVerticalAlignment = Alignment.CenterVertically
         ) {
             if (target != null) {
@@ -897,6 +1161,7 @@ private fun DetailMoreMenu(state: AppState, playback: PlaybackController, item: 
  * details listed every track and offered no way to pick one; the choice could
  * only be made once the film was running.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TrackPickers(state: AppState, item: MediaItemDto) {
     val audio = item.mediaStreams.filter { it.type == StreamType.AUDIO }
@@ -904,7 +1169,7 @@ private fun TrackPickers(state: AppState, item: MediaItemDto) {
     if (audio.size < 2 && subtitles.isEmpty()) return
     val chosenAudio = item.userData.audioStreamIndex
     val chosenSubtitle = item.userData.subtitleStreamIndex
-    Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         if (audio.size >= 2) {
             TrackPicker(
                 label = "音轨",
@@ -951,7 +1216,7 @@ private fun TrackPicker(label: String, current: String, options: List<Pair<Int, 
  * whatever that item actually carries.
  */
 @Composable
-private fun FileInfoSection(item: MediaItemDto) {
+private fun FileInfoSection(item: MediaItemDto, horizontal: Dp) {
     val video = item.mediaStreams.firstOrNull { it.type == StreamType.VIDEO }
     val audio = item.mediaStreams.filter { it.type == StreamType.AUDIO }
     val subtitles = item.mediaStreams.filter { it.type == StreamType.SUBTITLE }
@@ -976,38 +1241,39 @@ private fun FileInfoSection(item: MediaItemDto) {
             add("外挂字幕" to it.joinToString("\n"))
         }
     }
-    if (rows.isEmpty()) return
-
-    Column {
-        SectionHeader("文件信息")
-        // The paths are the part worth pulling out of the app, so the whole
-        // block is selectable rather than growing a copy button per row.
-        SelectionContainer {
-            Column(
-                Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                rows.forEach { (label, value) -> InfoRow(label, value) }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val verticalFields = maxWidth < 320.dp || LocalDensity.current.fontScale > 1.4f
+        Column {
+            DetailHeading("文件信息", horizontal)
+            // Paths and tracks stay selectable, including where they wrap.
+            SelectionContainer {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = horizontal),
+                    verticalArrangement = Arrangement.spacedBy(if (verticalFields) 10.dp else 6.dp)
+                ) {
+                    rows.forEach { (label, value) -> InfoRow(label, value, verticalFields) }
+                }
             }
+            Spacer(Modifier.height(20.dp))
         }
-        Spacer(Modifier.height(20.dp))
     }
 }
 
 @Composable
-private fun InfoRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth()) {
-        Text(
-            label,
-            modifier = Modifier.width(72.dp),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            value,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodySmall
-        )
+private fun InfoRow(label: String, value: String, vertical: Boolean) {
+    val field: @Composable (Modifier) -> Unit = { modifier ->
+        Text(label, modifier, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    if (vertical) {
+        Column {
+            field(Modifier)
+            Text(value, style = MaterialTheme.typography.bodySmall)
+        }
+    } else {
+        Row(Modifier.fillMaxWidth()) {
+            field(Modifier.width(72.dp))
+            Text(value, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 
@@ -1021,79 +1287,54 @@ private fun pathUnder(path: String, base: String?): String {
     return path.removePrefix(base.trimEnd('/') + "/")
 }
 
-/**
- * The rest of the run, laid sideways under one episode's page, opened at the
- * episode you are on. A series page gets the vertical list instead; here the
- * page is about a single file and this is the way out of it.
- */
 @Composable
-private fun SeasonEpisodesRow(
+private fun SiblingEpisodes(
     state: AppState,
     playback: PlaybackController,
-    current: MediaItemDto,
-    episodes: List<MediaItemDto>
+    item: MediaItemDto,
+    episodes: List<MediaItemDto>,
+    list: LazyListState,
+    cardWidth: Dp,
+    horizontal: Dp
 ) {
-    val listState = rememberLazyListState(
-        initialFirstVisibleItemIndex = episodes.indexOfFirst { it.id == current.id }.coerceAtLeast(0)
-    )
-    // Walking to the next episode reuses this row rather than building a new
-    // one, so it has to be told to slide again. The second key names which list
-    // this is, not what is in it: crossing into another season re-anchors, while
-    // marking an episode watched rebuilds the list without moving the row out
-    // from under someone who had scrolled it.
-    LaunchedEffect(current.id, episodes.firstOrNull()?.id) {
-        episodes.indexOfFirst { it.id == current.id }
-            .takeIf { it >= 0 }
-            ?.let { listState.scrollToItem(it) }
-    }
-
     Column(Modifier.fillMaxWidth()) {
-        // Season 0 is the specials folder, and the scanner already names the
-        // season item "特别篇"; "第 0 季" here was the same row calling it
-        // something else.
-        SectionHeader(
-            when (val season = current.parentIndexNumber) {
-                null -> "本季剧集"
-                0 -> "特别篇"
-                else -> "第 $season 季"
-            }
-        ) {
-            Text(
-                "${episodes.size} 集",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        DetailHeading(episodeSectionTitle(item), horizontal)
         LazyRow(
-            state = listState,
-            modifier = Modifier.wheelScrollsHorizontally(listState),
-            contentPadding = PaddingValues(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            state = list,
+            modifier = Modifier.wheelScrollsHorizontally(list),
+            contentPadding = PaddingValues(horizontal = horizontal),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(episodes, key = { it.id }) { episode ->
-                // Every tile in the row is the same show, so the series name the
-                // card usually leads with says nothing; the number does.
-                PosterCard(
-                    episode,
-                    width = 232.dp,
-                    shape = CardShape.LANDSCAPE,
-                    title = episode.episodeLabel ?: episode.name,
-                    subtitle = episode.name,
-                    downloaded = state.downloadOf(episode.id)?.state == DownloadState.DONE,
-                    menu = { dismiss -> ItemMenuItems(state, playback, episode, dismiss) },
-                    onPlay = { playback.play(episode) }
-                ) { state.navigate(Screen.Detail(episode.id)) }
+                Column(Modifier.width(cardWidth)) {
+                    PosterCard(
+                        episode,
+                        width = cardWidth,
+                        shape = CardShape.LANDSCAPE,
+                        title = episode.episodeLabel ?: episode.name,
+                        subtitle = if (episode.id == item.id) "当前剧集 · ${episode.name}" else episode.name,
+                        downloaded = state.downloadOf(episode.id)?.state == DownloadState.DONE,
+                        detailOpen = episode.id == item.id,
+                        menu = { dismiss -> ItemMenuItems(state, playback, episode, dismiss) }
+                    ) { state.navigate(Screen.Detail(episode.id)) }
+                    val label = "播放 ${episode.episodeLabel ?: episode.name}"
+                    TipIconButton(label, onClick = { playback.play(episode) }) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = label)
+                    }
+                }
             }
         }
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(16.dp))
     }
 }
 
 @Composable
-private fun PeopleRow(state: AppState, item: MediaItemDto) {
+private fun PeopleRow(state: AppState, item: MediaItemDto, list: LazyListState, compact: Boolean) {
     Column {
-        SectionHeader("演职人员")
+        DetailHeading("演职人员")
         LazyRow(
+            state = list,
+            modifier = Modifier.wheelScrollsHorizontally(list),
             contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -1107,11 +1348,11 @@ private fun PeopleRow(state: AppState, item: MediaItemDto) {
                     shape = MaterialTheme.shapes.medium
                 ) {
                     Column(
-                        modifier = Modifier.width(96.dp).padding(vertical = 4.dp),
+                        modifier = Modifier.width(if (compact) 76.dp else 96.dp).padding(vertical = 4.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Surface(
-                            modifier = Modifier.size(80.dp).clip(RoundedCornerShape(50)),
+                            modifier = Modifier.size(if (compact) 60.dp else 80.dp).clip(RoundedCornerShape(50)),
                             color = MaterialTheme.colorScheme.surfaceContainerHigh
                         ) {
                             if (person.imageUrl == null) {
@@ -1157,6 +1398,8 @@ private fun EpisodeRow(
     episode: MediaItemDto,
     basePath: String?,
     isNext: Boolean,
+    isCurrent: Boolean,
+    dense: Boolean,
     download: DownloadDto?,
     onPlay: () -> Unit,
     onOpen: () -> Unit,
@@ -1169,31 +1412,46 @@ private fun EpisodeRow(
 
     // The menu hangs off the box rather than the card's own content column, so
     // the offset the gesture reported is measured from the same corner it was.
-    BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp)) {
-        // A third of the row, held between something legible and something that
-        // does not dwarf the text beside it on a wide window.
-        val thumbnailWidth = (maxWidth * 0.32f).coerceIn(96.dp, 220.dp)
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = if (dense) 12.dp else 16.dp, vertical = 4.dp)) {
+        val fontScale = LocalDensity.current.fontScale
+        val stacked = maxWidth < 292.dp || (maxWidth < 400.dp && fontScale > 1.35f)
+        val thumbnailWidth = (maxWidth * (if (dense) 0.23f else 0.29f)).coerceIn(88.dp, 200.dp)
         Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .secondaryClick(
-                    onPointerType = { lastPointer = it },
-                    onOpen = { at -> menuAt = at }
-                )
-                // A row opens the episode, as a card does everywhere else; the
-                // play button on its picture plays it.
+            modifier = Modifier.fillMaxWidth()
+                .secondaryClick(onPointerType = { lastPointer = it }, onOpen = { menuAt = it })
                 .combinedClickable(
-                    onClick = onOpen,
+                    role = Role.Button,
+                    onClickLabel = if (isCurrent) "播放当前剧集" else "打开剧集详情",
+                    onClick = if (isCurrent) onPlay else onOpen,
                     onLongClickLabel = "打开菜单",
                     onLongClick = { if (lastPointer != PointerType.Mouse) menuAt = Offset.Zero }
                 ),
             colors = CardDefaults.cardColors(
-                containerColor = if (isNext) MaterialTheme.colorScheme.secondaryContainer
+                containerColor = if (isNext || isCurrent) MaterialTheme.colorScheme.secondaryContainer
                 else MaterialTheme.colorScheme.surfaceContainerHigh
             ),
             shape = MaterialTheme.shapes.medium
         ) {
-            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            val info: @Composable () -> Unit = { EpisodeInfo(episode, basePath, isNext, isCurrent, dense || stacked, download) }
+            val watchedTip = if (episode.userData.played) "标记为未观看" else "标记为已观看"
+            val actions: @Composable () -> Unit = {
+                val play = "播放 ${episode.episodeLabel ?: episode.name}"
+                if (stacked) TipIconButton(play, onClick = onPlay) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = play)
+                }
+                TipIconButton(watchedTip, onClick = onToggleWatched) {
+                    WatchedIcon(episode.playedState, watchedTip)
+                }
+                TipIconButton("剧集操作", onClick = { menuAt = Offset.Zero }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "剧集操作")
+                }
+            }
+            if (stacked) {
+                Column(Modifier.fillMaxWidth().padding(start = 12.dp, top = 10.dp, end = 8.dp)) {
+                    info()
+                    Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) { actions() }
+                }
+            } else Row(Modifier.padding(if (dense) 8.dp else 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 Surface(
                     // Proportional, not a fixed 148dp: on a 360dp phone the
                     // still, the padding and the trailing button left the text
@@ -1245,58 +1503,9 @@ private fun EpisodeRow(
                         }
                     }
                 }
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    if (isNext) {
-                        Text(
-                            "接下来",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Text(
-                        listOfNotNull(episode.episodeLabel, episode.name).joinToString(" · "),
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    episode.overview?.let {
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        listOfNotNull(
-                            watchedLabel(episode),
-                            formatRuntime(episode.runtimeMs),
-                            formatSize(episode.sizeBytes).takeIf { it.isNotBlank() },
-                            episode.mediaStreams.count { it.type == StreamType.SUBTITLE }
-                                .takeIf { it > 0 }?.let { "$it 条字幕" },
-                            downloadLabel(download)
-                        ).joinToString(" · "),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                    )
-                    episode.path?.takeIf { it.isNotBlank() }?.let {
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            pathUnder(it, basePath),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-                val tip = if (episode.userData.played) "标记为未观看" else "标记为已观看"
-                TipIconButton(tip, onClick = onToggleWatched) {
-                    WatchedIcon(episode.playedState, tip)
-                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) { info() }
+                actions()
             }
         }
 
@@ -1307,5 +1516,48 @@ private fun EpisodeRow(
         ) {
             menu { menuAt = null }
         }
+    }
+}
+
+@Composable
+private fun EpisodeInfo(
+    episode: MediaItemDto,
+    basePath: String?,
+    isNext: Boolean,
+    isCurrent: Boolean,
+    dense: Boolean,
+    download: DownloadDto?
+) {
+    if (isNext || isCurrent) {
+        Text(
+            if (isCurrent) "当前剧集" else "接下来",
+            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary
+        )
+    }
+    Text(
+        listOfNotNull(episode.episodeLabel, episode.name).joinToString(" · "),
+        style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis
+    )
+    if (!dense) episode.overview?.let {
+        Text(
+            it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2, overflow = TextOverflow.Ellipsis
+        )
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        listOfNotNull(
+            watchedLabel(episode), formatRuntime(episode.runtimeMs), downloadLabel(download),
+            formatSize(episode.sizeBytes).takeIf { !dense && it.isNotBlank() },
+            episode.mediaStreams.count { it.type == StreamType.SUBTITLE }.takeIf { !dense && it > 0 }?.let { "$it 条字幕" }
+        ).joinToString(" · "),
+        style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    if (!dense) episode.path?.takeIf { it.isNotBlank() }?.let {
+        Spacer(Modifier.height(2.dp))
+        Text(
+            pathUnder(it, basePath), style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis
+        )
     }
 }

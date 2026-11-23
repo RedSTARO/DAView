@@ -1,8 +1,5 @@
 package com.daview.app.ui
 
-import android.app.Activity
-import android.content.Context
-import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.compose.foundation.ScrollState
@@ -17,60 +14,68 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
-/**
- * Full-screen playback: system bars hidden but swipeable back, the screen kept
- * awake, and the display turned when the player asks for it.
- *
- * All three are window state rather than composition state, so they are undone
- * in [onDispose] — leaving the player screen by any route puts the bars, the
- * timeout and the rotation back the way they were. A phone's player is always
- * full screen, so [fullscreen] has nothing to decide here.
- */
+/** Android uses immersive bars only in ordinary fullscreen; multi-window and PiP own their chrome. */
 @Composable
 actual fun PlaybackPresentation(orientation: ScreenOrientation, fullscreen: Boolean) {
     val context = LocalContext.current
-    val activity = remember(context) { context.findActivity() }
+    val activity = remember(context) { context.findPlayerActivity() }
+    val window = activity?.window
 
-    DisposableEffect(activity) {
-        val window = activity?.window
+    // Keep these independent of geometry and episode; restore only upon leaving playback.
+    DisposableEffect(window) {
         if (window == null) return@DisposableEffect onDispose { }
-
-        val controller = WindowCompat.getInsetsController(window, window.decorView)
-        val previousOrientation = activity.requestedOrientation
-
-        // Transient rather than sticky: a swipe brings the bars back for a few
-        // seconds, which is how someone checks the time without leaving the film.
-        controller.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        controller.hide(WindowInsetsCompat.Type.systemBars())
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
+        val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        val wasKeepingScreenOn = window.attributes.flags and flag != 0
+        val previousBrightness = window.attributes.screenBrightness
+        window.addFlags(flag)
         onDispose {
-            controller.show(WindowInsetsCompat.Type.systemBars())
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            activity.requestedOrientation = previousOrientation
-            // The player's brightness gesture sets it on the window; the rest
-            // of the app goes back to the system's.
-            window.attributes = window.attributes.apply {
-                screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-            }
+            if (!wasKeepingScreenOn) window.clearFlags(flag)
+            window.attributes = window.attributes.apply { screenBrightness = previousBrightness }
         }
     }
 
-    // Turned separately, so changing the lock does not flash the system bars.
-    DisposableEffect(activity, orientation) {
-        activity?.requestedOrientation = when (orientation) {
-            ScreenOrientation.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-            ScreenOrientation.SENSOR -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    val windowInfo = LocalAppWindowInfo.current
+    val floating = windowInfo.isInMultiWindow || windowInfo.isInPictureInPicture
+    val immersive = fullscreen && !floating
+    DisposableEffect(window, immersive) {
+        if (window == null || !immersive) return@DisposableEffect onDispose { }
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        val previousBehavior = controller.systemBarsBehavior
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        val appBars = WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars()
+        controller.hide(appBars)
+        onDispose {
+            controller.systemBarsBehavior = previousBehavior
+            if (activity?.isInPictureInPictureMode != true) controller.show(appBars)
         }
-        onDispose { }
+    }
+    DisposableEffect(window) {
+        if (window == null) return@DisposableEffect onDispose { }
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        val lightStatus = controller.isAppearanceLightStatusBars
+        val lightNavigation = controller.isAppearanceLightNavigationBars
+        controller.isAppearanceLightStatusBars = false
+        controller.isAppearanceLightNavigationBars = false
+        onDispose {
+            controller.isAppearanceLightStatusBars = lightStatus
+            controller.isAppearanceLightNavigationBars = lightNavigation
+        }
+    }
+
+    // Only an explicit request may turn the display; never rotate a split task or a hinge posture.
+    val lockLandscape = orientation == ScreenOrientation.LANDSCAPE && !floating && windowInfo.fold?.dividesWindow != true
+    DisposableEffect(activity, lockLandscape) {
+        if (activity == null || !lockLandscape) return@DisposableEffect onDispose { }
+        val previousOrientation = activity.requestedOrientation
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        onDispose { activity.requestedOrientation = previousOrientation }
     }
 }
 
 @Composable
 actual fun SystemBarAppearance(darkTheme: Boolean) {
     val context = LocalContext.current
-    val activity = remember(context) { context.findActivity() }
+    val activity = remember(context) { context.findPlayerActivity() }
 
     DisposableEffect(activity, darkTheme) {
         val window = activity?.window
@@ -90,17 +95,6 @@ actual fun SystemBarAppearance(darkTheme: Boolean) {
 @Composable
 actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {
     androidx.activity.compose.BackHandler(enabled = enabled, onBack = onBack)
-}
-
-/**
- * The activity behind a composable's context. Compose hands out the context it
- * was created with, which for an activity-hosted composition is the activity
- * itself, but a themed wrapper in between is legal and does happen.
- */
-private tailrec fun Context.findActivity(): Activity? = when (this) {
-    is Activity -> this
-    is ContextWrapper -> baseContext.findActivity()
-    else -> null
 }
 
 /** Touch already drags a row; there is no wheel to translate. */

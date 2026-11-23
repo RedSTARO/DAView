@@ -180,6 +180,7 @@ kotlin {
                 implementation(project(":core"))
                 implementation(compose.preview)
                 implementation(libs.androidx.activity.compose)
+                implementation(libs.androidx.window)
                 implementation(libs.androidx.media3.exoplayer)
                 implementation(libs.androidx.media3.session)
                 implementation(libs.androidx.media3.ui)
@@ -245,6 +246,8 @@ android {
         versionName = daviewVersionLabel
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+    sourceSets.getByName("androidTest").assets.srcDir("src/androidInstrumentedTest/assets")
+
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
         // Build and tooling metadata nothing reads at run time. The coroutines
@@ -262,6 +265,10 @@ android {
         jniLibs.useLegacyPackaging = true
     }
     buildTypes {
+        getByName("debug") {
+            // Run foldable smoke tests next to a signed release without touching its data.
+            if (providers.gradleProperty("daviewSideBySide").orNull == "true") applicationIdSuffix = ".debug"
+        }
         getByName("release") {
             // Shrinking, optimisation and obfuscation. The APK was 24 MB, 17 of
             // them dex — most of it Material's extended icon set and library
@@ -384,5 +391,9 @@ val verifyReleaseBytecode = tasks.register<JavaExec>("verifyReleaseBytecode") {
     args(layout.buildDirectory.file("compose/tmp/proguardReleaseJars/mapping.txt").get().asFile.absolutePath)
 }
 
-tasks.matching { it.name == "createReleaseDistributable" || it.name.startsWith("packageRelease") }
-    .configureEach { dependsOn(verifyReleaseBytecode) }
+// Android has its own `packageRelease` task and must not pull in desktop ProGuard.
+// The desktop aggregate tasks depend on these jpackage/uber-JAR tasks.
+tasks.withType<org.jetbrains.compose.desktop.application.tasks.AbstractJPackageTask>().matching {
+    it.name == "createReleaseDistributable" || it.name.startsWith("packageRelease")
+}.configureEach { dependsOn(verifyReleaseBytecode) }
+tasks.matching { it.name == "packageReleaseUberJarForCurrentOS" }.configureEach { dependsOn(verifyReleaseBytecode) }

@@ -4,31 +4,38 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioManager
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Rational
 import android.view.GestureDetector
 import android.view.MotionEvent
+import android.view.View
+import androidx.activity.ComponentActivity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Audiotrack
@@ -36,6 +43,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.ScreenLockLandscape
 import androidx.compose.material.icons.filled.ScreenRotation
@@ -44,7 +52,6 @@ import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.automirrored.filled.Toc
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -57,19 +64,27 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -83,6 +98,7 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -91,6 +107,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.ui.CaptionStyleCompat
+import androidx.media3.ui.PlayerControlView
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import com.daview.app.platform.AndroidFilePicker
@@ -125,6 +142,7 @@ import kotlin.math.roundToInt
  * [PlayerScreenState].
  */
 @androidx.annotation.OptIn(UnstableApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 actual fun InternalPlayer(
     info: PlaybackInfoDto,
@@ -145,10 +163,7 @@ actual fun InternalPlayer(
     val audioStreams = remember(info) { info.item.mediaStreams.filter { it.type == StreamType.AUDIO } }
     val subtitleStreams = remember(info) { info.item.mediaStreams.filter { it.type == StreamType.SUBTITLE } }
 
-    var audioMenu by remember { mutableStateOf(false) }
-    var subtitleMenu by remember { mutableStateOf(false) }
-    var tuningMenu by remember { mutableStateOf(false) }
-    var chapterMenu by remember { mutableStateOf(false) }
+    var openMenu by remember { mutableStateOf<PlayerMenu?>(null) }
     var selectedAudio by remember { mutableStateOf(info.audioStreamIndex) }
     // The viewer's audio choice when this phone cannot play it and media3
     // plays another track instead. The stand-in is what the menu ticks, but
@@ -174,13 +189,15 @@ actual fun InternalPlayer(
     var hint by remember { mutableStateOf<String?>(null) }
     var boosting by remember { mutableStateOf(false) }
 
-    val activity = remember(context) { context.findActivityOrNull() }
+    val activity = remember(context) { context.findPlayerActivity() }
     val pipSupported = remember(activity) { activity != null && PipRequest.supported(activity) }
 
     // Whether the app's own overlay is on screen. It rides with media3's own
     // transport controls, so the picture is clean when they go.
     var controlsVisible by remember { mutableStateOf(true) }
-    val inPictureInPicture = rememberInPictureInPicture()
+    val appWindow = LocalAppWindowInfo.current
+    val inPictureInPicture = rememberInPictureInPicture() || appWindow.isInPictureInPicture
+    val chromeHidden = inPictureInPicture || PipRequest.isTransitioning(activity)
 
     // ASS files are not handed to media3 at all — they are drawn by
     // AssSubtitleView instead, which keeps the typesetting media3's parser strips.
@@ -362,36 +379,28 @@ actual fun InternalPlayer(
         onDispose { session?.release() }
     }
 
-    // The video shape the corner window should take, and the size the subtitle
-    // overlay needs: script coordinates are relative to the picture.
-    var videoSize by remember { mutableStateOf(0 to 0) }
-    var playing by remember { mutableStateOf(false) }
+    var videoSize by remember { mutableStateOf(player.videoSize) }
+    var playing by remember { mutableStateOf(player.isPlaying) }
+    var playWhenReady by remember { mutableStateOf(player.playWhenReady) }
+    var playbackState by remember { mutableStateOf(player.playbackState) }
+    var playbackSuppressed by remember { mutableStateOf(player.playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE) }
     DisposableEffect(player) {
-        PipRequest.wanted = true
         val listener = object : Player.Listener {
-            override fun onVideoSizeChanged(size: androidx.media3.common.VideoSize) {
-                if (size.width > 0 && size.height > 0) {
-                    PipRequest.aspect = Rational(size.width, size.height)
-                    videoSize = size.width to size.height
-                }
+            override fun onEvents(player: Player, events: Player.Events) {
+                videoSize = player.videoSize
+                playing = player.isPlaying
+                playWhenReady = player.playWhenReady
+                playbackState = player.playbackState
+                playbackSuppressed = player.playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE
             }
 
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                playing = isPlaying
-            }
-
-            // Media3's own settings menu has a speed list too. Its choice is
-            // kept like the app's own; the long press's double speed is not.
+            // The native settings menu's choice persists; temporary gesture boost does not.
             override fun onPlaybackParametersChanged(parameters: PlaybackParameters) {
                 if (!boosting && abs(parameters.speed - screen.speed) > 0.001f) screen.speed = parameters.speed
             }
         }
         player.addListener(listener)
-        onDispose {
-            player.removeListener(listener)
-            PipRequest.wanted = false
-            PipRequest.aspect = null
-        }
+        onDispose { player.removeListener(listener) }
     }
 
     // The ASS script on screen, if the chosen subtitle is one DAView draws
@@ -447,15 +456,19 @@ actual fun InternalPlayer(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, player) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) player.pause()
+            if (event == Lifecycle.Event.ON_STOP) {
+                player.pause()
+                report()
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(player) {
         onDispose {
             val position = player.currentPosition
+            playerView?.player = null
             player.release()
             latestOnClose(position)
         }
@@ -477,8 +490,8 @@ actual fun InternalPlayer(
 
     // Locked, the back gesture does nothing either: it is the easiest touch of
     // all to make by accident.
-    androidx.activity.compose.BackHandler(enabled = locked && !inPictureInPicture) {
-        hint = "屏幕已锁定，点左侧的锁解锁"
+    androidx.activity.compose.BackHandler(enabled = !chromeHidden && (locked || openMenu != null)) {
+        if (openMenu != null) openMenu = null else hint = "屏幕已锁定，点左侧的锁解锁"
     }
     LaunchedEffect(assView, screen.subtitleDelayMs) {
         assView?.delayMs = screen.subtitleDelayMs
@@ -562,31 +575,290 @@ actual fun InternalPlayer(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    val title = info.item.seriesName?.let { series ->
+        listOfNotNull(series, info.item.episodeLabel, info.item.name).distinct().joinToString(" · ")
+    } ?: info.item.name
+    val videoAspect = videoSize.displayAspect()
+    val ratio = videoAspect?.pipRatio()
+    val goBack: () -> Unit = {
+        val dispatcher = (activity as? ComponentActivity)?.onBackPressedDispatcher
+        if (dispatcher != null) dispatcher.onBackPressed() else latestOnClose(player.currentPosition)
+    }
+    val canEnterPip = pipSupported && ratio != null && playbackError == null
+
+    val menuContent: @Composable ColumnScope.(PlayerMenu) -> Unit = { menu ->
+        when (menu) {
+            PlayerMenu.More -> {
+                listOfNotNull(
+                    PlayerMenu.Audio.takeIf { audioStreams.isNotEmpty() }, PlayerMenu.Subtitle, PlayerMenu.Tuning,
+                    PlayerMenu.Chapter.takeIf { chapters.isNotEmpty() }
+                ).forEach { target ->
+                    DropdownMenuItem(text = { Text(target.title) }, onClick = { openMenu = target })
+                }
+                info.previousItemId?.let { previous ->
+                    DropdownMenuItem(text = { Text("上一集") }, onClick = {
+                        openMenu = null
+                        latestOnSkip(previous, player.currentPosition)
+                    })
+                }
+                info.nextItemId?.let { next ->
+                    DropdownMenuItem(text = { Text("下一集") }, onClick = {
+                        openMenu = null
+                        latestOnSkip(next, player.currentPosition)
+                    })
+                }
+                introEnd?.let { end ->
+                    DropdownMenuItem(text = { Text("跳过片头") }, onClick = {
+                        player.seekTo(end)
+                        openMenu = null
+                    })
+                }
+                if (canEnterPip) {
+                    DropdownMenuItem(text = { Text("画中画") }, onClick = {
+                        openMenu = null
+                        activity?.let { PipRequest.enter(it) }
+                    })
+                }
+            }
+            PlayerMenu.Audio -> {
+                audioStreams.forEach { stream ->
+                    // A track the phone cannot decode, or one the
+                    // player does not offer at all — a Blu-ray's
+                    // TrueHD — is listed but cannot be chosen:
+                    // forcing it would stop playback.
+                    val playable = trackFor(player, C.TRACK_TYPE_AUDIO, stream, audioStreams)?.isTrackSupported(0)
+                        ?: player.currentTracks.groups.isEmpty()
+                    DropdownMenuItem(
+                        leadingIcon = { ChosenMark(stream.index == selectedAudio) },
+                        text = { Text(if (playable) stream.displayTitle else "${stream.displayTitle}（无法播放）") },
+                        enabled = playable,
+                        onClick = {
+                            openMenu = null
+                            // While media3 has no track list the
+                            // choice waits for it, as the server's
+                            // own pick does.
+                            if (player.currentTracks.groups.isEmpty()) {
+                                selectedAudio = stream.index
+                                audioStandIn = null
+                                pendingAudio = stream.index
+                            } else if (selectTrack(player, C.TRACK_TYPE_AUDIO, stream, audioStreams)) {
+                                selectedAudio = stream.index
+                                audioStandIn = null
+                            }
+                            report()
+                        }
+                    )
+                }
+            }
+            PlayerMenu.Subtitle -> {
+                DropdownMenuItem(
+                    leadingIcon = { ChosenMark(subtitlesOff) },
+                    text = { Text("关闭字幕") },
+                    onClick = {
+                        openMenu = null
+                        subtitlesOff = true
+                        mountedSubtitle = null
+                        pendingMount = null
+                        report()
+                    }
+                )
+                subtitleStreams.forEach { stream ->
+                    DropdownMenuItem(
+                        leadingIcon = {
+                            ChosenMark(!subtitlesOff && mountedSubtitle == null && stream.index == selectedSubtitle)
+                        },
+                        text = { Text(stream.displayTitle) },
+                        onClick = {
+                            openMenu = null
+                            selectedSubtitle = stream.index
+                            subtitlesOff = false
+                            mountedSubtitle = null
+                            pendingMount = null
+                            // ASS, beside the video or inside it, has no
+                            // media3 track to select — the overlay picks
+                            // it up from selectedSubtitle.
+                            if (!stream.isAss) {
+                                player.trackSelectionParameters = player.trackSelectionParameters
+                                    .buildUpon()
+                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                    .build()
+                                selectTrack(player, C.TRACK_TYPE_TEXT, stream, subtitleStreams)
+                            }
+                            report()
+                        }
+                    )
+                }
+                mountedSubtitle?.let { name ->
+                    DropdownMenuItem(
+                        leadingIcon = { ChosenMark(!subtitlesOff) },
+                        text = { Text("$name（手机上的文件）") },
+                        onClick = { openMenu = null }
+                    )
+                }
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("从手机加载字幕文件…") },
+                    onClick = {
+                        openMenu = null
+                        mountSubtitleFile()
+                    }
+                )
+            }
+            PlayerMenu.Tuning -> {
+                val assShowing = assScript != null
+                Text(
+                    if (assShowing) "字幕延迟 ${formatDelay(screen.subtitleDelayMs)}" else "字幕延迟只能调 ASS / SSA 字幕",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+                if (assShowing) {
+                    Row(Modifier.padding(horizontal = 8.dp)) {
+                        TextButton(onClick = { screen.subtitleDelayMs -= 100 }) { Text("−0.1 秒") }
+                        TextButton(onClick = { screen.subtitleDelayMs += 100 }) { Text("+0.1 秒") }
+                        TextButton(onClick = { screen.subtitleDelayMs = 0 }, enabled = screen.subtitleDelayMs != 0L) { Text("归零") }
+                    }
+                }
+                HorizontalDivider()
+                Text(
+                    if (assShowing) "字幕大小：ASS / SSA 按原样显示" else "字幕大小 ${(effectiveScale * 100).roundToInt()}%",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+                if (!assShowing) {
+                    Row(Modifier.padding(horizontal = 8.dp)) {
+                        TextButton(onClick = { screen.subtitleScale = (effectiveScale - 0.1f).coerceIn(0.5f, 3f) }) { Text("小一点") }
+                        TextButton(onClick = { screen.subtitleScale = (effectiveScale + 0.1f).coerceIn(0.5f, 3f) }) { Text("大一点") }
+                        TextButton(onClick = { screen.subtitleScale = null }, enabled = screen.subtitleScale != null) { Text("按设置") }
+                    }
+                }
+                HorizontalDivider()
+                Text(
+                    "播放速度",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+                SPEEDS.forEach { value ->
+                    DropdownMenuItem(
+                        leadingIcon = { ChosenMark(abs(screen.speed - value) < 0.001f) },
+                        text = { Text(if (value == 1f) "正常" else "$value×") },
+                        onClick = {
+                            openMenu = null
+                            screen.speed = value
+                            player.playbackParameters = PlaybackParameters(value)
+                        }
+                    )
+                }
+            }
+            PlayerMenu.Chapter -> {
+                chapters.forEachIndexed { index, chapter ->
+                    DropdownMenuItem(
+                        leadingIcon = { ChosenMark(index == currentChapter) },
+                        text = { Text("${formatDuration(chapter.startMs)}  ${chapter.title.ifBlank { "第 ${index + 1} 章" }}") },
+                        onClick = {
+                            openMenu = null
+                            player.seekTo(chapter.startMs)
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    PublishPlaybackPip(
+        activity = activity,
+        source = playerView?.videoSurfaceView,
+        aspect = ratio,
+        autoEnter = canEnterPip && !appWindow.isInMultiWindow && playWhenReady && !playbackSuppressed &&
+            (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING),
+        hideNativeControls = { playerView?.hideNativeControls() }
+    )
+    LaunchedEffect(chromeHidden, locked) {
+        if (chromeHidden || locked) openMenu = null
+    }
+
+    val density = LocalDensity.current
+    val direction = LocalLayoutDirection.current
+    val safeDrawing = WindowInsets.safeDrawing
+    val stableControlInsets = safeDrawing.union(WindowInsets.systemBarsIgnoringVisibility)
+    val cutout = WindowInsets.displayCutout
+    var origin by remember { mutableStateOf(Offset.Zero) }
+    var decorSize by remember { mutableStateOf(IntSize.Zero) }
+    BoxWithConstraints(
+        Modifier.fillMaxSize().background(Color.Black).onGloballyPositioned { coordinates ->
+            origin = coordinates.localToWindow(Offset.Zero)
+            val decor = activity?.window?.decorView
+            decorSize = if (decor == null) coordinates.size else IntSize(decor.width, decor.height)
+        },
+        contentAlignment = AbsoluteAlignment.TopLeft
+    ) {
+        val viewport = with(density) {
+            val left = origin.x.toDp()
+            val top = origin.y.toDp()
+            WindowPane(left, top, left + maxWidth, top + maxHeight)
+        }
+        val windowWidth = with(density) { decorSize.width.takeIf { it > 0 }?.toDp() ?: viewport.right }
+        val windowHeight = with(density) { decorSize.height.takeIf { it > 0 }?.toDp() ?: viewport.bottom }
+        val window = WindowPane(0.dp, 0.dp, windowWidth, windowHeight)
+        val pictureBounds = window.inset(cutout, density, direction)
+        val touchBounds = window.inset(safeDrawing, density, direction)
+        // Transient system bars may move controls, not select another pane or HUD.
+        val stableTouchBounds = window.inset(stableControlInsets, density, direction)
+        val panes = playerPanes(
+            viewport, appWindow.fold.takeUnless { inPictureInPicture }, direction == LayoutDirection.Rtl,
+            pictureBounds, stableTouchBounds, videoAspect
+        )
+        val tabletop = panes.tabletopControls != null
+        val picturePane = if (inPictureInPicture) viewport else panes.picture.clampTo(pictureBounds)
+        val controlsPane = panes.controls
+        // Split-screen is still a normal player when the task has room. Only reduce the
+        // controls for an actually cramped pane, not for the windowing-mode flag itself.
+        val compact = !tabletop && !controlsPane.clampTo(stableTouchBounds).fitsPlayerHud()
+        val nativeHud = !compact && !tabletop && panes.picture == viewport
+        val popupMenus = nativeHud && picturePane == viewport
+        val nativeInsets = panePadding(picturePane, touchBounds, direction)
+        val showPause = playWhenReady && !playbackSuppressed
+        val useNativeControls = nativeHud && !chromeHidden && !locked
+        var foldHudVisible by remember(nativeHud, tabletop, compact) { mutableStateOf(true) }
+        var controlTouches by remember { mutableIntStateOf(0) }
+        var scrubbing by remember { mutableStateOf(false) }
+        val showHud = when {
+            chromeHidden || locked -> false
+            tabletop || compact -> true
+            nativeHud -> controlsVisible
+            else -> foldHudVisible || !playWhenReady || openMenu != null
+        }
+        LaunchedEffect(nativeHud, tabletop, compact, foldHudVisible, playing, openMenu, controlTouches, scrubbing) {
+            if (!nativeHud && !tabletop && !compact && foldHudVisible && playing && openMenu == null && !scrubbing) {
+                delay(5_000)
+                foldHudVisible = false
+            }
+        }
+        LaunchedEffect(controlsPane, tabletop, compact, nativeHud) { openMenu = null }
+        var cancelPictureGesture by remember { mutableStateOf<(() -> Unit)?>(null) }
+        val suppressGestures by rememberUpdatedState(chromeHidden || locked || openMenu != null)
+        val tapPicture by rememberUpdatedState<() -> Unit>({
+            when {
+                tabletop || compact -> Unit
+                nativeHud -> playerView?.performClick()
+                else -> foldHudVisible = !showHud
+            }
+        })
+        // A pointer captured before folding must not commit a seek against the new geometry
+        // or carry a speed boost into another pane or into PiP.
+        LaunchedEffect(picturePane, suppressGestures, tabletop, compact) { cancelPictureGesture?.invoke() }
+
+        // No posture/PiP key or conditional parent around this AndroidView. Media3 keeps the
+        // same SurfaceView, subtitles and decoder; we only remeasure and place them.
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
+                    useController = useNativeControls
                     this.player = player
-                    useController = true
-                    // Without this a stalled network stream is a still frame
-                    // with nothing to say it is loading.
+                    setEnableComposeSurfaceSyncWorkaround(true) // Media3 applies it on API 34 only.
                     setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
-                    // Media3's previous / next act on a playlist of one; the
-                    // episode buttons in the top bar take their place.
                     setShowPreviousButton(false)
                     setShowNextButton(false)
-                    // The app draws its own subtitle menu, and it is the only
-                    // one that knows about side-loaded subtitle files.
                     setShowSubtitleButton(false)
-                    // media3 draws the subtitles it still renders itself — SRT
-                    // and VTT, beside the video or inside it — in the phone's
-                    // caption style, and with captions off in the phone's
-                    // settings, as they ship, white on an opaque black box that
-                    // blanked a strip of the picture under every line. White with
-                    // a black outline instead, as mpv draws them on the desktop.
-                    // The phone's settings are passed over, as they already are
-                    // for the size; media3 reads them in the constructor, so this
-                    // has to come after it.
                     subtitleView?.setStyle(
                         CaptionStyleCompat(
                             android.graphics.Color.WHITE,
@@ -597,102 +869,82 @@ actual fun InternalPlayer(
                             /* typeface = */ null
                         )
                     )
-                    // PlayerView keeps a frame between the picture and the
-                    // controls for exactly this.
                     overlayFrameLayout?.addView(
                         AssSubtitleView(ctx)
                             .apply { position = { player.currentPosition } }
                             .also { assView = it }
                     )
-                    setControllerVisibilityListener(
-                        PlayerView.ControllerVisibilityListener { visibility ->
-                            controlsVisible = visibility == android.view.View.VISIBLE
-                        }
-                    )
-                    installGestures(
+                    setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+                        controlsVisible = visibility == View.VISIBLE
+                    })
+                    if (useController) showController()
+                    cancelPictureGesture = installGestures(
                         view = this,
                         player = player,
-                        isLocked = { locked },
+                        canHandle = { !suppressGestures },
+                        onTap = { tapPicture() },
                         onHint = { hint = it },
                         onBoost = { boosting = it }
                     )
                     playerView = this
                 }
             },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.playerPane(picturePane, viewport),
+            onRelease = { view ->
+                cancelPictureGesture?.invoke()
+                view.setOnTouchListener(null)
+                view.setControllerVisibilityListener(null as PlayerView.ControllerVisibilityListener?)
+                view.player = null
+            },
             update = { view ->
-                view.useController = !inPictureInPicture && !locked
+                if (view.useController != useNativeControls) {
+                    if (useNativeControls) {
+                        view.useController = true
+                        view.showController()
+                    } else {
+                        view.hideNativeControls()
+                    }
+                }
+                view.findViewById<PlayerControlView>(androidx.media3.ui.R.id.exo_controller)?.let { controller ->
+                    with(density) {
+                        val left = nativeInsets.calculateLeftPadding(direction).roundToPx()
+                        val top = nativeInsets.calculateTopPadding().roundToPx()
+                        val right = nativeInsets.calculateRightPadding(direction).roundToPx()
+                        val bottom = nativeInsets.calculateBottomPadding().roundToPx()
+                        if (controller.paddingLeft != left || controller.paddingTop != top ||
+                            controller.paddingRight != right || controller.paddingBottom != bottom
+                        ) controller.setPadding(left, top, right, bottom)
+                    }
+                }
                 assView?.apply {
                     script = assScript
-                    videoWidth = videoSize.first
-                    videoHeight = videoSize.second
+                    videoWidth = videoSize.width
+                    videoHeight = videoSize.height
                     driving = playing
-                    // While paused nothing asks for frames, so a change of
-                    // subtitle or of size needs one repaint of its own.
                     if (!playing) invalidate()
                 }
             }
         )
 
-        if (!inPictureInPicture) {
-            (if (boosting) "2× 快进中" else hint)?.let { text ->
-                Surface(
-                    color = Color.Black.copy(alpha = 0.6f),
-                    contentColor = Color.White,
-                    shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.align(if (boosting) Alignment.TopCenter else Alignment.Center)
-                        .windowInsetsPadding(WindowInsets.systemBars)
-                        .padding(top = if (boosting) 24.dp else 0.dp)
-                ) {
-                    Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp))
+        if (!chromeHidden) {
+            Box(Modifier.playerPane(picturePane, viewport).padding(nativeInsets)) {
+                (if (boosting) "2× 快进中" else hint)?.let { text ->
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.6f),
+                        contentColor = Color.White,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.align(if (boosting) Alignment.TopCenter else Alignment.Center)
+                            .padding(top = if (boosting) 24.dp else 0.dp)
+                    ) {
+                        Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp))
+                    }
                 }
             }
-        }
 
-        // Stays for as long as the opening plays, with the controls or without.
-        if (introEnd != null && !inPictureInPicture && !locked) {
-            Button(
-                onClick = { player.seekTo(introEnd) },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(end = 24.dp, bottom = if (controlsVisible) 120.dp else 32.dp)
-            ) { Text("跳过片头") }
-        }
-
-        // Locked, the one thing on screen is the way back.
-        if (locked && !inPictureInPicture) {
-            IconButton(
-                onClick = { locked = false },
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(start = 16.dp)
-                    .background(Color.Black.copy(alpha = 0.45f), MaterialTheme.shapes.extraLarge)
-            ) {
-                Icon(Icons.Filled.Lock, contentDescription = "已锁定，点按解锁", tint = Color.White)
-            }
-        }
-
-        // Rides with media3's own controls so the picture is clean when they go.
-        AnimatedVisibility(
-            visible = controlsVisible && !inPictureInPicture && !locked,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.TopCenter)
-        ) {
-            val title = info.item.seriesName?.let { series ->
-                listOfNotNull(series, info.item.episodeLabel, info.item.name).distinct().joinToString(" · ")
-            } ?: info.item.name
-
-            // A scrim under the white text: over a bright frame the title and
-            // the buttons were white on near-white.
-            BoxWithConstraints(
-                Modifier
-                    .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent)))
-                    .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(horizontal = 8.dp, vertical = 6.dp)
+            Box(
+                Modifier.playerPane(controlsPane, viewport)
+                    .then(if (tabletop) Modifier.background(Color(0xFF17171B)) else Modifier)
+                    .padding(panePadding(controlsPane, touchBounds, direction))
             ) {
                 val buttons: @Composable RowScope.() -> Unit = {
                     info.previousItemId?.let { previous ->
@@ -705,263 +957,125 @@ actual fun InternalPlayer(
                             Icon(Icons.Filled.SkipNext, contentDescription = "下一集", tint = Color.White)
                         }
                     }
-                    Box {
-                        IconButton(onClick = { audioMenu = true }) {
-                            Icon(Icons.Filled.Audiotrack, contentDescription = "音轨", tint = Color.White)
-                        }
-                        DropdownMenu(audioMenu, onDismissRequest = { audioMenu = false }) {
-                            if (audioStreams.isEmpty()) {
-                                DropdownMenuItem(text = { Text("没有可选的音轨") }, onClick = { audioMenu = false }, enabled = false)
-                            }
-                            audioStreams.forEach { stream ->
-                                // A track the phone cannot decode, or one the
-                                // player does not offer at all — a Blu-ray's
-                                // TrueHD — is listed but cannot be chosen:
-                                // forcing it would stop playback.
-                                val playable = trackFor(player, C.TRACK_TYPE_AUDIO, stream, audioStreams)?.isTrackSupported(0)
-                                    ?: player.currentTracks.groups.isEmpty()
-                                DropdownMenuItem(
-                                    leadingIcon = { ChosenMark(stream.index == selectedAudio) },
-                                    text = { Text(if (playable) stream.displayTitle else "${stream.displayTitle}（无法播放）") },
-                                    enabled = playable,
-                                    onClick = {
-                                        audioMenu = false
-                                        // While media3 has no track list the
-                                        // choice waits for it, as the server's
-                                        // own pick does.
-                                        if (player.currentTracks.groups.isEmpty()) {
-                                            selectedAudio = stream.index
-                                            audioStandIn = null
-                                            pendingAudio = stream.index
-                                        } else if (selectTrack(player, C.TRACK_TYPE_AUDIO, stream, audioStreams)) {
-                                            selectedAudio = stream.index
-                                            audioStandIn = null
-                                        }
-                                        report()
-                                    }
-                                )
-                            }
-                        }
+                    if (audioStreams.isNotEmpty()) {
+                        PlayerMenuButton(PlayerMenu.Audio, Icons.Filled.Audiotrack, popupMenus, openMenu, { openMenu = it }, menuContent)
                     }
-                    Box {
-                        IconButton(onClick = { subtitleMenu = true }) {
-                            Icon(Icons.Filled.ClosedCaption, contentDescription = "字幕", tint = Color.White)
-                        }
-                        DropdownMenu(subtitleMenu, onDismissRequest = { subtitleMenu = false }) {
-                            DropdownMenuItem(
-                                leadingIcon = { ChosenMark(subtitlesOff) },
-                                text = { Text("关闭字幕") },
-                                onClick = {
-                                    subtitleMenu = false
-                                    subtitlesOff = true
-                                    mountedSubtitle = null
-                                    pendingMount = null
-                                    report()
-                                }
-                            )
-                            subtitleStreams.forEach { stream ->
-                                DropdownMenuItem(
-                                    leadingIcon = {
-                                        ChosenMark(!subtitlesOff && mountedSubtitle == null && stream.index == selectedSubtitle)
-                                    },
-                                    text = { Text(stream.displayTitle) },
-                                    onClick = {
-                                        subtitleMenu = false
-                                        selectedSubtitle = stream.index
-                                        subtitlesOff = false
-                                        mountedSubtitle = null
-                                        pendingMount = null
-                                        // ASS, beside the video or inside it, has no
-                                        // media3 track to select — the overlay picks
-                                        // it up from selectedSubtitle.
-                                        if (!stream.isAss) {
-                                            player.trackSelectionParameters = player.trackSelectionParameters
-                                                .buildUpon()
-                                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                                                .build()
-                                            selectTrack(player, C.TRACK_TYPE_TEXT, stream, subtitleStreams)
-                                        }
-                                        report()
-                                    }
-                                )
-                            }
-                            mountedSubtitle?.let { name ->
-                                DropdownMenuItem(
-                                    leadingIcon = { ChosenMark(!subtitlesOff) },
-                                    text = { Text("$name（手机上的文件）") },
-                                    onClick = { subtitleMenu = false }
-                                )
-                            }
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text("从手机加载字幕文件…") },
-                                onClick = {
-                                    subtitleMenu = false
-                                    mountSubtitleFile()
-                                }
-                            )
-                        }
-                    }
-                    Box {
-                        IconButton(onClick = { tuningMenu = true }) {
-                            Icon(Icons.Filled.Tune, contentDescription = "字幕延迟、大小与播放速度", tint = Color.White)
-                        }
-                        DropdownMenu(tuningMenu, onDismissRequest = { tuningMenu = false }) {
-                            val assShowing = assScript != null
-                            Text(
-                                if (assShowing) "字幕延迟 ${formatDelay(screen.subtitleDelayMs)}" else "字幕延迟只能调 ASS / SSA 字幕",
-                                style = MaterialTheme.typography.labelLarge,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                            )
-                            if (assShowing) {
-                                Row(Modifier.padding(horizontal = 8.dp)) {
-                                    TextButton(onClick = { screen.subtitleDelayMs -= 100 }) { Text("−0.1 秒") }
-                                    TextButton(onClick = { screen.subtitleDelayMs += 100 }) { Text("+0.1 秒") }
-                                    TextButton(onClick = { screen.subtitleDelayMs = 0 }, enabled = screen.subtitleDelayMs != 0L) { Text("归零") }
-                                }
-                            }
-                            HorizontalDivider()
-                            Text(
-                                if (assShowing) "字幕大小：ASS / SSA 按原样显示" else "字幕大小 ${(effectiveScale * 100).roundToInt()}%",
-                                style = MaterialTheme.typography.labelLarge,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                            )
-                            if (!assShowing) {
-                                Row(Modifier.padding(horizontal = 8.dp)) {
-                                    TextButton(onClick = { screen.subtitleScale = (effectiveScale - 0.1f).coerceIn(0.5f, 3f) }) { Text("小一点") }
-                                    TextButton(onClick = { screen.subtitleScale = (effectiveScale + 0.1f).coerceIn(0.5f, 3f) }) { Text("大一点") }
-                                    TextButton(onClick = { screen.subtitleScale = null }, enabled = screen.subtitleScale != null) { Text("按设置") }
-                                }
-                            }
-                            HorizontalDivider()
-                            Text(
-                                "播放速度",
-                                style = MaterialTheme.typography.labelLarge,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                            )
-                            SPEEDS.forEach { value ->
-                                DropdownMenuItem(
-                                    leadingIcon = { ChosenMark(abs(screen.speed - value) < 0.001f) },
-                                    text = { Text(if (value == 1f) "正常" else "$value×") },
-                                    onClick = {
-                                        tuningMenu = false
-                                        screen.speed = value
-                                        player.playbackParameters = PlaybackParameters(value)
-                                    }
-                                )
-                            }
-                        }
-                    }
+                    PlayerMenuButton(PlayerMenu.Subtitle, Icons.Filled.ClosedCaption, popupMenus, openMenu, { openMenu = it }, menuContent)
+                    PlayerMenuButton(PlayerMenu.Tuning, Icons.Filled.Tune, popupMenus, openMenu, { openMenu = it }, menuContent)
                     if (chapters.isNotEmpty()) {
-                        Box {
-                            IconButton(onClick = { chapterMenu = true }) {
-                                Icon(Icons.AutoMirrored.Filled.Toc, contentDescription = "章节", tint = Color.White)
-                            }
-                            DropdownMenu(chapterMenu, onDismissRequest = { chapterMenu = false }) {
-                                chapters.forEachIndexed { index, chapter ->
-                                    DropdownMenuItem(
-                                        leadingIcon = { ChosenMark(index == currentChapter) },
-                                        text = { Text("${formatDuration(chapter.startMs)}  ${chapter.title.ifBlank { "第 ${index + 1} 章" }}") },
-                                        onClick = {
-                                            chapterMenu = false
-                                            player.seekTo(chapter.startMs)
-                                        }
-                                    )
-                                }
-                            }
-                        }
+                        PlayerMenuButton(PlayerMenu.Chapter, Icons.AutoMirrored.Filled.Toc, popupMenus, openMenu, { openMenu = it }, menuContent)
                     }
-                    if (pipSupported) {
+                    if (canEnterPip) {
                         IconButton(onClick = { activity?.let { PipRequest.enter(it) } }) {
                             Icon(Icons.Filled.PictureInPictureAlt, contentDescription = "画中画", tint = Color.White)
                         }
                     }
-                    val landscapeLocked = screen.orientation == ScreenOrientation.LANDSCAPE
-                    IconButton(onClick = {
-                        screen.orientation = if (landscapeLocked) ScreenOrientation.SENSOR else ScreenOrientation.LANDSCAPE
-                    }) {
-                        Icon(
-                            if (landscapeLocked) Icons.Filled.ScreenLockLandscape else Icons.Filled.ScreenRotation,
-                            contentDescription = if (landscapeLocked) "已锁定横屏，点按恢复自动旋转" else "锁定为横屏",
-                            tint = Color.White
-                        )
+                    if (nativeHud && !appWindow.isInMultiWindow) {
+                        val landscapeLocked = screen.orientation == ScreenOrientation.LANDSCAPE
+                        IconButton(onClick = {
+                            screen.orientation = if (landscapeLocked) ScreenOrientation.SENSOR else ScreenOrientation.LANDSCAPE
+                        }) {
+                            Icon(
+                                if (landscapeLocked) Icons.Filled.ScreenLockLandscape else Icons.Filled.ScreenRotation,
+                                contentDescription = if (landscapeLocked) "已锁定横屏，点按恢复自动旋转" else "锁定为横屏",
+                                tint = Color.White
+                            )
+                        }
                     }
-                    // Against a pocket, a child or a cheek: touches do nothing
-                    // until it is unlocked.
-                    IconButton(onClick = {
-                        locked = true
-                        playerView?.hideController()
-                    }) {
+                    IconButton(onClick = { locked = true }) {
                         Icon(Icons.Filled.LockOpen, contentDescription = "锁定屏幕，防止误触", tint = Color.White)
                     }
                 }
-
-                // A phone held upright has no room for the title and nine
-                // buttons on one line; the buttons go under it and scroll.
-                if (maxWidth >= 600.dp) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            title,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f).padding(start = 8.dp, end = 8.dp)
-                        )
-                        buttons()
+                if (locked) {
+                    IconButton(
+                        onClick = { locked = false },
+                        modifier = Modifier.align(Alignment.CenterStart).padding(start = if (compact) 0.dp else 16.dp)
+                            .background(Color.Black.copy(alpha = 0.45f), MaterialTheme.shapes.extraLarge)
+                    ) {
+                        Icon(Icons.Filled.Lock, contentDescription = "已锁定，点按解锁", tint = Color.White)
+                    }
+                } else if (tabletop) {
+                    Column(
+                        Modifier.align(Alignment.Center).widthIn(max = 720.dp).fillMaxWidth().testTag("tabletop-player-controls")
+                            .verticalScroll(rememberScrollState()).padding(vertical = 8.dp)
+                    ) {
+                        FoldTransport(player, showPause, { controlTouches++ }, { scrubbing = it }, onBack = goBack)
+                        PlayerToolbar(title, buttons = buttons)
+                        if (introEnd != null) {
+                            TextButton(onClick = { player.seekTo(introEnd) }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                                Text("跳过片头")
+                            }
+                        }
+                    }
+                } else if (compact) {
+                    CompactPlayerActions(
+                        player, showPause, goBack,
+                        modifier = Modifier.align(Alignment.TopCenter).widthIn(max = 320.dp).fillMaxWidth()
+                            .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.8f), Color.Transparent)))
+                    ) {
+                        PlayerMenuButton(PlayerMenu.More, Icons.Filled.MoreVert, false, openMenu, { openMenu = it }, menuContent)
                     }
                 } else {
-                    Column {
-                        Text(
-                            title,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = Color.White,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                        Row(
-                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.End,
-                            verticalAlignment = Alignment.CenterVertically,
-                            content = buttons
+                    if (introEnd != null) {
+                        Button(
+                            onClick = { player.seekTo(introEnd) },
+                            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = if (showHud) 120.dp else 24.dp)
+                        ) { Text("跳过片头") }
+                    }
+                    AnimatedVisibility(
+                        visible = showHud,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                        modifier = Modifier.align(Alignment.TopCenter)
+                    ) { PlayerToolbar(title, onBack = goBack, buttons = buttons) }
+                    if (!nativeHud && showHud) {
+                        FoldTransport(
+                            player, showPause,
+                            onInteraction = { controlTouches++ }, onScrubbing = { scrubbing = it },
+                            modifier = Modifier.align(Alignment.BottomCenter)
+                                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f))))
                         )
                     }
                 }
-            }
-        }
-
-        playbackError?.let { message ->
-            Surface(
-                modifier = Modifier.align(Alignment.Center).padding(24.dp),
-                color = MaterialTheme.colorScheme.errorContainer,
-                shape = MaterialTheme.shapes.medium
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        "无法播放",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        message,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Row {
-                        // Opens a fresh session for the same file, from where
-                        // it stopped: an expired link is the usual cause.
-                        Button(onClick = { latestOnSkip(info.item.id, player.currentPosition) }) { Text("重试") }
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(onClick = { latestOnClose(player.currentPosition) }) { Text("返回") }
+                val menu = openMenu
+                if (!popupMenus && menu != null && !locked) {
+                    PanePlayerMenu(menu, onDismiss = { openMenu = null }, content = menuContent)
+                }
+                playbackError?.let { message ->
+                    Surface(
+                        modifier = Modifier.align(Alignment.Center).padding(16.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
+                            Text("无法播放", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(6.dp))
+                            Text(message, style = MaterialTheme.typography.bodyMedium)
+                            Spacer(Modifier.height(12.dp))
+                            Row {
+                                Button(onClick = { latestOnSkip(info.item.id, player.currentPosition) }) { Text("重试") }
+                                Spacer(Modifier.width(8.dp))
+                                TextButton(onClick = { latestOnClose(player.currentPosition) }) { Text("返回") }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 }
+
+@androidx.annotation.OptIn(UnstableApi::class)
+private fun PlayerView.hideNativeControls() {
+    useController = false
+    findViewById<PlayerControlView>(androidx.media3.ui.R.id.exo_controller)?.hideImmediately()
+}
+
+private fun VideoSize.displayAspect(): Float? = if (width <= 0 || height <= 0) null
+else (width * pixelWidthHeightRatio / height).takeIf { it.isFinite() && it > 0f }
+
+// Restrict the PiP tile only; never use this clamped ratio to budget the real picture pane.
+private fun Float.pipRatio(): Rational = Rational((coerceIn(0.42f, 2.39f) * 10_000).roundToInt(), 10_000)
 
 private val SPEEDS = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
 
@@ -994,19 +1108,21 @@ private fun ChosenMark(chosen: Boolean) {
 private fun installGestures(
     view: PlayerView,
     player: ExoPlayer,
-    isLocked: () -> Boolean,
+    canHandle: () -> Boolean,
+    onTap: () -> Unit,
     onHint: (String?) -> Unit,
     onBoost: (Boolean) -> Unit
-) {
+): () -> Unit {
     val context = view.context
     val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    val window = context.findActivityOrNull()?.window
+    val window = context.findPlayerActivity()?.window
     var mode = Drag.NONE
     var seekFrom = 0L
     var seekTarget = 0L
     var startVolume = 0
     var startBrightness = 0.5f
-    var boostedFrom: Float? = null
+    var boostedFrom: PlaybackParameters? = null
+    var touchActive = false
 
     val detector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
@@ -1020,11 +1136,12 @@ private fun installGestures(
         }
 
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-            if (view.isControllerFullyVisible) view.hideController() else view.showController()
+            if (canHandle()) onTap()
             return true
         }
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
+            if (!canHandle()) return false
             val third = view.width / 3f
             when {
                 e.x < third -> {
@@ -1036,17 +1153,17 @@ private fun installGestures(
                     player.seekTo((player.currentPosition + 10_000).coerceAtMost(end))
                     onHint("+10 秒")
                 }
-                else -> if (player.isPlaying) player.pause() else player.play()
+                else -> if (player.playWhenReady && player.playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE) player.pause() else player.play()
             }
             return true
         }
 
         override fun onLongPress(e: MotionEvent) {
-            if (!player.isPlaying) return
-            val speed = player.playbackParameters.speed
-            boostedFrom = speed
-            player.playbackParameters = PlaybackParameters(speed * 2)
+            if (!canHandle() || !touchActive || !player.isPlaying) return
+            val parameters = player.playbackParameters
+            boostedFrom = parameters
             onBoost(true)
+            player.playbackParameters = PlaybackParameters(parameters.speed * 2, parameters.pitch)
         }
 
         override fun onScroll(first: MotionEvent?, current: MotionEvent, dx: Float, dy: Float): Boolean {
@@ -1088,26 +1205,51 @@ private fun installGestures(
         }
     })
 
-    // Every touch that reaches the view itself is consumed: letting one through
-    // would have PlayerView toggle the controller on its own, and then the tap
-    // handler toggle it back.
+    fun finishGesture(commit: Boolean) {
+        if (mode == Drag.SEEK) {
+            if (commit) player.seekTo(seekTarget) else onHint(null)
+        }
+        boostedFrom?.let { parameters ->
+            boostedFrom = null
+            player.playbackParameters = parameters
+            onBoost(false)
+        }
+        mode = Drag.NONE
+        touchActive = false
+    }
+
+    fun cancelGesture() {
+        // Also cancel GestureDetector's pending tap/long-press messages (including a tap
+        // confirmed after the pointer was released just before a posture change).
+        val now = SystemClock.uptimeMillis()
+        val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+        detector.onTouchEvent(cancel)
+        cancel.recycle()
+        finishGesture(commit = false)
+    }
+
+    // The native controller's child buttons and time bar get their touches first. A tabletop
+    // transport is a sibling in a different pane, so it never starts a picture gesture.
     view.setOnTouchListener { _, event ->
-        if (isLocked()) return@setOnTouchListener true
+        val action = event.actionMasked
+        if (!canHandle()) {
+            if (touchActive) cancelGesture()
+            return@setOnTouchListener true
+        }
+        if (action == MotionEvent.ACTION_DOWN) touchActive = true
+        if (!touchActive) return@setOnTouchListener true
+        if (action == MotionEvent.ACTION_POINTER_DOWN) {
+            // Multi-touch must not unexpectedly seek by using the wrong finger's coordinates.
+            cancelGesture()
+            return@setOnTouchListener true
+        }
         detector.onTouchEvent(event)
-        if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
-            // Cancelled is the system taking the touch — the back gesture from
-            // the edge, most often — not the viewer letting go where they meant.
-            if (mode == Drag.SEEK && event.actionMasked == MotionEvent.ACTION_UP) player.seekTo(seekTarget)
-            if (mode == Drag.SEEK && event.actionMasked == MotionEvent.ACTION_CANCEL) onHint(null)
-            boostedFrom?.let { speed ->
-                boostedFrom = null
-                player.playbackParameters = PlaybackParameters(speed)
-                onBoost(false)
-            }
-            mode = Drag.NONE
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            finishGesture(commit = action == MotionEvent.ACTION_UP)
         }
         true
     }
+    return ::cancelGesture
 }
 
 private enum class Drag { NONE, SEEK, BRIGHTNESS, VOLUME }
@@ -1239,11 +1381,3 @@ private fun isContainerTrack(id: String?, number: String): Boolean =
 @androidx.annotation.OptIn(UnstableApi::class)
 private fun positionsAgree(groups: List<Tracks.Group>, embedded: List<MediaStreamDto>): Boolean =
     groups.size == embedded.size
-
-/** The activity behind the composition, for the platform calls that need one. */
-private tailrec fun android.content.Context.findActivityOrNull(): android.app.Activity? =
-    when (this) {
-        is android.app.Activity -> this
-        is android.content.ContextWrapper -> baseContext.findActivityOrNull()
-        else -> null
-    }

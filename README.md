@@ -110,6 +110,7 @@ This program is distributed without any warranty; see [LICENSE](LICENSE).
 - Android：Media3 / ExoPlayer 内置播放器。手势：单击呼出控件、左右两侧双击 ±10 秒、中间双击暂停、
   横向拖动快进快退、左半边上下拖亮度、右半边上下拖音量、长按 2 倍速；另有缓冲指示、上一集 / 下一集、
   锁屏防误触、锁定横屏、画中画、倍速
+- Android 折叠屏：未选中内容或空间不足时用单栏；空间够时选中条目可并排查看列表和详情。桌面半开且两侧都放得下时，上屏播放、下屏控制。见[折叠屏适配与验收](<docs/ANDROID-FOLDABLE.md>)。
 - 桌面：**应用内直接播放**，引擎是 libmpv；找不到 libmpv 时退回外置播放器
   （PotPlayer / VLC / mpv / IINA，自动探测安装路径），随时也可以手动选外置
 - 桌面 + NVIDIA：**RTX Video Super Resolution** 与 **RTX Video HDR**

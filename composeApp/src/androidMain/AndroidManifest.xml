@@ -33,7 +33,7 @@
         android:theme="@style/Theme.DaView">
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|keyboard|keyboardHidden|navigation|uiMode"
             android:exported="true"
             android:resizeableActivity="true"
             android:supportsPictureInPicture="true"

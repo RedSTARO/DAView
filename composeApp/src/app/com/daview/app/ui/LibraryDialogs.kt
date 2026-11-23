@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
@@ -161,7 +160,7 @@ fun LibraryEditDialog(state: AppState, library: LibraryDto, onDismiss: () -> Uni
     val scrapingChanged = kind != library.kind || language != library.language ||
         order.filter { it.second }.map { it.first } != library.providerOrder
 
-    AlertDialog(
+    AdaptiveAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("编辑媒体库") },
         text = {
@@ -316,7 +315,7 @@ fun WebDavPickerDialog(state: AppState, onDismiss: () -> Unit) {
     val videos = entries.count { !it.isDirectory && isVideoName(it.name) }
     val atRoot = path.trim('/').isEmpty()
 
-    AlertDialog(
+    AdaptiveAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("添加媒体库") },
         text = {

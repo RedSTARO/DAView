@@ -28,7 +28,8 @@ import com.daview.app.data.ShelfKind
  * every favourite across the libraries at once.
  */
 @Composable
-fun ShelfScreen(state: AppState, playback: PlaybackController, shelf: Screen.Shelf) {
+fun ShelfScreen(state: AppState, playback: PlaybackController, shelf: Screen.Shelf, showBack: Boolean = state.canGoBack) {
+    val activeItemId = LocalSelectedBrowseItem.current
     val kind = shelf.kind
     val landscape = kind != ShelfKind.FAVOURITES && kind != ShelfKind.UNWATCHED
     val libraryName = shelf.libraryId?.let { id -> state.libraries.firstOrNull { it.id == id }?.name }
@@ -37,7 +38,7 @@ fun ShelfScreen(state: AppState, playback: PlaybackController, shelf: Screen.She
         ScreenTopBar(
             title = libraryName?.let { "$it · ${kind.title}" } ?: kind.title,
             subtitle = if (state.shelfOf == shelf) "${state.shelfItems.size} 项" else null,
-            onBack = if (state.canGoBack) ({ state.back() }) else null
+            onBack = if (showBack) ({ state.back() }) else null
         )
         when {
             state.shelfOf != shelf -> {
@@ -67,9 +68,10 @@ fun ShelfScreen(state: AppState, playback: PlaybackController, shelf: Screen.She
                                 width = maxWidth,
                                 shape = if (landscape) CardShape.LANDSCAPE else CardShape.PORTRAIT,
                                 downloaded = state.isDownloaded(item),
+                                detailOpen = item.id == activeItemId,
                                 menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) },
                                 onPlay = { playback.play(item) }
-                            ) { state.navigate(Screen.Detail(item.id)) }
+                            ) { state.openBrowseDetail(item.id) }
                         }
                     }
                 }

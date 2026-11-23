@@ -10,6 +10,7 @@ import com.daview.app.platform.AndroidContextHolder
 import com.daview.app.platform.AndroidFilePicker
 import com.daview.app.platform.NotificationPermission
 import com.daview.app.platform.createSettingsStore
+import com.daview.app.ui.AndroidAppWindowInfo
 import com.daview.app.ui.PipRequest
 
 class MainActivity : ComponentActivity() {
@@ -26,7 +27,7 @@ class MainActivity : ComponentActivity() {
         // The theme's own value is the dark ground, so a light-theme user would
         // otherwise get a near-black flash on every cold start.
         applyStartupBackground()
-        setContent { App() }
+        setContent { AndroidAppWindowInfo(this) { App() } }
     }
 
     /**
@@ -53,7 +54,13 @@ class MainActivity : ComponentActivity() {
      * picture survives leaving at all.
      */
     override fun onUserLeaveHint() {
-        if (!PipRequest.enter(this)) super.onUserLeaveHint()
+        if (!PipRequest.onUserLeaveHint(this)) super.onUserLeaveHint()
+    }
+
+    @androidx.annotation.RequiresApi(31)
+    override fun onPictureInPictureUiStateChanged(pipState: android.app.PictureInPictureUiState) {
+        super.onPictureInPictureUiStateChanged(pipState)
+        if (android.os.Build.VERSION.SDK_INT >= 35) PipRequest.onTransition(this, pipState.isTransitioningToPip)
     }
 
     override fun onDestroy() {

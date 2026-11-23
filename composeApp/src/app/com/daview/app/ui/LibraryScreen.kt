@@ -33,11 +33,11 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterAltOff
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SortByAlpha
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -70,7 +70,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -103,7 +106,8 @@ private val densityWidths = listOf(112.dp, 150.dp, 200.dp)
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class, FlowPreview::class)
 @Composable
-fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: String) {
+fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: String, showBack: Boolean = state.canGoBack) {
+    val activeItemId = LocalSelectedBrowseItem.current
     val library = state.libraries.firstOrNull { it.id == libraryId }
     val view = state.viewOf(libraryId)
     val scope = rememberCoroutineScope()
@@ -142,11 +146,13 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
     // "Clear filters" clears the search as well; the field has to say so,
     // or it shows words the list is no longer filtered by.
     LaunchedEffect(libraryId) {
+        var previous = state.searchOf(libraryId)
         snapshotFlow { state.searchOf(libraryId) }.collect { stored ->
-            if (stored.isEmpty() && searchText.isNotEmpty()) {
+            if (stored.isEmpty() && previous.isNotEmpty() && searchText.isNotEmpty()) {
                 searchText = ""
                 searchOpen = false
             }
+            previous = stored
         }
     }
 
@@ -198,56 +204,76 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
                 onClose = { selection = null }
             )
         } else {
-            ScreenTopBar(
-                title = library?.name ?: "媒体库",
-                subtitle = if (loaded) {
-                    // The real size, not how much of it happens to be loaded.
-                    if (state.libraryItems.size < state.libraryTotal) {
-                        "已载入 ${state.libraryItems.size} / 共 ${state.libraryTotal} 项"
-                    } else "${state.libraryTotal} 项"
-                } else null,
-                onBack = if (state.canGoBack) ({ state.back() }) else null
-            ) {
-                TipIconButton(if (searchOpen) "关闭库内搜索（Esc）" else "在这个媒体库里搜索", onClick = {
-                    searchOpen = !searchOpen
-                    focusSearch = searchOpen
-                    if (!searchOpen) searchText = ""
-                }) {
-                    Icon(
-                        if (searchOpen) Icons.Filled.Close else Icons.Filled.Search,
-                        contentDescription = if (searchOpen) "关闭库内搜索" else "在这个媒体库里搜索"
-                    )
+            BoxWithConstraints {
+                val compact = maxWidth < (380f + 120f * (LocalDensity.current.fontScale - 1f).coerceAtLeast(0f)).dp
+                fun toggleLayout() {
+                    state.updateView(libraryId) {
+                        it.copy(layout = if (it.layout == LibraryLayout.GRID) LibraryLayout.LIST else LibraryLayout.GRID)
+                    }
                 }
-                if (view.sort == "sortName") LetterJump(state, libraryId, view.descending) { position ->
+                val jumpTo: (String?) -> Unit = { boundary ->
+                    // The menu disappears when an option is chosen; the page, not
+                    // the popup's composition, owns this asynchronous lookup.
                     scope.launch {
+                        val position = boundary?.let { state.libraryPosition(libraryId, it) } ?: 0
                         state.ensureLibraryLoaded(libraryId, position)
                         scrollTo(position.coerceIn(0, (state.libraryItems.size - 1).coerceAtLeast(0)))
                     }
                 }
-                TipIconButton(
-                    if (view.layout == LibraryLayout.GRID) "列表视图" else "海报视图",
-                    onClick = {
-                        state.updateView(libraryId) {
-                            it.copy(layout = if (it.layout == LibraryLayout.GRID) LibraryLayout.LIST else LibraryLayout.GRID)
+                ScreenTopBar(
+                    title = library?.name ?: "媒体库",
+                    subtitle = if (loaded) {
+                        if (state.libraryItems.size < state.libraryTotal) {
+                            "已载入 ${state.libraryItems.size} / 共 ${state.libraryTotal} 项"
+                        } else "${state.libraryTotal} 项"
+                    } else null,
+                    onBack = if (showBack) ({ state.back() }) else null
+                ) {
+                    TipIconButton(if (searchOpen) "关闭库内搜索（Esc）" else "在这个媒体库里搜索", onClick = {
+                        searchOpen = !searchOpen
+                        focusSearch = searchOpen
+                        if (!searchOpen) searchText = ""
+                    }) {
+                        Icon(
+                            if (searchOpen) Icons.Filled.Close else Icons.Filled.Search,
+                            contentDescription = if (searchOpen) "关闭库内搜索" else "在这个媒体库里搜索"
+                        )
+                    }
+                    if (!compact) {
+                        if (view.sort == "sortName") LetterJump(view.descending, jumpTo)
+                        TipIconButton(
+                            if (view.layout == LibraryLayout.GRID) "列表视图" else "海报视图",
+                            onClick = ::toggleLayout
+                        ) {
+                            Icon(
+                                if (view.layout == LibraryLayout.GRID) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
+                                contentDescription = if (view.layout == LibraryLayout.GRID) "切换为列表视图" else "切换为海报视图"
+                            )
+                        }
+                        TipIconButton("多选", onClick = { selection = emptySet() }) {
+                            Icon(Icons.Filled.Checklist, contentDescription = "进入多选")
                         }
                     }
-                ) {
-                    Icon(
-                        if (view.layout == LibraryLayout.GRID) Icons.AutoMirrored.Filled.ViewList else Icons.Filled.GridView,
-                        contentDescription = if (view.layout == LibraryLayout.GRID) "切换为列表视图" else "切换为海报视图"
+                    LibraryMoreMenu(
+                        state = state,
+                        libraryId = libraryId,
+                        density = view.density,
+                        showDensity = view.layout == LibraryLayout.GRID,
+                        onDensity = { d -> state.updateView(libraryId) { it.copy(density = d) } },
+                        onEdit = { editOpen = true },
+                        compactActions = if (compact) ({ dismiss ->
+                            DropdownMenuItem(
+                                text = { Text(if (view.layout == LibraryLayout.GRID) "切换为列表视图" else "切换为海报视图") },
+                                onClick = { dismiss(); toggleLayout() }
+                            )
+                            DropdownMenuItem(text = { Text("进入多选") }, onClick = { dismiss(); selection = emptySet() })
+                            if (view.sort == "sortName") {
+                                HorizontalDivider()
+                                LetterJumpItems(view.descending, jumpTo, dismiss)
+                            }
+                        }) else null
                     )
                 }
-                TipIconButton("多选", onClick = { selection = emptySet() }) {
-                    Icon(Icons.Filled.Checklist, contentDescription = "进入多选")
-                }
-                LibraryMoreMenu(
-                    state = state,
-                    libraryId = libraryId,
-                    density = view.density,
-                    showDensity = view.layout == LibraryLayout.GRID,
-                    onDensity = { d -> state.updateView(libraryId) { it.copy(density = d) } },
-                    onEdit = { editOpen = true }
-                )
             }
         }
 
@@ -264,7 +290,7 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
             OutlinedTextField(
                 value = searchText,
                 onValueChange = { searchText = it },
-                label = { Text("在「${library?.name ?: "媒体库"}」中搜索") },
+                label = { Text("在「${library?.name ?: "媒体库"}」中搜索", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -274,6 +300,7 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp, vertical = 4.dp)
                     .focusRequester(focus)
+                    .trackBrowseEditorFocus()
                     .tracksTextInput()
             )
         }
@@ -356,6 +383,7 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
                                 shape = CardShape.PORTRAIT,
                                 downloaded = state.isDownloaded(item),
                                 selected = selected?.let { item.id in it },
+                                detailOpen = activeItemId == item.id,
                                 menu = if (selected == null) ({ dismiss -> ItemMenuItems(state, playback, item, dismiss) }) else null,
                                 // A series plays the episode it is up to.
                                 onPlay = { playback.play(item) }
@@ -363,7 +391,7 @@ fun LibraryScreen(state: AppState, playback: PlaybackController, libraryId: Stri
                                 if (selected != null) {
                                     selection = if (item.id in selected) selected - item.id else selected + item.id
                                 } else {
-                                    state.navigate(Screen.Detail(item.id))
+                                    state.openBrowseDetail(item.id)
                                 }
                             }
                         }
@@ -482,42 +510,40 @@ private fun <T> ChoiceChip(label: String, selected: Boolean, options: List<Pair<
  * plus one bucket for the rest.
  */
 @Composable
-private fun LetterJump(state: AppState, libraryId: String, descending: Boolean, onPosition: (Int) -> Unit) {
+private fun LetterJump(descending: Boolean, onPosition: (String?) -> Unit) {
     var open by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val letters = ('a'..'z').toList()
     Box {
         TipIconButton("按首字母跳转", onClick = { open = true }) {
             Icon(Icons.Filled.SortByAlpha, contentDescription = "按首字母跳转")
         }
         AppMenu(expanded = open, onDismissRequest = { open = false }) {
-            fun jump(boundary: String) {
-                open = false
-                scope.launch { onPosition(state.libraryPosition(libraryId, boundary)) }
-            }
-            DropdownMenuItem(text = { Text("# 数字与符号") }, onClick = {
-                open = false
-                if (descending) jump("a") else onPosition(0)
-            })
-            letters.forEachIndexed { index, letter ->
-                DropdownMenuItem(
-                    text = { Text(letter.uppercaseChar().toString()) },
-                    onClick = {
-                        // Descending, a letter's titles start where the next
-                        // letter's end.
-                        if (descending) jump(letters.getOrNull(index + 1)?.toString() ?: "")
-                        else jump(letter.toString())
-                    }
-                )
-            }
-            DropdownMenuItem(text = { Text("中文、日文等") }, onClick = {
-                if (descending) {
-                    open = false
-                    onPosition(0)
-                } else jump("")
-            })
+            LetterJumpItems(descending, onPosition) { open = false }
         }
     }
+}
+
+@Composable
+private fun LetterJumpItems(descending: Boolean, onPosition: (String?) -> Unit, dismiss: () -> Unit) {
+    val letters = 'a'..'z'
+    fun jump(boundary: String?) {
+        dismiss()
+        onPosition(boundary)
+    }
+    DropdownMenuItem(text = { Text("# 数字与符号") }, onClick = {
+        jump("a".takeIf { descending })
+    })
+    letters.forEach { letter ->
+        DropdownMenuItem(
+            text = { Text(letter.uppercaseChar().toString()) },
+            onClick = {
+                // In descending order, the boundary is the next letter.
+                jump(if (!descending) letter.toString() else if (letter < 'z') (letter + 1).toString() else "\u007f")
+            }
+        )
+    }
+    DropdownMenuItem(text = { Text("中文、日文等") }, onClick = {
+        jump("\u007f".takeUnless { descending })
+    })
 }
 
 @Composable
@@ -527,7 +553,8 @@ private fun LibraryMoreMenu(
     density: Int,
     showDensity: Boolean,
     onDensity: (Int) -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    compactActions: (@Composable (dismiss: () -> Unit) -> Unit)?
 ) {
     var open by remember { mutableStateOf(false) }
     Box {
@@ -559,6 +586,10 @@ private fun LibraryMoreMenu(
                     onEdit()
                 }
             )
+            if (compactActions != null) {
+                HorizontalDivider()
+                compactActions { open = false }
+            }
         }
     }
 }
@@ -593,7 +624,7 @@ private fun LibraryList(
                     downloaded = state.isDownloaded(item),
                     menu = { dismiss -> ItemMenuItems(state, playback, item, dismiss) },
                     onClick = {
-                        if (selection != null) onToggle(item.id) else state.navigate(Screen.Detail(item.id))
+                        if (selection != null) onToggle(item.id) else state.openBrowseDetail(item.id)
                     }
                 )
             }
@@ -609,7 +640,9 @@ fun ListEntry(
     selected: Boolean?,
     downloaded: Boolean,
     menu: @Composable androidx.compose.foundation.layout.ColumnScope.(dismiss: () -> Unit) -> Unit,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    subtitle: String? = null,
+    onPlay: (() -> Unit)? = null
 ) {
     var menuAt by remember { mutableStateOf<androidx.compose.ui.geometry.Offset?>(null) }
     var lastPointer by remember { mutableStateOf(androidx.compose.ui.input.pointer.PointerType.Unknown) }
@@ -618,11 +651,13 @@ fun ListEntry(
     // right-click during a multi-select used to be kept and open the menu
     // once the selection ended.
     val selecting by androidx.compose.runtime.rememberUpdatedState(selected != null)
+    val detailOpen = selected == null && LocalSelectedBrowseItem.current == item.id
     Box {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .secondaryClick(onPointerType = { lastPointer = it }, onOpen = { if (!selecting) menuAt = it })
+                .semantics { if (detailOpen) stateDescription = "正在查看" }
                 .combinedClickable(
                     onClick = onClick,
                     onLongClickLabel = "打开菜单",
@@ -633,7 +668,7 @@ fun ListEntry(
                     }
                 ),
             colors = CardDefaults.cardColors(
-                containerColor = if (selected == true) MaterialTheme.colorScheme.primaryContainer
+                containerColor = if (selected == true || detailOpen) MaterialTheme.colorScheme.primaryContainer
                 else MaterialTheme.colorScheme.surfaceContainerHigh
             ),
             shape = MaterialTheme.shapes.medium
@@ -659,12 +694,15 @@ fun ListEntry(
                 }
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(item.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    item.originalName?.takeIf { it != item.name }?.let {
+                    Text(
+                        item.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
+                        maxLines = if (subtitle == null) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis
+                    )
+                    item.originalName?.takeIf { subtitle == null && it != item.name }?.let {
                         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Text(
-                        listOfNotNull(
+                        subtitle ?: listOfNotNull(
                             item.year?.toString(),
                             item.genres.take(3).joinToString(" / ").takeIf { it.isNotBlank() },
                             item.communityRating?.let { "评分 ${(it * 10).toInt() / 10.0}" },
@@ -677,10 +715,16 @@ fun ListEntry(
                             "已下载".takeIf { downloaded }
                         ).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = if (subtitle == null) Int.MAX_VALUE else 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
-                if (item.playedState == com.daview.shared.model.PlayedState.PLAYED) {
+                if (onPlay != null) {
+                    TipIconButton("播放", onClick = onPlay) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = if (item.isPlayable) "播放" else "播放下一集")
+                    }
+                } else if (item.playedState == com.daview.shared.model.PlayedState.PLAYED) {
                     Icon(Icons.Filled.Check, contentDescription = "已观看", tint = MaterialTheme.colorScheme.primary)
                 }
             }
@@ -746,7 +790,7 @@ fun SelectionBar(
         // Esc belongs to the dialog, not to the selection behind it.
         ModalMarker()
         val target = items.first()
-        AlertDialog(
+        AdaptiveAlertDialog(
             onDismissRequest = { confirmMerge = false },
             title = { Text("合并 ${items.size} 项") },
             text = {
