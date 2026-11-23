@@ -213,11 +213,16 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # R8 shrinks and obfuscates release code with the checked-in keep rules.
-      # Preserve the mapping with the source revision and unsigned APK hash;
-      # signing remains a separate job with access to the signing secrets.
-      - run: >-
+      # Gradle 9.7.1 treats Maven HTTP 429 as transient, but its default 1s/2s
+      # delays were too short on hosted runners. Back off the repository requests
+      # (15s, then 30s), not the build; compilation and packaging failures still fail.
+      # These are Gradle internals: recheck the property names on wrapper upgrades.
+      # Keep the R8 mapping and unsigned APK; signing stays in a separate job.
+      - name: 构建 Android Release APK
+        run: >-
           ./gradlew :composeApp:assembleRelease
+          -Dorg.gradle.internal.repository.max.tentatives=3
+          -Dorg.gradle.internal.repository.initial.backoff=15000
           "-PdaviewVersion=${{ needs.test.outputs.version }}"
           "-PdaviewPackageVersion=${{ needs.test.outputs.package_version }}"
 
