@@ -264,24 +264,37 @@ class PlaybackLifecycleOnDeviceTest {
         for (profile in profiles) {
             val previous = onMain { engine.currentPosition }
             if (profile != frame.profile) resize(profile)
-            val geometry = frame
-            val hinge = geometry.hinge
-            val wantNative = hinge == null && profile != AdaptiveDeviceWindow.TINY_PLAYBACK_SPLIT
-            await("$profile same video and unobstructed playback") {
-                val rect = renderer.screenRect()
-                val shell = Rect(geometry.shell).apply { inset(-1, -1) }
-                val contiguous = hinge == null || if (profile == AdaptiveDeviceWindow.TABLETOP) {
-                    rect.bottom <= hinge.top + 1
-                } else {
-                    rect.right <= hinge.left + 1 || rect.left >= hinge.right - 1
+            val wantNative = profile.axis == null && profile != AdaptiveDeviceWindow.TINY_PLAYBACK_SPLIT
+            var detail = ""
+            try {
+                await("$profile same video and unobstructed playback") {
+                    // Compare the player to the current window measured on this same UI
+                    // thread. Immersive inset callbacks may arrive after resize() returns.
+                    val geometry = frame
+                    val hinge = geometry.hinge
+                    val rect = renderer.screenRect()
+                    val shell = Rect(geometry.shell).apply { inset(-1, -1) }
+                    val contiguous = hinge == null || if (profile == AdaptiveDeviceWindow.TABLETOP) {
+                        rect.bottom <= hinge.top + 1
+                    } else {
+                        rect.right <= hinge.left + 1 || rect.left >= hinge.right - 1
+                    }
+                    val largeEnough = rect.width() >= (geometry.density * 80).toInt() &&
+                        rect.height() >= (geometry.density * 80).toInt()
+                    val surfaceReady = renderer !is SurfaceView || renderer.holder.surface.isValid
+                    val samePlayback = findPlayerView(activity.window.decorView) === view && view.videoSurfaceView === renderer &&
+                        view.player === engine && engine.currentMediaItem === item
+                    val stillPlaying = engine.isPlaying && engine.currentPosition > previous + 250
+                    val pass = geometry.profile == profile && samePlayback && view.useController == wantNative &&
+                        contiguous && largeEnough && surfaceReady && shell.contains(rect) && stillPlaying
+                    if (!pass) detail = "picture=$rect playerView=${view.screenRect()} ${geometry.describe()} " +
+                        "samePlayback=$samePlayback native=${view.useController}/$wantNative " +
+                        "surfaceReady=$surfaceReady playing=${engine.isPlaying} state=${engine.playbackState} " +
+                        "position=$previous→${engine.currentPosition} duration=${engine.duration}"
+                    pass
                 }
-                val largeEnough = rect.width() >= (geometry.density * 80).toInt() &&
-                    rect.height() >= (geometry.density * 80).toInt()
-                val surfaceReady = renderer !is SurfaceView || renderer.holder.surface.isValid
-                findPlayerView(activity.window.decorView) === view && view.videoSurfaceView === renderer &&
-                    view.player === engine && engine.currentMediaItem === item && view.useController == wantNative &&
-                    contiguous && largeEnough && surfaceReady && shell.contains(rect) && engine.isPlaying &&
-                    engine.currentPosition > previous + 250
+            } catch (failure: AssertionError) {
+                throw AssertionError("${failure.message}; $detail", failure)
             }
             if (wantNative) onMain { view.showController() }
             val back = ui.awaitAction("返回")
@@ -290,6 +303,7 @@ class PlaybackLifecycleOnDeviceTest {
             assertUsable("$profile pause", pause)
             val backBounds = back.screenBounds()
             val pauseBounds = pause.screenBounds()
+            val hinge = frame.hinge
             assertFalse("$profile Back and play/pause overlap", Rect.intersects(backBounds, pauseBounds))
             if (profile == AdaptiveDeviceWindow.TABLETOP) {
                 checkNotNull(hinge)

@@ -6,6 +6,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -92,6 +93,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
 import com.daview.app.data.AppState
 import com.daview.app.data.Confirmation
@@ -113,6 +115,7 @@ import kotlinx.coroutines.launch
 
 private val SingleReadingWidth = 880.dp
 private val SplitReadingWidth = 1320.dp
+private val DetailBackHeight = 48.dp
 private const val HeroKey = "hero"
 private const val PeopleKey = "people"
 private const val SeasonKey = "seasons"
@@ -131,11 +134,12 @@ fun DetailScreen(state: AppState, playback: PlaybackController, itemId: String, 
     val item = state.detailItem?.takeIf { it.id == itemId }
     val active = state.current == Screen.Detail(itemId) && (entryKey == null || state.currentEntry.key == entryKey)
     val canGoBack = active && state.canGoBack
+    val topOverlap = LocalBrowseTopOverlap.current
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().browseSafeTop(topOverlap).then(if (item == null) Modifier.clipToBounds() else Modifier)) {
         // One Back target, even while the detail is loading or its lists are rearranged.
         if (canGoBack) {
-            Row(Modifier.fillMaxWidth().height(48.dp).padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().height(DetailBackHeight).padding(start = 8.dp).zIndex(1f), verticalAlignment = Alignment.CenterVertically) {
                 TipIconButton("返回（Alt + ←）", onClick = { state.back() }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                 }
@@ -179,6 +183,7 @@ fun DetailScreen(state: AppState, playback: PlaybackController, itemId: String, 
             val synopsisId = selected?.id?.takeIf { seasonOverview != null } ?: item.id
             DetailBody(
                 state, playback, item, seasons, selected, episodes, related, bookmark, loading, error,
+                heroOverlap = topOverlap + if (topOverlap > 0.dp && canGoBack) DetailBackHeight else 0.dp,
                 overview = seasonOverview ?: item.overview?.takeIf { it.isNotBlank() },
                 expanded = expandedSynopsis == synopsisId,
                 onToggleOverview = { expandedSynopsis = if (expandedSynopsis == synopsisId) null else synopsisId },
@@ -205,6 +210,7 @@ private fun DetailBody(
     bookmark: MutableState<DetailBookmark>,
     loading: Boolean,
     error: String?,
+    heroOverlap: Dp,
     overview: String?,
     expanded: Boolean,
     onToggleOverview: () -> Unit,
@@ -252,7 +258,7 @@ private fun DetailBody(
 
         val renderRow: @Composable (String) -> Unit = { key ->
             when (key) {
-                HeroKey -> DetailHeader(state, playback, item, short, overview, expanded, onToggleOverview)
+                HeroKey -> DetailHeader(state, playback, item, short, overview, expanded, onToggleOverview, drawArtwork = heroOverlap == 0.dp)
                 PeopleKey -> PeopleRow(state, item, peopleStrip, compact)
                 SeasonKey -> if (siblings != null) {
                     val cardWidth = (maxWidth - horizontal * 2).coerceIn(48.dp, if (compact) 148.dp else 232.dp)
@@ -284,17 +290,20 @@ private fun DetailBody(
             }
         }
 
+        val heroArtwork: @Composable BoxScope.() -> Unit = { DetailHeroArtwork(item) }
         Row(Modifier.readingWidth(if (twoPanes) SplitReadingWidth else SingleReadingWidth).fillMaxHeight()) {
             if (twoPanes) {
                 val summary = rememberDetailList(rows.summary) { bookmark.value.summary }
                 TrackDetailScroll(summary) { anchor -> bookmark.value = bookmark.value.record(anchor) }
-                DetailColumn(summary, rows.summary, Modifier.weight(0.46f), "媒体简介", renderRow)
+                DetailColumn(summary, rows.summary, Modifier.weight(0.46f), "媒体简介", renderRow, heroOverlap, heroArtwork)
                 Box(Modifier.fillMaxHeight().width(1.dp).background(MaterialTheme.colorScheme.outlineVariant))
             }
             DetailColumn(
                 primary, primaryKeys, Modifier.weight(0.54f),
                 pane = if (!twoPanes) null else if (hasEpisodeSection) "剧集与文件信息" else "相关影片与文件信息",
-                renderRow = renderRow
+                renderRow = renderRow,
+                heroOverlap = if (twoPanes) 0.dp else heroOverlap,
+                heroArtwork = heroArtwork
             )
         }
     }
@@ -429,17 +438,22 @@ private fun DetailColumn(
     rows: List<String>,
     modifier: Modifier,
     pane: String?,
-    renderRow: @Composable (String) -> Unit
+    renderRow: @Composable (String) -> Unit,
+    heroOverlap: Dp,
+    heroArtwork: @Composable BoxScope.() -> Unit
 ) {
     Box(
-        modifier.fillMaxHeight().clipToBounds().semantics {
+        modifier.fillMaxHeight().semantics {
             if (pane != null) {
                 paneTitle = pane
                 isTraversalGroup = true
             }
         }
     ) {
-        LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 24.dp)) {
+        if (heroOverlap > 0.dp) {
+            BrowseHeroBackdrop(state, HeroKey, heroOverlap, Modifier.matchParentSize().zIndex(-1f), heroArtwork)
+        }
+        LazyColumn(Modifier.fillMaxSize().clipToBounds(), state = state, contentPadding = PaddingValues(bottom = 24.dp)) {
             items(rows, key = { it }, contentType = { if (it.episodeId() == null) it else EpisodeKeyPrefix }) { renderRow(it) }
         }
         VerticalScrollbarFor(state, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
@@ -640,25 +654,12 @@ private fun DetailHeader(
     short: Boolean,
     overview: String?,
     expanded: Boolean,
-    onToggleOverview: () -> Unit
+    onToggleOverview: () -> Unit,
+    drawArtwork: Boolean
 ) {
     val openSeries: (() -> Unit)? = item.seriesId?.let { id -> { state.navigate(Screen.Detail(id)) } }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        // Measured from the content, not from the image: LazyColumn gives this
-        // item an unbounded height. The scrim keeps text readable over any art.
-        val art = item.backdropUrl ?: item.posterUrl
-        if (art != null) {
-            AsyncImage(art, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
-            Box(
-                Modifier.matchParentSize().background(
-                    Brush.verticalGradient(
-                        0f to MaterialTheme.colorScheme.background.copy(alpha = 0.78f),
-                        0.55f to MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
-                        1f to MaterialTheme.colorScheme.background
-                    )
-                )
-            )
-        }
+        if (drawArtwork) DetailHeroArtwork(item)
 
         val fontScale = LocalDensity.current.fontScale
         val narrow = maxWidth < (340f + 140f * (fontScale - 1f).coerceAtLeast(0f)).dp
@@ -698,6 +699,25 @@ private fun DetailHeader(
                 HeroBlurb(state, item, overview, expanded, onToggleOverview, short)
             }
         }
+    }
+}
+
+@Composable
+private fun BoxScope.DetailHeroArtwork(item: MediaItemDto) {
+    // Measured from the content, not from the image: LazyColumn gives this
+    // item an unbounded height. The scrim keeps text readable over any art.
+    val art = item.backdropUrl ?: item.posterUrl
+    if (art != null) {
+        AsyncImage(art, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
+        Box(
+            Modifier.matchParentSize().background(
+                Brush.verticalGradient(
+                    0f to MaterialTheme.colorScheme.background.copy(alpha = 0.78f),
+                    0.55f to MaterialTheme.colorScheme.background.copy(alpha = 0.94f),
+                    1f to MaterialTheme.colorScheme.background
+                )
+            )
+        )
     }
 }
 

@@ -14,7 +14,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
-/** Android uses immersive bars only in ordinary fullscreen; multi-window and PiP own their chrome. */
+/** Android playback is fullscreen (the startup fullscreen preference is desktop-only). */
 @Composable
 actual fun PlaybackPresentation(orientation: ScreenOrientation, fullscreen: Boolean) {
     val context = LocalContext.current
@@ -36,7 +36,7 @@ actual fun PlaybackPresentation(orientation: ScreenOrientation, fullscreen: Bool
 
     val windowInfo = LocalAppWindowInfo.current
     val floating = windowInfo.isInMultiWindow || windowInfo.isInPictureInPicture
-    val immersive = fullscreen && !floating
+    val immersive = !floating
     DisposableEffect(window, immersive) {
         if (window == null || !immersive) return@DisposableEffect onDispose { }
         val controller = WindowCompat.getInsetsController(window, window.decorView)

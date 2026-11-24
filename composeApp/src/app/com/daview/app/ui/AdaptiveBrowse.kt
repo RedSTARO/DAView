@@ -1,5 +1,6 @@
 package com.daview.app.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.PaddingValues
@@ -8,8 +9,10 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -31,6 +34,8 @@ import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.BackStackEntry
@@ -122,20 +127,56 @@ internal fun AdaptiveBrowse(
             else -> main.copy(left = navPane.right)
         }
         val activePane = detailPane ?: mainPane
+        val arrival = rememberFoldArrival(
+            owner = current.key to source?.key,
+            plan = panes,
+            size = DpSize(maxWidth, maxHeight),
+            enabled = imeTop == null
+        )
+
+        // Layout policy, hit targets and popups use the safe panes. Only artwork and
+        // navigation backgrounds can paint in the system-bar strips at exterior edges.
+        fun WindowPane.allowDecoration(candidate: WindowPane): WindowPane = candidate.takeUnless {
+            fold != null && fold.dividesWindow && fold.left < it.right && fold.right > it.left &&
+                fold.top < it.bottom && fold.bottom > it.top
+        } ?: this
+
+        fun WindowPane.atStatusEdge(): WindowPane =
+            if (height > 0.dp && top == viewport.top) allowDecoration(copy(top = y)) else this
+
+        fun WindowPane.forPage(entry: BackStackEntry): WindowPane = when (entry.screen) {
+            is Screen.Home, is Screen.Detail -> atStatusEdge()
+            else -> this
+        }
+
+        val mainPaint = mainPane.forPage(mainEntry)
+        val detailPaint = detailEntry?.let { checkNotNull(detailPane).forPage(it) }
+        val navPaint = navPane?.let { pane ->
+            val paint = if (rail) pane.atStatusEdge() else pane
+            if (imeTop == null && pane.height > 0.dp && pane.bottom == viewport.bottom) {
+                paint.allowDecoration(paint.copy(bottom = bottom))
+            } else paint
+        }
+        val navColor = MaterialTheme.colorScheme.surfaceContainerLow
         val labels = if (rail) density.fontScale <= 1.6f else {
             // Four destinations share the bar; keep labelled icons accessible when the text does not fit.
             main.width / 4 >= (48f * density.fontScale.coerceAtLeast(1f)).dp
         }
-        val consumed = PaddingValues(
+        fun consumed(top: Dp = topInset) = PaddingValues(
             start = if (rtl) rightInset else leftInset,
             end = if (rtl) leftInset else rightInset,
-            top = topInset,
+            top = top,
             bottom = maxOf(safeBottom, imeBottom)
         )
 
         Layout(content = {
-            if (navPane != null) {
-                Box(Modifier.layoutId(BrowseSlot.Navigation).clipToBounds().consumeWindowInsets(consumed)) {
+            if (navPane != null && navPaint != null) {
+                Box(
+                    Modifier.layoutId(BrowseSlot.Navigation).clipWithFoldArrival(arrival, fromAlpha = 0.76f)
+                        .background(navColor)
+                        .padding(top = navPane.top - navPaint.top, bottom = navPaint.bottom - navPane.bottom)
+                        .consumeWindowInsets(consumed())
+                ) {
                     CompositionLocalProvider(LocalBrowsePane provides main.takeIf { panes.divided }) {
                         navigation(rail, labels, sourceVisible)
                     }
@@ -147,15 +188,21 @@ internal fun AdaptiveBrowse(
                 key(entry.key) {
                     val companion = entry == detailEntry
                     val pane = if (companion) checkNotNull(detailPane) else mainPane
+                    val paint = if (companion) checkNotNull(detailPaint) else mainPaint
+                    val topOverlap = pane.top - paint.top
                     val reportFocus: (Boolean) -> Unit = remember(entry.key) {
                         { focused ->
                             if (focused) focusedEditor = entry.key
                             else if (focusedEditor == entry.key) focusedEditor = null
                         }
                     }
-                    Box(Modifier.layoutId(entry.key).clipToBounds().consumeWindowInsets(consumed)) {
+                    Box(
+                        Modifier.layoutId(entry.key).clipWithFoldArrival(arrival)
+                            .consumeWindowInsets(consumed(top = (topInset - topOverlap).coerceAtLeast(0.dp)))
+                    ) {
                         CompositionLocalProvider(
                             LocalBrowsePane provides pane.takeIf { panes.divided },
+                            LocalBrowseTopOverlap provides topOverlap,
                             LocalBrowseCompanionVisible provides companion,
                             LocalRailShown provides rail,
                             LocalSelectedBrowseItem provides selectedId.takeIf { sourceVisible && entry == source },
@@ -167,7 +214,7 @@ internal fun AdaptiveBrowse(
                 }
             }
             Box(Modifier.layoutId(BrowseSlot.Messages).clipToBounds()) { messages() }
-            Box(Modifier.layoutId(BrowseSlot.Blocking).clipToBounds().consumeWindowInsets(consumed)) {
+            Box(Modifier.layoutId(BrowseSlot.Blocking).clipToBounds().consumeWindowInsets(consumed())) {
                 CompositionLocalProvider(LocalBrowsePane provides activePane.takeIf { panes.divided }) {
                     blocking()
                     dialogs()
@@ -180,11 +227,11 @@ internal fun AdaptiveBrowse(
             fun top(pane: WindowPane) = pane.top.roundToPx() - y.roundToPx()
             fun fixed(pane: WindowPane) = Constraints.fixed(width(pane), height(pane))
 
-            val nav = navPane?.let { pane ->
+            val nav = navPaint?.let { pane ->
                 measurables.first { it.layoutId == BrowseSlot.Navigation }.measure(fixed(pane))
             }
-            val mainPage = measurables.first { it.layoutId == mainEntry.key }.measure(fixed(mainPane))
-            val detailPage = detailPane?.let { pane ->
+            val mainPage = measurables.first { it.layoutId == mainEntry.key }.measure(fixed(mainPaint))
+            val detailPage = detailPaint?.let { pane ->
                 measurables.first { it.layoutId == detailEntry?.key }.measure(fixed(pane))
             }
             val message = measurables.first { it.layoutId == BrowseSlot.Messages }.measure(
@@ -192,9 +239,9 @@ internal fun AdaptiveBrowse(
             )
             val overlay = measurables.first { it.layoutId == BrowseSlot.Blocking }.measure(fixed(activePane))
             layout(constraints.maxWidth, constraints.maxHeight) {
-                if (nav != null && navPane != null) nav.place(left(navPane), top(navPane))
-                mainPage.place(left(mainPane), top(mainPane))
-                if (detailPage != null && detailPane != null) detailPage.place(left(detailPane), top(detailPane))
+                if (nav != null && navPaint != null) nav.place(left(navPaint), top(navPaint))
+                mainPage.place(left(mainPaint), top(mainPaint))
+                if (detailPage != null && detailPaint != null) detailPage.place(left(detailPaint), top(detailPaint))
                 message.place(left(activePane) + (width(activePane) - message.width) / 2, top(activePane) + height(activePane) - message.height)
                 overlay.place(left(activePane), top(activePane))
             }

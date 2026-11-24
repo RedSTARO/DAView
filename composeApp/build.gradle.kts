@@ -215,6 +215,7 @@ kotlin {
         androidInstrumentedTest.dependencies {
             implementation(libs.androidx.test.runner)
             implementation(libs.androidx.test.junit)
+            implementation("org.jetbrains.compose.ui:ui-test-junit4:${libs.versions.compose.get()}")
         }
 
         // Needed by the shared source directory, which is compiled into both

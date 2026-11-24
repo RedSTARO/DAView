@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.absoluteOffset
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,6 +18,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -36,12 +36,15 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
@@ -91,7 +94,9 @@ fun PlayerScreen(state: AppState, playback: PlaybackController) {
                     Button(onClick = { state.back() }) { Text("返回") }
                 }
             } else Unit
-            external || !PlatformInfo.hasInternalPlayer -> PlayerAuxiliaryPane { ExternalPlaybackPanel(state, playback) }
+            external || !PlatformInfo.hasInternalPlayer -> PlayerAuxiliaryPane(foldOwner = info.sessionId) {
+                ExternalPlaybackPanel(state, playback)
+            }
             playback.starting -> if (!inPip) PlayerAuxiliaryPane { Switching(playback.startingName) } else Unit
             // One engine per session, not per window size, layout or posture.
             else -> key(info.sessionId) {
@@ -186,27 +191,42 @@ private fun WindowPane.fitVideo(aspect: Float?): Pair<Dp, Dp> =
 private fun WindowPane.hasRoomForPlayerActions(): Boolean =
     width >= 96.dp && height >= 48.dp || width >= 48.dp && height >= 96.dp
 
-/** Absolute positioning is important: the feature does not move in RTL. */
-internal fun Modifier.playerPane(pane: WindowPane, viewport: WindowPane): Modifier =
-    absoluteOffset(x = pane.left - viewport.left, y = pane.top - viewport.top)
-        .width(pane.width).height(pane.height).clipToBounds()
+/** Position absolutely in window coordinates so RTL cannot mirror the hinge. */
+internal fun Modifier.playerPane(pane: WindowPane, viewport: WindowPane, arrival: FoldArrival? = null): Modifier {
+    val bounds = absoluteOffset(x = pane.left - viewport.left, y = pane.top - viewport.top)
+        .width(pane.width).height(pane.height)
+    // The default path also serves the native picture; keep its original clip modifier.
+    return if (arrival == null) bounds.clipToBounds() else bounds.clipWithFoldArrival(arrival)
+}
+
+/** A paint-only cue on the safe controls edge, even when the HUD is hidden. */
+internal fun Modifier.playerArrivalEdge(arrival: FoldArrival?): Modifier {
+    if (arrival == null) return this
+    return drawWithContent {
+        drawContent()
+        val remaining = 1f - arrival.progress.value
+        if (remaining > 0f) {
+            drawRect(
+                color = Color.White,
+                size = Size(size.width, minOf(1.5.dp.toPx(), size.height)),
+                alpha = 0.7f * remaining
+            )
+        }
+    }
+}
 
 @Composable
-private fun PlayerAuxiliaryPane(content: @Composable () -> Unit) {
-    val fold = LocalAppWindowInfo.current.fold?.takeIf { it.dividesWindow }
-    if (fold == null) {
-        Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.Center) {
-            content()
-        }
-        return
-    }
+private fun PlayerAuxiliaryPane(foldOwner: Any? = null, content: @Composable () -> Unit) {
+    val appWindow = LocalAppWindowInfo.current
+    val fold = appWindow.fold.takeUnless { appWindow.isInPictureInPicture }
     val density = LocalDensity.current
     val rtl = LocalLayoutDirection.current == androidx.compose.ui.unit.LayoutDirection.Rtl
     var origin by remember { mutableStateOf(Offset.Zero) }
+    // Keep the same content slot when only the pane changes (e.g. Up Next retains focus).
     BoxWithConstraints(
         Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)
             .onGloballyPositioned { origin = it.positionInWindow() },
-        contentAlignment = androidx.compose.ui.AbsoluteAlignment.TopLeft
+        contentAlignment = AbsoluteAlignment.TopLeft
     ) {
         val viewport = with(density) {
             val left = origin.x.toDp()
@@ -214,7 +234,10 @@ private fun PlayerAuxiliaryPane(content: @Composable () -> Unit) {
             WindowPane(left, top, left + maxWidth, top + maxHeight)
         }
         val pane = playerPanes(viewport, fold, rtl).controls
-        Box(Modifier.playerPane(pane, viewport), contentAlignment = Alignment.Center) { content() }
+        // This viewport already excludes safeDrawing (including the IME), so only
+        // animate a reported fold here, not a size-only reflow.
+        val arrival = foldOwner?.let { rememberFoldArrival(owner = it, plan = pane) }
+        Box(Modifier.playerPane(pane, viewport, arrival), contentAlignment = Alignment.Center) { content() }
     }
 }
 
@@ -253,7 +276,7 @@ private fun UpNextCard(playback: PlaybackController, upNext: UpNext, showCard: B
         playback.playUpNext(auto = true)
     }
     if (!showCard) return
-    PlayerAuxiliaryPane { UpNextControls(playback, upNext, remaining) }
+    PlayerAuxiliaryPane(foldOwner = upNext.itemId) { UpNextControls(playback, upNext, remaining) }
 }
 
 @Composable

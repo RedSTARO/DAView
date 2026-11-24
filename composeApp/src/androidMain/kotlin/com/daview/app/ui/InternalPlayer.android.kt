@@ -83,6 +83,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -815,6 +816,13 @@ actual fun InternalPlayer(
         val compact = !tabletop && !controlsPane.clampTo(stableTouchBounds).fitsPlayerHud()
         val nativeHud = !compact && !tabletop && panes.picture == viewport
         val popupMenus = nativeHud && picturePane == viewport
+        // Track the un-inset root and the placed panes, not transient touch insets or playback progress.
+        val controlsArrival = rememberFoldArrival(
+            owner = info.sessionId,
+            plan = PlayerFoldPlan(picturePane, controlsPane, tabletop, compact, nativeHud),
+            size = DpSize(maxWidth, maxHeight),
+            enabled = !chromeHidden && !locked && playbackError == null
+        )
         val nativeInsets = panePadding(picturePane, touchBounds, direction)
         val showPause = playWhenReady && !playbackSuppressed
         val useNativeControls = nativeHud && !chromeHidden && !locked
@@ -942,9 +950,10 @@ actual fun InternalPlayer(
             }
 
             Box(
-                Modifier.playerPane(controlsPane, viewport)
+                Modifier.playerPane(controlsPane, viewport, controlsArrival)
                     .then(if (tabletop) Modifier.background(Color(0xFF17171B)) else Modifier)
                     .padding(panePadding(controlsPane, touchBounds, direction))
+                    .playerArrivalEdge(controlsArrival)
             ) {
                 val buttons: @Composable RowScope.() -> Unit = {
                     info.previousItemId?.let { previous ->
@@ -1064,6 +1073,14 @@ actual fun InternalPlayer(
         }
     }
 }
+
+private data class PlayerFoldPlan(
+    val picture: WindowPane,
+    val controls: WindowPane,
+    val tabletop: Boolean,
+    val compact: Boolean,
+    val nativeHud: Boolean
+)
 
 @androidx.annotation.OptIn(UnstableApi::class)
 private fun PlayerView.hideNativeControls() {

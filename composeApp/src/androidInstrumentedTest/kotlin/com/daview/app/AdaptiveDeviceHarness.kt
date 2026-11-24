@@ -138,9 +138,10 @@ internal class AdaptiveDeviceHarness private constructor(
 
     private fun settled(profile: AdaptiveDeviceWindow): AdaptiveFrame {
         val deadline = SystemClock.uptimeMillis() + WAIT_MS
+        var previous: AdaptiveFrame? = null
         while (SystemClock.uptimeMillis() < deadline) {
-            // SideEffect confirms updated inputs; two dispatched frames also let measurement, positioning,
-            // and a layout-driven recomposition complete before reading the accessibility tree.
+            // A new profile can be published while Android system bars are still changing the
+            // shell and hinge coordinates. Compare full frames after actual measure/placement.
             val painted = CountDownLatch(1)
             activity.onActivity { current ->
                 hostFailure?.let { throw AssertionError(it) }
@@ -148,10 +149,12 @@ internal class AdaptiveDeviceHarness private constructor(
                 decor.postOnAnimation { decor.postOnAnimation { painted.countDown() } }
             }
             check(painted.await(3, TimeUnit.SECONDS)) { "No UI frame after requesting ${profile.name}" }
-            measured?.takeIf { it.profile == profile }?.let {
-                receipt.emit("FRAME", it.describe())
-                return it
+            val current = measured?.takeIf { it.profile == profile }
+            if (current != null && current == previous) {
+                receipt.emit("FRAME", current.describe())
+                return current
             }
+            previous = current
         }
         throw AssertionError("${profile.name} never measured (last=${measured?.describe()})")
     }

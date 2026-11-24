@@ -24,10 +24,16 @@ internal data class AppFold(
 internal data class AppWindowInfo(
     val fold: AppFold? = null,
     val isInMultiWindow: Boolean = false,
-    val isInPictureInPicture: Boolean = false
+    val isInPictureInPicture: Boolean = false,
+    // A provisional observation must not look like an unfolded window.
+    val foldLayoutObserved: Boolean = true,
+    val isWindowVisible: Boolean = true,
+    val windowMotionEpoch: Int = 0,
+    // Android cover/inner handoffs may report only a fullscreen resize.
+    val animateWindowReflow: Boolean = false
 )
 
-internal val LocalAppWindowInfo = compositionLocalOf { AppWindowInfo() }
+internal val LocalAppWindowInfo = compositionLocalOf { AppWindowInfo(foldLayoutObserved = false) }
 
 /** A rectangle in dp. Coordinates are absolute (not start/end), so RTL cannot mirror a hinge. */
 internal data class WindowPane(val left: Dp, val top: Dp, val right: Dp, val bottom: Dp) {

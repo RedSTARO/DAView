@@ -5,21 +5,19 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -49,6 +47,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -58,6 +57,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
 import com.daview.app.data.AppState
 import com.daview.app.data.HomeSection
@@ -69,9 +69,13 @@ import com.daview.shared.model.LibraryDto
 import com.daview.shared.model.MediaItemDto
 import com.daview.shared.model.ScanProgressDto
 
+private const val HomeHeroKey = "hero"
+
 @OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(state: AppState, playback: PlaybackController) {
+    val topOverlap = LocalBrowseTopOverlap.current
+    val safeContent = Modifier.fillMaxSize().browseSafeTop(topOverlap)
     val home = state.home
     val sections = state.homeSections.filter { it.second }.map { it.first }
     val heroItem = if (HomeSection.HERO in sections) {
@@ -87,18 +91,20 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
 
     if (!state.homeLoaded) {
         val failed = state.homeError
-        if (failed != null && !state.homeRefreshing) {
-            EmptyState("首页读取失败", failed) {
-                Button(onClick = { state.refreshHome() }) { Text("重试") }
+        Box(safeContent.clipToBounds()) {
+            if (failed != null && !state.homeRefreshing) {
+                EmptyState("首页读取失败", failed) {
+                    Button(onClick = { state.refreshHome() }) { Text("重试") }
+                }
+            } else {
+                LoadingPane()
             }
-        } else {
-            LoadingPane()
         }
         return
     }
 
     if (state.libraries.isEmpty() && home.latest.isEmpty()) {
-        FirstRun(state)
+        Box(safeContent.clipToBounds()) { FirstRun(state) }
         return
     }
 
@@ -108,12 +114,12 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
     if (state.libraries.all { it.itemCount == 0 } && home.latest.isEmpty() && home.resume.isEmpty() &&
         home.nextUp.isEmpty() && home.favourites.isEmpty()
     ) {
-        EmptyLibraries(state)
+        Box(safeContent.clipToBounds()) { EmptyLibraries(state) }
         return
     }
 
     val listState = rememberLazyListState()
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    BoxWithConstraints(safeContent) {
         val wide = LocalRailShown.current
         // A share of the height the page actually has, not a fixed band: on a
         // phone held sideways a 380dp banner was the whole screen and more.
@@ -126,6 +132,11 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
         // on the first row's "see all" or the scan banner's button.
         val floatingRefresh = heroItem != null && scanning.isEmpty()
 
+        if (heroItem != null && topOverlap > 0.dp) {
+            BrowseHeroBackdrop(listState, HomeHeroKey, topOverlap, Modifier.matchParentSize().zIndex(-1f)) {
+                HomeHeroArtwork(heroItem)
+            }
+        }
         // Pull down to refresh where there is a finger to pull with; the
         // desktop has F5 and the button in the corner.
         MaybePullToRefresh(
@@ -133,110 +144,106 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
             refreshing = state.homePulling,
             onRefresh = { state.refreshHome(pulled = true) }
         ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 32.dp)
-        ) {
-            if (!floatingRefresh) {
-                item(key = "header") {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .windowInsetsPadding(WindowInsets.statusBars)
-                            .padding(start = 20.dp, end = 12.dp, top = 8.dp),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        RefreshButton(state)
-                    }
-                }
-            }
-            // The running scan leads the page, where it can be seen; it used to
-            // sit under every shelf, a couple of thousand dp down.
-            if (scanning.isNotEmpty()) {
-                item {
-                    ScanBanner(
-                        scanning,
-                        topInset = true,
-                        onOpen = { state.switchTo(Screen.Settings) }
-                    )
-                }
-            }
-            sections.forEach { section ->
-                when (section) {
-                    HomeSection.HERO -> heroItem?.let { hero ->
-                        item(key = "hero") {
-                            HeroBanner(
-                                hero,
-                                height = heroHeight,
-                                menu = { dismiss -> ItemMenuItems(state, playback, hero, dismiss) },
-                                onPlay = { playback.play(hero) },
-                                onSeries = hero.seriesId?.let { id -> { state.navigate(Screen.Detail(id)) } }
-                            ) { state.navigate(Screen.Detail(hero.id)) }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().clipToBounds(),
+                contentPadding = PaddingValues(bottom = 32.dp)
+            ) {
+                if (!floatingRefresh) {
+                    item(key = "header") {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(start = 20.dp, end = 12.dp, top = 8.dp),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            RefreshButton(state)
                         }
                     }
-                    // The rail already lists every library on a wide window.
-                    HomeSection.LIBRARIES -> if (!wide) {
-                        item(key = "libraries") { LibraryShortcuts(state.libraries) { state.switchTo(Screen.Library(it.id)) } }
+                }
+                // The running scan leads the page, where it can be seen; it used to
+                // sit under every shelf, a couple of thousand dp down.
+                if (scanning.isNotEmpty()) {
+                    item {
+                        ScanBanner(scanning, onOpen = { state.switchTo(Screen.Settings) })
                     }
-                    HomeSection.RESUME -> item(key = "resume") {
-                        // The banner already shows the first of these; the row
-                        // starts after it rather than repeating it right below.
-                        val rows = if (heroItem != null && heroItem.id == home.resume.firstOrNull()?.id) {
-                            home.resume.drop(1)
-                        } else home.resume
-                        MediaRow(
-                            "继续观看", rows, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
-                            onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.RESUME)) }.takeIf { home.resume.size > 1 },
-                            downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
-                        )
-                    }
-                    HomeSection.NEXT_UP -> item(key = "nextUp") {
-                        val rows = if (heroItem != null && heroItem.id == home.nextUp.firstOrNull()?.id && home.resume.isEmpty()) {
-                            home.nextUp.drop(1)
-                        } else home.nextUp
-                        MediaRow(
-                            "接下来", rows, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
-                            onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.NEXT_UP)) },
-                            downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
-                        )
-                    }
-                    HomeSection.LATEST -> item(key = "latest") {
-                        // The banner falls back to the newest item when nothing
-                        // is in progress; the row then starts after it.
-                        val rows = if (heroItem != null && home.resume.isEmpty() && home.nextUp.isEmpty() &&
-                            heroItem.id == home.latest.firstOrNull()?.id
-                        ) home.latest.drop(1) else home.latest
-                        MediaRow(
-                            "最近添加", rows, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
-                            onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.LATEST)) },
-                            downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
-                        )
-                    }
-                    HomeSection.FAVOURITES -> item(key = "favourites") {
-                        MediaRow(
-                            "收藏", home.favourites,
-                            onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.FAVOURITES)) },
-                            downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
-                        )
-                    }
-                    // One row per library rather than a single pooled one: which
-                    // shelf a thing sits on is most of what decides whether you
-                    // want it tonight. The selection turns over once a day.
-                    HomeSection.UNWATCHED -> items(state.libraries, key = { "unwatched-" + it.id }) { library ->
-                        MediaRow(
-                            "${library.name} · 未观看",
-                            home.unwatched[library.id].orEmpty(),
-                            // A shelf of its own, like the other rows: switching
-                            // the library's own filter on stuck there, and
-                            // replaced the whole stack besides.
-                            onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.UNWATCHED, library.id)) },
-                            downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
-                        )
+                }
+                sections.forEach { section ->
+                    when (section) {
+                        HomeSection.HERO -> heroItem?.let { hero ->
+                            item(key = HomeHeroKey) {
+                                HeroBanner(
+                                    hero,
+                                    height = heroHeight,
+                                    drawArtwork = topOverlap == 0.dp,
+                                    menu = { dismiss -> ItemMenuItems(state, playback, hero, dismiss) },
+                                    onPlay = { playback.play(hero) },
+                                    onSeries = hero.seriesId?.let { id -> { state.navigate(Screen.Detail(id)) } }
+                                ) { state.navigate(Screen.Detail(hero.id)) }
+                            }
+                        }
+                        // The rail already lists every library on a wide window.
+                        HomeSection.LIBRARIES -> if (!wide) {
+                            item(key = "libraries") { LibraryShortcuts(state.libraries) { state.switchTo(Screen.Library(it.id)) } }
+                        }
+                        HomeSection.RESUME -> item(key = "resume") {
+                            // The banner already shows the first of these; the row
+                            // starts after it rather than repeating it right below.
+                            val rows = if (heroItem != null && heroItem.id == home.resume.firstOrNull()?.id) {
+                                home.resume.drop(1)
+                            } else home.resume
+                            MediaRow(
+                                "继续观看", rows, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
+                                onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.RESUME)) }.takeIf { home.resume.size > 1 },
+                                downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
+                            )
+                        }
+                        HomeSection.NEXT_UP -> item(key = "nextUp") {
+                            val rows = if (heroItem != null && heroItem.id == home.nextUp.firstOrNull()?.id && home.resume.isEmpty()) {
+                                home.nextUp.drop(1)
+                            } else home.nextUp
+                            MediaRow(
+                                "接下来", rows, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
+                                onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.NEXT_UP)) },
+                                downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
+                            )
+                        }
+                        HomeSection.LATEST -> item(key = "latest") {
+                            // The banner falls back to the newest item when nothing
+                            // is in progress; the row then starts after it.
+                            val rows = if (heroItem != null && home.resume.isEmpty() && home.nextUp.isEmpty() &&
+                                heroItem.id == home.latest.firstOrNull()?.id
+                            ) home.latest.drop(1) else home.latest
+                            MediaRow(
+                                "最近添加", rows, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
+                                onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.LATEST)) },
+                                downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
+                            )
+                        }
+                        HomeSection.FAVOURITES -> item(key = "favourites") {
+                            MediaRow(
+                                "收藏", home.favourites,
+                                onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.FAVOURITES)) },
+                                downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
+                            )
+                        }
+                        // One row per library rather than a single pooled one: which
+                        // shelf a thing sits on is most of what decides whether you
+                        // want it tonight. The selection turns over once a day.
+                        HomeSection.UNWATCHED -> items(state.libraries, key = { "unwatched-" + it.id }) { library ->
+                            MediaRow(
+                                "${library.name} · 未观看",
+                                home.unwatched[library.id].orEmpty(),
+                                // A shelf of its own, like the other rows: switching
+                                // the library's own filter on stuck there, and
+                                // replaced the whole stack besides.
+                                onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.UNWATCHED, library.id)) },
+                                downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
+                            )
+                        }
                     }
                 }
             }
-        }
         }
 
         // Somewhere to ask for fresh shelves that is not only F5 or a gesture.
@@ -244,7 +251,6 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
             Box(
                 Modifier
                     .align(Alignment.TopEnd)
-                    .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(12.dp)
             ) { RefreshButton(state) }
         }
@@ -307,13 +313,12 @@ private fun EmptyLibraries(state: AppState) {
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun ScanBanner(scanning: List<ScanProgressDto>, topInset: Boolean, onOpen: () -> Unit) {
+private fun ScanBanner(scanning: List<ScanProgressDto>, onOpen: () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         shape = MaterialTheme.shapes.medium,
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (topInset) Modifier else Modifier.windowInsetsPadding(WindowInsets.statusBars))
             .padding(horizontal = 20.dp, vertical = 8.dp)
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
@@ -350,6 +355,7 @@ private fun ScanBanner(scanning: List<ScanProgressDto>, topInset: Boolean, onOpe
 private fun HeroBanner(
     item: MediaItemDto,
     height: androidx.compose.ui.unit.Dp,
+    drawArtwork: Boolean,
     menu: @Composable androidx.compose.foundation.layout.ColumnScope.(dismiss: () -> Unit) -> Unit,
     onPlay: () -> Unit,
     onSeries: (() -> Unit)?,
@@ -372,29 +378,7 @@ private fun HeroBanner(
                 onLongClick = { if (lastPointer != PointerType.Mouse) menuAt = Offset.Zero }
             )
     ) {
-        val art = item.backdropUrl ?: item.posterUrl
-        if (art != null) {
-            AsyncImage(
-                model = art,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.matchParentSize()
-            )
-        } else {
-            Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.surfaceContainerHigh))
-        }
-        // Dark behind the status bar icons at the top, dense behind the text at
-        // the bottom, clear in between where the picture is.
-        Box(
-            Modifier.matchParentSize().background(
-                Brush.verticalGradient(
-                    0f to MaterialTheme.colorScheme.background.copy(alpha = 0.55f),
-                    0.18f to Color.Transparent,
-                    0.55f to MaterialTheme.colorScheme.background.copy(alpha = 0.6f),
-                    1f to MaterialTheme.colorScheme.background
-                )
-            )
-        )
+        if (drawArtwork) HomeHeroArtwork(item)
         Column(
             Modifier.align(Alignment.BottomStart).padding(horizontal = 24.dp, vertical = 20.dp).widthIn(max = 720.dp)
         ) {
@@ -453,6 +437,33 @@ private fun HeroBanner(
             menu { menuAt = null }
         }
     }
+}
+
+@Composable
+private fun BoxScope.HomeHeroArtwork(item: MediaItemDto) {
+    val art = item.backdropUrl ?: item.posterUrl
+    if (art != null) {
+        AsyncImage(
+            model = art,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.matchParentSize()
+        )
+    } else {
+        Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.surfaceContainerHigh))
+    }
+    // Dark behind the status bar icons at the top, dense behind the text at
+    // the bottom, clear in between where the picture is.
+    Box(
+        Modifier.matchParentSize().background(
+            Brush.verticalGradient(
+                0f to MaterialTheme.colorScheme.background.copy(alpha = 0.55f),
+                0.18f to Color.Transparent,
+                0.55f to MaterialTheme.colorScheme.background.copy(alpha = 0.6f),
+                1f to MaterialTheme.colorScheme.background
+            )
+        )
+    )
 }
 
 @Composable
