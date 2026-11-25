@@ -79,7 +79,12 @@ class AdaptiveUiOnDeviceTest {
             assertUsable("WebDAV 存储", ui.awaitVisible("WebDAV 存储"))
             val address = ui.awaitVisible("non-password WebDAV editor") { it.isEditable && !it.isPassword }
             assertUsable("WebDAV editor", address)
-            assertUsable("存储与刮削", ui.awaitAction("存储与刮削"))
+            // Android exposes the current Material tab as selected, not clickable.
+            val storage = ui.awaitVisible("selected storage category") { node ->
+                node.hasLabel("存储与刮削") && generateSequence(node) { it.parent }.any { it.isSelected }
+            }
+            assertUsable("存储与刮削", storage)
+            assertUsable("播放 category action", ui.awaitAction("播放"))
         }
     }
 

@@ -1,8 +1,8 @@
 package com.daview.app.ui
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -22,7 +22,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.time.TimeSource
 
-private const val ArrivalMillis = 260
+// Product-side debounce for the two platform callbacks; not an animation duration.
 private const val ReportPairMillis = 220L
 
 private data class FoldSignal(val axis: FoldAxis, val posture: FoldPosture, val dividesWindow: Boolean)
@@ -48,6 +48,7 @@ internal class FoldArrival {
  * Animate only the new live panes, after safe measurement and placement. A make/break
  * fold and Android's measurement can come in either order. Never replay ordinary navigation.
  */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun rememberFoldArrival(
     owner: Any,
@@ -58,6 +59,7 @@ internal fun rememberFoldArrival(
     val window = LocalAppWindowInfo.current
     if (!window.foldLayoutObserved && !window.animateWindowReflow) return null
     val allowed = enabled && !window.isInMultiWindow && !window.isInPictureInPicture
+    val effects = rememberUpdatedState(MaterialTheme.motionScheme.slowEffectsSpec<Float>())
     val latest = rememberUpdatedState(FoldLayout(window, plan, size, allowed))
     val arrival = remember(owner, window.windowMotionEpoch) { FoldArrival() }
     LaunchedEffect(arrival) {
@@ -120,7 +122,7 @@ internal fun rememberFoldArrival(
             animation = launch(start = CoroutineStart.UNDISPATCHED) {
                 if (motionScale?.scaleFactor == 0f) return@launch
                 arrival.progress.snapTo(0f)
-                arrival.progress.animateTo(1f, tween(ArrivalMillis, easing = FastOutSlowInEasing))
+                arrival.progress.animateTo(1f, effects.value)
             }
         }
     }

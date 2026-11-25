@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package com.daview.app.ui
 
 import androidx.compose.foundation.layout.Arrangement
@@ -6,17 +8,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalDensity
@@ -50,9 +58,9 @@ internal fun PaneMenu(
         Surface(
             modifier = Modifier.widthIn(max = minOf(280.dp, pane.width)).heightIn(max = pane.height)
                 .then(modifier).clipToBounds(),
-            shape = MaterialTheme.shapes.small,
+            shape = MaterialTheme.shapes.extraSmall,
             color = MaterialTheme.colorScheme.surfaceContainer,
-            shadowElevation = 6.dp
+            shadowElevation = 3.dp
         ) {
             val maxWidth = minOf(280.dp, pane.width)
             Column(
@@ -72,32 +80,58 @@ internal fun AdaptiveAlertDialog(
     confirmButton: @Composable () -> Unit,
     dismissButton: (@Composable () -> Unit)? = null,
     title: (@Composable () -> Unit)? = null,
-    text: (@Composable () -> Unit)? = null
+    text: (@Composable () -> Unit)? = null,
+    icon: (@Composable () -> Unit)? = null
 ) {
     val pane = LocalBrowsePane.current
+    val decoratedTitle: (@Composable () -> Unit)? = title?.let {
+        { ProvideTextStyle(MaterialTheme.typography.headlineSmallEmphasized, it) }
+    }
     if (pane == null) {
-        AlertDialog(onDismissRequest, confirmButton, dismissButton = dismissButton, title = title, text = text)
+        AlertDialog(
+            onDismissRequest, confirmButton, dismissButton = dismissButton, title = decoratedTitle, text = text,
+            icon = icon, shape = MaterialTheme.shapes.extraLarge, containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            iconContentColor = MaterialTheme.colorScheme.secondary
+        )
         return
     }
     if (pane.width <= 0.dp || pane.height <= 0.dp) return
+    // The hinge-safe variant uses a little clearance, not the full screen's width.
+    val width = (pane.width - 16.dp).coerceIn(1.dp, 560.dp)
+    val height = (pane.height - 16.dp).coerceAtLeast(1.dp)
+    val padding = if (width < 336.dp || height < 360.dp) 16.dp else 24.dp
     Popup(
         popupPositionProvider = panePosition(pane, centered = true),
         onDismissRequest = onDismissRequest,
         properties = PopupProperties(focusable = true)
     ) {
         Surface(
-            modifier = Modifier.widthIn(max = minOf(520.dp, pane.width)).heightIn(max = pane.height)
+            modifier = Modifier.widthIn(min = minOf(280.dp, width), max = width).heightIn(max = height)
                 .clipToBounds().semantics { paneTitle = "对话框" },
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shadowElevation = 8.dp
+            shadowElevation = 6.dp
         ) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (title != null) ProvideTextStyle(MaterialTheme.typography.headlineSmall, title)
-                if (text != null) Box(Modifier.weight(1f, fill = false)) {
-                    ProvideTextStyle(MaterialTheme.typography.bodyMedium, text)
+            Column(Modifier.padding(padding)) {
+                if (icon != null && height >= 240.dp) {
+                    Box(Modifier.align(Alignment.CenterHorizontally)) {
+                        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.secondary, content = icon)
+                    }
+                    if (decoratedTitle != null) Spacer(Modifier.height(16.dp))
                 }
-                FlowRow(horizontalArrangement = Arrangement.End) {
+                if (decoratedTitle != null) {
+                    Box(Modifier.align(if (icon == null) Alignment.Start else Alignment.CenterHorizontally)) { decoratedTitle() }
+                }
+                if (text != null) {
+                    Spacer(Modifier.height(if (height < 360.dp) 8.dp else 16.dp))
+                    Box(Modifier.weight(1f, fill = false)) {
+                        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant) {
+                            ProvideTextStyle(MaterialTheme.typography.bodyMedium, text)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(if (height < 360.dp) 8.dp else 24.dp))
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
                     dismissButton?.invoke()
                     confirmButton()
                 }

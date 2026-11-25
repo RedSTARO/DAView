@@ -1,6 +1,8 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.daview.app.ui
 
-import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -8,6 +10,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,21 +21,26 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -40,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,15 +57,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
@@ -71,462 +85,430 @@ import com.daview.shared.model.ScanProgressDto
 
 private const val HomeHeroKey = "hero"
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(state: AppState, playback: PlaybackController) {
     val topOverlap = LocalBrowseTopOverlap.current
-    val safeContent = Modifier.fillMaxSize().browseSafeTop(topOverlap)
     val home = state.home
     val sections = state.homeSections.filter { it.second }.map { it.first }
     val heroItem = if (HomeSection.HERO in sections) {
         home.resume.firstOrNull() ?: home.nextUp.firstOrNull() ?: home.latest.firstOrNull()
     } else null
+    val highlight = when (heroItem?.id) {
+        null -> ""
+        home.resume.firstOrNull()?.id -> "继续观看"
+        home.nextUp.firstOrNull()?.id -> "接下来"
+        else -> "最近添加"
+    }
+    // Announce requested scans here. The automatic startup check stays quiet.
+    val scanning = state.scanStatus.filter { it.running && !it.automatic }
+    val firstIsHero = sections.firstOrNull() == HomeSection.HERO && heroItem != null && scanning.isEmpty()
     val itemMenu = cardMenu(state, playback)
     val downloaded = { item: MediaItemDto -> state.isDownloaded(item) }
-
-    // The play button the tiles draw over their artwork. A series has no bytes
-    // of its own; pressing it plays the episode it is up to.
-    val onPlay: (MediaItemDto) -> Unit = { playback.play(it) }
+    val play: (MediaItemDto) -> Unit = { playback.play(it) }
     val open: (MediaItemDto) -> Unit = { state.navigate(Screen.Detail(it.id)) }
-
-    if (!state.homeLoaded) {
-        val failed = state.homeError
-        Box(safeContent.clipToBounds()) {
-            if (failed != null && !state.homeRefreshing) {
-                EmptyState("首页读取失败", failed) {
-                    Button(onClick = { state.refreshHome() }) { Text("重试") }
-                }
-            } else {
-                LoadingPane()
-            }
-        }
-        return
-    }
-
-    if (state.libraries.isEmpty() && home.latest.isEmpty()) {
-        Box(safeContent.clipToBounds()) { FirstRun(state) }
-        return
-    }
-
-    // Libraries with nothing in them yet: made on another device and pulled in
-    // by sync, restored from a backup, or scanned and found empty. Every row
-    // below would be empty, and on a wide window the page was blank.
-    if (state.libraries.all { it.itemCount == 0 } && home.latest.isEmpty() && home.resume.isEmpty() &&
-        home.nextUp.isEmpty() && home.favourites.isEmpty()
-    ) {
-        Box(safeContent.clipToBounds()) { EmptyLibraries(state) }
-        return
-    }
-
+    val safeContent = Modifier.fillMaxSize().browseSafeTop(topOverlap)
     val listState = rememberLazyListState()
-    BoxWithConstraints(safeContent) {
-        val wide = LocalRailShown.current
-        // A share of the height the page actually has, not a fixed band: on a
-        // phone held sideways a 380dp banner was the whole screen and more.
-        val heroHeight = (maxHeight * 0.52f).coerceIn(220.dp, 460.dp)
-        // The check the app runs on its own at start-up stays off the home
-        // page: a banner at every launch is what "quiet unless it found
-        // something" rules out. It still shows on the library page.
-        val scanning = state.scanStatus.filter { it.running && !it.automatic }
-        // Over the banner's picture the corner is free; anywhere else it sat
-        // on the first row's "see all" or the scan banner's button.
-        val floatingRefresh = heroItem != null && scanning.isEmpty()
 
-        if (heroItem != null && topOverlap > 0.dp) {
-            BrowseHeroBackdrop(listState, HomeHeroKey, topOverlap, Modifier.matchParentSize().zIndex(-1f)) {
-                HomeHeroArtwork(heroItem)
+    BoxWithConstraints(safeContent) {
+        val margin = pageMargin(maxWidth)
+        val splitHero = maxWidth >= 720.dp
+        val short = maxHeight < 480.dp
+        val artHeight = if (splitHero) (maxWidth * 0.25f).coerceIn(188.dp, 312.dp)
+            else if (short) 96.dp else (maxWidth * 0.45f).coerceIn(132.dp, 224.dp)
+        val ready = state.homeLoaded
+        val noLibrary = state.libraries.isEmpty() && home.latest.isEmpty()
+        val emptyLibraries = state.libraries.all { it.itemCount == 0 } && home.latest.isEmpty() &&
+            home.resume.isEmpty() && home.nextUp.isEmpty() && home.favourites.isEmpty()
+
+        if (ready && firstIsHero && topOverlap > 0.dp) {
+            // The only part of the hero allowed into the status bar is its decoration.
+            // The image in the panel and all of its actions stay in the safe scroll area.
+            BrowseHeroBackdrop(listState, HomeHeroKey, topOverlap, Modifier.matchParentSize().zIndex(-1f)
+                .drawWithContent { clipRect(top = -topOverlap.toPx(), bottom = 0f) { this@drawWithContent.drawContent() } }
+            ) {
+                HomeHeroArtwork(checkNotNull(heroItem))
+                Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.surface.copy(alpha = 0.83f)))
             }
         }
-        // Pull down to refresh where there is a finger to pull with; the
-        // desktop has F5 and the button in the corner.
-        MaybePullToRefresh(
-            enabled = !hasHoverPointer,
-            refreshing = state.homePulling,
-            onRefresh = { state.refreshHome(pulled = true) }
-        ) {
+
+        if (!ready) {
+            val failed = state.homeError
+            Column(Modifier.fillMaxSize().clipToBounds()) {
+                HomeHeading(state, margin)
+                Box(Modifier.weight(1f)) {
+                    if (failed == null || state.homeRefreshing) LoadingPane()
+                    else EmptyState("首页读取失败", failed, icon = Icons.Outlined.ErrorOutline) {
+                        Button(onClick = { state.refreshHome() }) { Text("重试") }
+                    }
+                }
+            }
+            return@BoxWithConstraints
+        }
+
+        val content: @Composable () -> Unit = {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize().clipToBounds(),
                 contentPadding = PaddingValues(bottom = 32.dp)
             ) {
-                if (!floatingRefresh) {
-                    item(key = "header") {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(start = 20.dp, end = 12.dp, top = 8.dp),
-                            horizontalArrangement = Arrangement.End
-                        ) {
-                            RefreshButton(state)
+                if (noLibrary || emptyLibraries || !firstIsHero) {
+                    item(key = "header") { HomeHeading(state, margin) }
+                }
+                when {
+                    noLibrary -> item(key = "first-run") { FirstRun(state, margin) }
+                    emptyLibraries -> {
+                        item(key = "empty-libraries") { EmptyLibraries(state, margin) }
+                        if (HomeSection.LIBRARIES in sections) item(key = "libraries") {
+                            LibraryShortcuts(state.libraries, margin) { state.switchTo(Screen.Library(it.id)) }
                         }
                     }
-                }
-                // The running scan leads the page, where it can be seen; it used to
-                // sit under every shelf, a couple of thousand dp down.
-                if (scanning.isNotEmpty()) {
-                    item {
-                        ScanBanner(scanning, onOpen = { state.switchTo(Screen.Settings) })
-                    }
-                }
-                sections.forEach { section ->
-                    when (section) {
-                        HomeSection.HERO -> heroItem?.let { hero ->
-                            item(key = HomeHeroKey) {
-                                HeroBanner(
-                                    hero,
-                                    height = heroHeight,
-                                    drawArtwork = topOverlap == 0.dp,
-                                    menu = { dismiss -> ItemMenuItems(state, playback, hero, dismiss) },
-                                    onPlay = { playback.play(hero) },
-                                    onSeries = hero.seriesId?.let { id -> { state.navigate(Screen.Detail(id)) } }
-                                ) { state.navigate(Screen.Detail(hero.id)) }
+                    else -> {
+                        if (scanning.isNotEmpty()) item(key = "scan") {
+                            ScanBanner(scanning, margin) { state.switchTo(Screen.Settings) }
+                        }
+                        sections.forEach { section ->
+                            when (section) {
+                                HomeSection.HERO -> heroItem?.let { hero ->
+                                    item(key = HomeHeroKey) {
+                                        Column {
+                                            if (firstIsHero) HomeHeading(state, margin)
+                                            HeroPanel(
+                                                item = hero,
+                                                label = highlight,
+                                                split = splitHero,
+                                                artHeight = artHeight,
+                                                margin = margin,
+                                                menu = { dismiss -> ItemMenuItems(state, playback, hero, dismiss) },
+                                                onPlay = { play(hero) },
+                                                onSeries = hero.seriesId?.let { id -> { state.navigate(Screen.Detail(id)) } }
+                                            ) { open(hero) }
+                                        }
+                                    }
+                                }
+                                HomeSection.LIBRARIES -> item(key = "libraries") {
+                                    LibraryShortcuts(state.libraries, margin) { state.switchTo(Screen.Library(it.id)) }
+                                }
+                                HomeSection.RESUME -> item(key = "resume") {
+                                    MediaRow(
+                                        "继续观看", home.resume.withoutSpotlight(heroItem, highlight == "继续观看"),
+                                        itemWidth = if (splitHero) 256.dp else 212.dp, shape = CardShape.LANDSCAPE,
+                                        onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.RESUME)) }.takeIf { home.resume.size > 1 },
+                                        downloaded = downloaded, menu = itemMenu, onItemPlay = play, horizontal = margin, onItemClick = open
+                                    )
+                                }
+                                HomeSection.NEXT_UP -> item(key = "nextUp") {
+                                    MediaRow(
+                                        "接下来", home.nextUp.withoutSpotlight(heroItem, highlight == "接下来"),
+                                        itemWidth = if (splitHero) 256.dp else 212.dp, shape = CardShape.LANDSCAPE,
+                                        onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.NEXT_UP)) },
+                                        downloaded = downloaded, menu = itemMenu, onItemPlay = play, horizontal = margin, onItemClick = open
+                                    )
+                                }
+                                HomeSection.LATEST -> item(key = "latest") {
+                                    MediaRow(
+                                        "最近添加", home.latest.withoutSpotlight(heroItem, highlight == "最近添加"),
+                                        itemWidth = if (splitHero) 256.dp else 212.dp, shape = CardShape.LANDSCAPE,
+                                        onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.LATEST)) },
+                                        downloaded = downloaded, menu = itemMenu, onItemPlay = play, horizontal = margin, onItemClick = open
+                                    )
+                                }
+                                HomeSection.FAVOURITES -> item(key = "favourites") {
+                                    MediaRow(
+                                        "收藏", home.favourites, onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.FAVOURITES)) },
+                                        downloaded = downloaded, menu = itemMenu, onItemPlay = play, horizontal = margin, onItemClick = open
+                                    )
+                                }
+                                HomeSection.UNWATCHED -> items(state.libraries, key = { "unwatched-" + it.id }) { library ->
+                                    MediaRow(
+                                        "${library.name} · 未观看", home.unwatched[library.id].orEmpty(),
+                                        onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.UNWATCHED, library.id)) },
+                                        downloaded = downloaded, menu = itemMenu, onItemPlay = play, horizontal = margin, onItemClick = open
+                                    )
+                                }
                             }
-                        }
-                        // The rail already lists every library on a wide window.
-                        HomeSection.LIBRARIES -> if (!wide) {
-                            item(key = "libraries") { LibraryShortcuts(state.libraries) { state.switchTo(Screen.Library(it.id)) } }
-                        }
-                        HomeSection.RESUME -> item(key = "resume") {
-                            // The banner already shows the first of these; the row
-                            // starts after it rather than repeating it right below.
-                            val rows = if (heroItem != null && heroItem.id == home.resume.firstOrNull()?.id) {
-                                home.resume.drop(1)
-                            } else home.resume
-                            MediaRow(
-                                "继续观看", rows, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
-                                onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.RESUME)) }.takeIf { home.resume.size > 1 },
-                                downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
-                            )
-                        }
-                        HomeSection.NEXT_UP -> item(key = "nextUp") {
-                            val rows = if (heroItem != null && heroItem.id == home.nextUp.firstOrNull()?.id && home.resume.isEmpty()) {
-                                home.nextUp.drop(1)
-                            } else home.nextUp
-                            MediaRow(
-                                "接下来", rows, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
-                                onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.NEXT_UP)) },
-                                downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
-                            )
-                        }
-                        HomeSection.LATEST -> item(key = "latest") {
-                            // The banner falls back to the newest item when nothing
-                            // is in progress; the row then starts after it.
-                            val rows = if (heroItem != null && home.resume.isEmpty() && home.nextUp.isEmpty() &&
-                                heroItem.id == home.latest.firstOrNull()?.id
-                            ) home.latest.drop(1) else home.latest
-                            MediaRow(
-                                "最近添加", rows, itemWidth = 240.dp, shape = CardShape.LANDSCAPE,
-                                onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.LATEST)) },
-                                downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
-                            )
-                        }
-                        HomeSection.FAVOURITES -> item(key = "favourites") {
-                            MediaRow(
-                                "收藏", home.favourites,
-                                onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.FAVOURITES)) },
-                                downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
-                            )
-                        }
-                        // One row per library rather than a single pooled one: which
-                        // shelf a thing sits on is most of what decides whether you
-                        // want it tonight. The selection turns over once a day.
-                        HomeSection.UNWATCHED -> items(state.libraries, key = { "unwatched-" + it.id }) { library ->
-                            MediaRow(
-                                "${library.name} · 未观看",
-                                home.unwatched[library.id].orEmpty(),
-                                // A shelf of its own, like the other rows: switching
-                                // the library's own filter on stuck there, and
-                                // replaced the whole stack besides.
-                                onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.UNWATCHED, library.id)) },
-                                downloaded = downloaded, menu = itemMenu, onItemPlay = onPlay, onItemClick = open
-                            )
                         }
                     }
                 }
             }
         }
-
-        // Somewhere to ask for fresh shelves that is not only F5 or a gesture.
-        if (floatingRefresh) {
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(12.dp)
-            ) { RefreshButton(state) }
-        }
+        if (hasHoverPointer || noLibrary) content()
+        else PullToRefreshBox(
+            isRefreshing = state.homePulling,
+            onRefresh = { state.refreshHome(pulled = true) },
+            modifier = Modifier.fillMaxSize(),
+            content = { content() }
+        )
         VerticalScrollbarFor(listState, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
     }
 }
 
-@Composable
-private fun RefreshButton(state: AppState) {
-    Tooltip("刷新（F5）") {
-        FilledTonalIconButton(onClick = { state.refreshHome() }) {
-            Icon(Icons.Filled.Refresh, contentDescription = "刷新首页")
-        }
-    }
-}
-
-/**
- * The page before there is anything to show: the two steps, in order, with a
- * way to each. It used to say "choose a directory on WebDAV" to someone who had
- * not yet told the app where WebDAV was.
- */
-@Composable
-private fun FirstRun(state: AppState) {
-    val storageReady = state.serverInfo?.storageConfigured == true
-    EmptyState(
-        title = "还没有媒体库",
-        description = if (storageReady) {
-            "WebDAV 已连接。下一步：在设置里添加一个目录作为电影 / 电视剧 / 番剧库，添加后会自动扫描。"
-        } else {
-            "第一步：在设置里填写 WebDAV 地址与账号，并测试连接。\n第二步：添加一个目录作为媒体库，添加后会自动扫描。"
-        }
-    ) {
-        Button(onClick = { state.switchTo(Screen.Settings) }) {
-            Text(if (storageReady) "添加媒体库" else "前往设置")
-        }
-    }
-}
+private fun List<MediaItemDto>.withoutSpotlight(hero: MediaItemDto?, matchingShelf: Boolean) =
+    if (matchingShelf && firstOrNull()?.id == hero?.id && isNotEmpty()) drop(1) else this
 
 @Composable
-private fun EmptyLibraries(state: AppState) {
-    // Automatic scans count here: this is where their result would show.
-    val scanning = state.scanStatus.filter { it.running }
-    val storageReady = state.serverInfo?.storageConfigured == true
-    EmptyState(
-        title = "媒体库里还没有内容",
-        description = when {
-            scanning.isNotEmpty() ->
-                "正在扫描${scanning.joinToString("、") { "「${it.libraryName}」" }}，扫到的内容会出现在这里。"
-            !storageReady -> "还没有连接 WebDAV，媒体库扫描不了。先在设置里填写地址与账号。"
-            else -> "这些媒体库还没有扫描过，或者扫描时没有找到影片。扫描一次，找到的内容会出现在这里。"
-        }
+private fun HomeHeading(state: AppState, margin: Dp) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = margin, end = margin, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        when {
-            scanning.isNotEmpty() -> Unit
-            !storageReady -> Button(onClick = { state.switchTo(Screen.Settings) }) { Text("前往设置") }
-            else -> Button(onClick = { state.scanAllLibraries() }) { Text("扫描全部媒体库") }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun ScanBanner(scanning: List<ScanProgressDto>, onOpen: () -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        shape = MaterialTheme.shapes.medium,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 8.dp)
-    ) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
-            scanning.forEach { status ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "正在扫描「${status.libraryName}」 · ${scanPhaseLabel(status.phase)}" +
-                            (if (status.total > 0) " ${status.current}/${status.total}" else ""),
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = onOpen) { Text("查看") }
-                }
-                // Until the scan knows how much there is, it says it is working
-                // rather than sitting at 0%.
-                if (status.total > 0) {
-                    LinearWavyProgressIndicator(
-                        progress = { status.current.toFloat() / status.total },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                } else {
-                    LinearWavyProgressIndicator(Modifier.fillMaxWidth())
-                }
-                Spacer(Modifier.height(6.dp))
+        Text("放映室", Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.headlineMediumEmphasized)
+        Tooltip("刷新（F5）") {
+            FilledTonalIconButton(onClick = { state.refreshHome() }) {
+                Icon(Icons.Filled.Refresh, contentDescription = "刷新首页")
             }
         }
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun HeroBanner(
+private fun HeroPanel(
     item: MediaItemDto,
-    height: androidx.compose.ui.unit.Dp,
-    drawArtwork: Boolean,
-    menu: @Composable androidx.compose.foundation.layout.ColumnScope.(dismiss: () -> Unit) -> Unit,
+    label: String,
+    split: Boolean,
+    artHeight: Dp,
+    margin: Dp,
+    menu: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit,
     onPlay: () -> Unit,
     onSeries: (() -> Unit)?,
     onOpen: () -> Unit
 ) {
-    var menuAt by remember { mutableStateOf<Offset?>(null) }
-    var lastPointer by remember { mutableStateOf(PointerType.Unknown) }
-    val density = LocalDensity.current
-    Box(
-        Modifier
-            .fillMaxWidth()
-            // At least this tall, and taller when the text needs it: on a
-            // short landscape screen a fixed band squeezed the buttons flat.
-            .heightIn(min = height)
-            // The same menu its card has on the shelves below.
-            .secondaryClick(onPointerType = { lastPointer = it }, onOpen = { menuAt = it })
-            .combinedClickable(
-                onClick = onOpen,
-                onLongClickLabel = "打开菜单",
-                onLongClick = { if (lastPointer != PointerType.Mouse) menuAt = Offset.Zero }
-            )
+    Surface(
+        Modifier.fillMaxWidth().padding(start = margin, end = margin, bottom = 16.dp),
+        shape = MaterialTheme.shapes.extraLargeIncreased,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
-        if (drawArtwork) HomeHeroArtwork(item)
-        Column(
-            Modifier.align(Alignment.BottomStart).padding(horizontal = 24.dp, vertical = 20.dp).widthIn(max = 720.dp)
-        ) {
-            // An episode leads with its show, which is what the viewer knows it
-            // by; its own title is the smaller line.
-            val headline = item.seriesName ?: item.name
-            Text(
-                text = headline,
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Bold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (item.seriesName != null) {
-                LinkText(
-                    listOfNotNull(item.episodeLabel, item.name).joinToString(" · "),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    onClick = null
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                item.year?.let { Chip(it.toString()) }
-                formatRuntime(item.runtimeMs)?.let { Chip(it) }
-                item.communityRating?.let { Chip("评分 ${(it * 10).toInt() / 10.0}") }
-            }
-            if (item.userData.positionMs > 0 && !item.userData.played) {
-                Spacer(Modifier.height(10.dp))
-                LinearProgressIndicator(
-                    progress = { item.userData.playedPercentage.toFloat() },
-                    modifier = Modifier.widthIn(max = 280.dp).fillMaxWidth().height(4.dp),
-                    gapSize = 0.dp,
-                    drawStopIndicator = {}
-                )
-            }
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = onPlay) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                    Spacer(Modifier.size(6.dp))
-                    Text(if (item.userData.positionMs > 0) "继续播放" else "播放")
-                }
-                Button(onClick = onOpen, colors = ButtonDefaults.filledTonalButtonColors()) { Text("详情") }
-                if (onSeries != null) {
-                    TextButton(onClick = onSeries) { Text("整部剧") }
-                }
+        val artwork: @Composable (Modifier) -> Unit = { modifier ->
+            // 32dp shell - 8dp inset, for optical roundness at the adjacent corners.
+            Box(modifier.height(artHeight).clip(RoundedCornerShape(24.dp))) {
+                HomeHeroArtwork(item)
             }
         }
-        AppMenu(
-            expanded = menuAt != null,
-            onDismissRequest = { menuAt = null },
-            offset = menuAt.toDpOffset(density).let { androidx.compose.ui.unit.DpOffset(it.x, it.y - height) }
-        ) {
-            menu { menuAt = null }
+        if (split) {
+            Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                HeroCopy(item, label, menu, onPlay, onSeries, onOpen, wide = true, Modifier.weight(1f))
+                artwork(Modifier.weight(1.22f))
+            }
+        } else {
+            Column(Modifier.padding(8.dp)) {
+                artwork(Modifier.fillMaxWidth())
+                HeroCopy(item, label, menu, onPlay, onSeries, onOpen, wide = false, Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeroCopy(
+    item: MediaItemDto,
+    label: String,
+    menu: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit,
+    onPlay: () -> Unit,
+    onSeries: (() -> Unit)?,
+    onOpen: () -> Unit,
+    wide: Boolean,
+    modifier: Modifier
+) {
+    var menuOpen by remember(item.id) { mutableStateOf(false) }
+    var lastPointer by remember { mutableStateOf(PointerType.Unknown) }
+    val style = MaterialTheme.typography
+    val colors = MaterialTheme.colorScheme
+    val headline = item.seriesName ?: item.name
+    val resume = item.userData.positionMs > 0 && !item.userData.played
+    Column(modifier.padding(horizontal = if (wide) 24.dp else 12.dp, vertical = 12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, Modifier.weight(1f), style = style.labelLargeEmphasized, color = colors.tertiary)
+            Box {
+                TipIconButton("更多操作", onClick = { menuOpen = true }) {
+                    Icon(Icons.Filled.MoreHoriz, contentDescription = "更多操作")
+                }
+                AppMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) { menu { menuOpen = false } }
+            }
+        }
+        Tooltip(headline) {
+            Box(
+                Modifier.clip(MaterialTheme.shapes.small)
+                    .secondaryClick(onPointerType = { lastPointer = it }, onOpen = { menuOpen = true })
+                    .combinedClickable(
+                        role = Role.Button, onClickLabel = "查看详情", onClick = onOpen, onLongClickLabel = "打开菜单",
+                        onLongClick = { if (lastPointer != PointerType.Mouse) menuOpen = true }
+                    ).heightIn(min = 48.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(headline, style = if (wide) style.displaySmallEmphasized else style.headlineSmallEmphasized,
+                    maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { heading() })
+            }
+        }
+        val metadata = listOfNotNull(item.year?.toString(), formatRuntime(item.runtimeMs),
+            item.communityRating?.let { "评分 ${(it * 10).toInt() / 10.0}" }).joinToString(" · ")
+        if (item.seriesName != null) {
+            Text(listOfNotNull(item.episodeLabel, item.name).joinToString(" · "),
+                style = style.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        if (metadata.isNotBlank()) {
+            Text(metadata, style = style.bodyMedium, color = colors.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+        }
+        if (resume) {
+            Spacer(Modifier.height(12.dp))
+            val time = "已看 ${formatDuration(item.userData.positionMs)}"
+            Text(time, style = style.labelMedium, color = colors.onSurfaceVariant)
+            if ((item.runtimeMs ?: 0L) > 0L) {
+                LinearProgressIndicator(
+                    progress = { item.userData.playedPercentage.toFloat().coerceIn(0f, 1f) },
+                    modifier = Modifier.padding(top = 4.dp).widthIn(max = 280.dp).fillMaxWidth(),
+                    trackColor = colors.surfaceContainerHighest
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.Center) {
+            PrimaryPageAction(if (resume) "继续播放" else "播放", Icons.Filled.PlayArrow, onPlay, largeTarget = wide)
+            FilledTonalButton(onClick = onOpen) { Text("详情") }
+            if (onSeries != null) TextButton(onClick = onSeries) { Text("整部剧") }
         }
     }
 }
 
 @Composable
 private fun BoxScope.HomeHeroArtwork(item: MediaItemDto) {
-    val art = item.backdropUrl ?: item.posterUrl
-    if (art != null) {
-        AsyncImage(
-            model = art,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.matchParentSize()
-        )
-    } else {
-        Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.surfaceContainerHigh))
+    val colors = MaterialTheme.colorScheme
+    val artwork = item.backdropUrl ?: item.posterUrl
+    val palette = listOf(colors.secondaryContainer, colors.primaryContainer)
+    Box(Modifier.matchParentSize().background(Brush.linearGradient(palette)))
+    // Decorative silhouettes only, behind the media. No text depends on this image.
+    Canvas(Modifier.matchParentSize()) {
+        val center = Offset(size.width * 0.73f, size.height * 0.46f)
+        drawCircle(colors.tertiary.copy(alpha = 0.26f), size.minDimension * 0.38f, center)
+        drawCircle(colors.primary.copy(alpha = 0.23f), size.minDimension * 0.51f, Offset(center.x * 0.8f, center.y * 1.8f))
+        drawCircle(colors.primary.copy(alpha = 0.12f), size.minDimension * 0.32f, Offset(size.width * 0.16f, size.height * 0.27f))
     }
-    // Dark behind the status bar icons at the top, dense behind the text at
-    // the bottom, clear in between where the picture is.
-    Box(
-        Modifier.matchParentSize().background(
-            Brush.verticalGradient(
-                0f to MaterialTheme.colorScheme.background.copy(alpha = 0.55f),
-                0.18f to Color.Transparent,
-                0.55f to MaterialTheme.colorScheme.background.copy(alpha = 0.6f),
-                1f to MaterialTheme.colorScheme.background
-            )
-        )
-    )
+    if (artwork != null) {
+        AsyncImage(artwork, null, contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
+    }
 }
 
 @Composable
-private fun LibraryShortcuts(libraries: List<LibraryDto>, onClick: (LibraryDto) -> Unit) {
+private fun LibraryShortcuts(libraries: List<LibraryDto>, margin: Dp, onClick: (LibraryDto) -> Unit) {
     if (libraries.isEmpty()) return
-    Column {
-        SectionHeader("媒体库")
+    Column(Modifier.padding(bottom = 12.dp)) {
+        SectionHeader("媒体库", margin)
+        val scroll = rememberLazyListState()
         LazyRow(
-            contentPadding = PaddingValues(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            state = scroll,
+            modifier = Modifier.wheelScrollsHorizontally(scroll),
+            contentPadding = PaddingValues(horizontal = margin),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(libraries, key = { it.id }) { library ->
-                Card(
-                    onClick = { onClick(library) },
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                    ),
-                    shape = MaterialTheme.shapes.large
-                ) {
+                Surface(onClick = { onClick(library) }, shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest) {
                     Row(
-                        Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        Modifier.width(200.dp).padding(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = libraryIcon(library.kind),
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Column {
-                            Text(library.name, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                "${library.itemCount} 项",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.secondaryContainer) {
+                            Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                                Icon(libraryIcon(library.kind), contentDescription = null)
+                            }
                         }
+                        Column(Modifier.weight(1f)) {
+                            Text(library.name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("${library.itemCount} 项", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
         }
-        Spacer(Modifier.height(16.dp))
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MaybePullToRefresh(
-    enabled: Boolean,
-    refreshing: Boolean,
-    onRefresh: () -> Unit,
-    content: @Composable () -> Unit
-) {
-    if (!enabled) {
-        content()
-        return
+private fun FirstRun(state: AppState, margin: Dp) {
+    val storageReady = state.serverInfo?.storageConfigured == true
+    HomeMessage(margin) {
+        AppMark()
+        Text("还没有媒体库", style = MaterialTheme.typography.headlineMediumEmphasized, modifier = Modifier.semantics { heading() })
+        Text("连接 WebDAV 后，就能在这里浏览影片和剧集。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SetupStep("1", if (storageReady) "已配置 WebDAV 存储" else "配置 WebDAV 存储",
+            if (storageReady) "接下来选择影片所在的目录。" else "在设置里填写地址和账号，并测试连接。", active = !storageReady, complete = storageReady)
+        SetupStep("2", "添加媒体库", "选择电影、电视剧或番剧目录，添加后会自动扫描。", active = storageReady)
+        PrimaryPageAction(
+            if (storageReady) "添加媒体库" else "前往设置",
+            if (storageReady) Icons.Outlined.FolderOpen else Icons.Outlined.Storage,
+            onClick = { state.switchTo(Screen.Settings) }
+        )
     }
-    androidx.compose.material3.pulltorefresh.PullToRefreshBox(
-        isRefreshing = refreshing,
-        onRefresh = onRefresh,
-        modifier = Modifier.fillMaxSize()
-    ) {
-        content()
+}
+
+@Composable
+private fun SetupStep(number: String, title: String, description: String, active: Boolean, complete: Boolean = false) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Surface(shape = CircleShape, color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest) {
+            Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                if (complete) Icon(Icons.Filled.Check, contentDescription = null)
+                else Text(number, style = MaterialTheme.typography.titleMediumEmphasized)
+            }
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun EmptyLibraries(state: AppState, margin: Dp) {
+    val scans = state.scanStatus.filter { it.running }
+    val storageReady = state.serverInfo?.storageConfigured == true
+    if (scans.isNotEmpty()) ScanBanner(scans, margin) { state.switchTo(Screen.Settings) }
+    HomeMessage(margin) {
+        Text("媒体库里还没有内容", style = MaterialTheme.typography.headlineSmallEmphasized,
+            modifier = Modifier.semantics { heading() })
+        Text(when {
+            scans.isNotEmpty() -> "扫描到的影片会出现在这里。"
+            !storageReady -> "先连接 WebDAV 存储，再扫描媒体库。"
+            else -> "扫描媒体库，查找目录里的影片和剧集。"
+        }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (scans.isEmpty()) {
+            if (storageReady) PrimaryPageAction("扫描全部媒体库", Icons.Filled.Refresh, { state.scanAllLibraries() })
+            else PrimaryPageAction("前往设置", Icons.Outlined.Storage, { state.switchTo(Screen.Settings) })
+        }
+    }
+}
+
+@Composable
+private fun HomeMessage(margin: Dp, content: @Composable ColumnScope.() -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(horizontal = margin, vertical = 8.dp), contentAlignment = Alignment.CenterStart) {
+        Surface(Modifier.widthIn(max = 640.dp).fillMaxWidth(), shape = MaterialTheme.shapes.extraLargeIncreased,
+            color = MaterialTheme.colorScheme.surfaceContainerLow) {
+            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
+        }
+    }
+}
+
+@Composable
+private fun ScanBanner(scanning: List<ScanProgressDto>, margin: Dp, onOpen: () -> Unit) {
+    Surface(Modifier.fillMaxWidth().padding(horizontal = margin, vertical = 8.dp), shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainer) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("正在扫描媒体库", Modifier.weight(1f), style = MaterialTheme.typography.titleMediumEmphasized)
+                TextButton(onClick = onOpen) { Text("查看") }
+            }
+            scanning.forEach { status ->
+                Text("${status.libraryName} · ${scanPhaseLabel(status.phase)}" +
+                    (if (status.total > 0) " ${status.current}/${status.total}" else ""),
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (status.total > 0) LinearWavyProgressIndicator(
+                    progress = { (status.current.toFloat() / status.total).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth()
+                ) else LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+            }
+        }
     }
 }
 

@@ -1,5 +1,8 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package com.daview.app.ui
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -75,8 +78,10 @@ private enum class BrowseSlot { Navigation, Messages, Blocking }
 internal fun AdaptiveBrowse(
     current: BackStackEntry,
     source: BackStackEntry?,
+    preferExpandedRail: Boolean,
+    onToggleRail: () -> Unit,
     page: @Composable (BackStackEntry) -> Unit,
-    navigation: @Composable (rail: Boolean, labels: Boolean, sourceVisible: Boolean) -> Unit,
+    navigation: @Composable (rail: Boolean, expanded: Boolean, toggleRail: (() -> Unit)?, sourceVisible: Boolean) -> Unit,
     messages: @Composable () -> Unit,
     blocking: @Composable () -> Unit,
     dialogs: @Composable () -> Unit
@@ -103,7 +108,10 @@ internal fun AdaptiveBrowse(
         val top = (y + topInset).coerceAtMost(bottom)
         val viewport = WindowPane(left, top, (right - rightInset).coerceAtLeast(left), (bottom - safeBottom).coerceAtLeast(top))
         val imeTop = (bottom - imeBottom).takeIf { imeBottom > safeBottom }
-        val panes = browsePanes(viewport, fold, source != null, rtl, density.fontScale, imeTop)
+        val panes = browsePanes(
+            viewport, fold, source != null, rtl, density.fontScale, imeTop,
+            preferRail = hasHoverPointer, expandRail = preferExpandedRail
+        )
 
         val detailPane = panes.detail
         val sourceVisible = source != null && (detailPane != null || (imeTop != null && focusedEditor == source.key))
@@ -113,10 +121,18 @@ internal fun AdaptiveBrowse(
         val rail = panes.navigation == BrowseNavigation.Rail
 
         val main = panes.main
-        val barHeight = if (main.height < 350.dp) CompactBrowseBarHeight else BrowseBarHeight
+        val barHeight = browseBarHeight(density.fontScale)
+        // Animate explicit rail toggles only. Breakpoints and hinge changes take their
+        // safe geometry immediately, never moving live content across a fold.
+        val railWidth = key(panes.canExpandRail) {
+            if (panes.canExpandRail) {
+                val width by animateDpAsState(panes.railWidth, MaterialTheme.motionScheme.defaultSpatialSpec(), label = "browse-rail-width")
+                width.coerceIn(BrowseRailWidth, ExpandedBrowseRailWidth)
+            } else panes.railWidth
+        }.coerceAtMost(main.width)
         val navPane = when (panes.navigation) {
-            BrowseNavigation.Rail -> if (rtl) main.copy(left = main.right - BrowseRailWidth)
-                else main.copy(right = main.left + BrowseRailWidth)
+            BrowseNavigation.Rail -> if (rtl) main.copy(left = main.right - railWidth)
+                else main.copy(right = main.left + railWidth)
             BrowseNavigation.Bar -> main.copy(top = (main.bottom - barHeight).coerceAtLeast(main.top))
             BrowseNavigation.Hidden -> null
         }
@@ -157,11 +173,9 @@ internal fun AdaptiveBrowse(
                 paint.allowDecoration(paint.copy(bottom = bottom))
             } else paint
         }
-        val navColor = MaterialTheme.colorScheme.surfaceContainerLow
-        val labels = if (rail) density.fontScale <= 1.6f else {
-            // Four destinations share the bar; keep labelled icons accessible when the text does not fit.
-            main.width / 4 >= (48f * density.fontScale.coerceAtLeast(1f)).dp
-        }
+        val navColor = MaterialTheme.colorScheme.surfaceContainer
+        val expanded = rail && panes.canExpandRail && railWidth >= (BrowseRailWidth + ExpandedBrowseRailWidth) / 2
+        val toggleRail = onToggleRail.takeIf { panes.canExpandRail }
         fun consumed(top: Dp = topInset) = PaddingValues(
             start = if (rtl) rightInset else leftInset,
             end = if (rtl) leftInset else rightInset,
@@ -177,8 +191,11 @@ internal fun AdaptiveBrowse(
                         .padding(top = navPane.top - navPaint.top, bottom = navPaint.bottom - navPane.bottom)
                         .consumeWindowInsets(consumed())
                 ) {
-                    CompositionLocalProvider(LocalBrowsePane provides main.takeIf { panes.divided }) {
-                        navigation(rail, labels, sourceVisible)
+                    // A navigation menu is anchored near an edge. Keep it in the
+                    // measured safe pane even when its host is a smaller split task
+                    // inside a larger platform window.
+                    CompositionLocalProvider(LocalBrowsePane provides main) {
+                        navigation(rail, expanded, toggleRail, sourceVisible)
                     }
                 }
             }
@@ -204,7 +221,6 @@ internal fun AdaptiveBrowse(
                             LocalBrowsePane provides pane.takeIf { panes.divided },
                             LocalBrowseTopOverlap provides topOverlap,
                             LocalBrowseCompanionVisible provides companion,
-                            LocalRailShown provides rail,
                             LocalSelectedBrowseItem provides selectedId.takeIf { sourceVisible && entry == source },
                             LocalBrowseEditorFocus provides reportFocus
                         ) {

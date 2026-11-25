@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package com.daview.app.ui
 
 import androidx.compose.animation.AnimatedVisibility
@@ -5,6 +7,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -32,8 +35,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
+
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -48,12 +52,14 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Slideshow
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -64,6 +70,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -75,11 +83,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerHoverIcon
@@ -87,6 +96,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -184,7 +194,7 @@ internal fun currentTimeMillis(): Long = System.currentTimeMillis()
 fun LoadingPane(content: @Composable (() -> Unit)? = null) {
     var settled by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        delay(150)
+        delay(200)
         settled = true
     }
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -234,6 +244,7 @@ fun ArtworkPlaceholder(
  * for the whole app held nothing but the back arrow, and on the pages you
  * cannot go back from it was an empty band across the top of the window.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScreenTopBar(
     title: String?,
@@ -242,44 +253,31 @@ fun ScreenTopBar(
     subtitle: String? = null,
     actions: @Composable RowScope.() -> Unit = {}
 ) {
-    Row(
-        modifier
-            .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .height(64.dp)
-            .padding(start = if (onBack != null) 4.dp else 20.dp, end = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        if (onBack != null) {
-            Tooltip("返回（Alt + ←）") {
-                IconButton(onClick = onBack) {
+    TopAppBar(
+        title = {
+            Column {
+                title?.let {
+                    Text(it, style = MaterialTheme.typography.titleLarge, maxLines = 1,
+                        overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { heading() })
+                }
+                subtitle?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        },
+        modifier = modifier,
+        navigationIcon = {
+            if (onBack != null) {
+                TipIconButton("返回（Alt + ←）", onClick = onBack) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                 }
             }
-            Spacer(Modifier.width(4.dp))
-        }
-        Column(Modifier.weight(1f)) {
-            title?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            subtitle?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-        actions()
-    }
+        },
+        actions = actions,
+        windowInsets = WindowInsets.statusBars,
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+    )
 }
 
 /** An icon button that says what it does when the pointer rests on it. */
@@ -297,17 +295,16 @@ fun TipIconButton(
 }
 
 @Composable
-fun SectionHeader(title: String, trailing: @Composable (() -> Unit)? = null) {
+fun SectionHeader(title: String, horizontal: Dp = 24.dp, trailing: @Composable (() -> Unit)? = null) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = horizontal, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Text(
             text = title,
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.weight(1f, fill = false)
+            style = MaterialTheme.typography.titleLargeEmphasized,
+            modifier = Modifier.weight(1f, fill = false).semantics { heading() }
         )
         trailing?.invoke()
     }
@@ -369,7 +366,13 @@ fun PosterCard(
     // sending the next Tab back to the top of the window.
     var focusWithin by remember { mutableStateOf(false) }
     val lifted = hovered || focused || focusWithin
-    val scale by animateFloatAsState(if (lifted) 1.04f else 1f, label = "poster-scale")
+    val scale by animateFloatAsState(
+        if (lifted) 1.02f else 1f,
+        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
+        label = "poster-scale"
+    )
+    val tileShape = MaterialTheme.shapes.medium
+    val artworkShape = if (shape == CardShape.LANDSCAPE) MaterialTheme.shapes.large else tileShape
     val landscape = when (shape) {
         CardShape.LANDSCAPE -> true
         CardShape.PORTRAIT -> false
@@ -403,6 +406,8 @@ fun PosterCard(
     Column(
         modifier = modifier
             .width(width)
+            .clip(tileShape)
+            .background(if (detailOpen || selected == true) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
             .hoverable(interaction)
             .then(
                 if (menu == null) Modifier
@@ -418,6 +423,7 @@ fun PosterCard(
                 // main control with no press feedback at all on a touch screen,
                 // where the hover treatment above can never fire.
                 indication = ripple(),
+                role = Role.Button,
                 onClick = onClick,
                 onLongClickLabel = if (menu == null) null else "打开菜单",
                 // A held mouse button is not a request for the menu — it already
@@ -439,14 +445,12 @@ fun PosterCard(
             }
     ) {
         Surface(
-            modifier = Modifier.fillMaxWidth().aspectRatio(aspect).scale(scale),
-            shape = MaterialTheme.shapes.large,
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            tonalElevation = if (lifted) 6.dp else 0.dp,
-            border = when {
-                selected == true || focused || detailOpen -> BorderStroke(3.dp, MaterialTheme.colorScheme.primary)
-                else -> null
-            }
+            modifier = Modifier.fillMaxWidth().aspectRatio(aspect).graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            },
+            shape = artworkShape,
+            color = MaterialTheme.colorScheme.surfaceContainerHighest
         ) {
             Box {
                 if (art != null) {
@@ -543,7 +547,7 @@ fun PosterCard(
                                 Icons.Filled.PlayArrow,
                                 contentDescription = if (item.isPlayable) "播放" else "播放下一集",
                                 tint = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier.padding(8.dp).size(26.dp)
+                                modifier = Modifier.padding(12.dp).size(24.dp)
                             )
                         }
                     }
@@ -574,6 +578,10 @@ fun PosterCard(
                     )
                 }
 
+                if (selected == true || focused || detailOpen) {
+                    Box(Modifier.matchParentSize().border(3.dp, MaterialTheme.colorScheme.primary, artworkShape))
+                }
+
                 // The anchor is the artwork, and a dropdown's offset is measured
                 // from the anchor's bottom edge, so the artwork's own height has
                 // to come back out for the menu to open under the cursor.
@@ -592,25 +600,20 @@ fun PosterCard(
             }
         }
 
-        Spacer(Modifier.height(8.dp))
-        // The whole title on hover: one line at poster width is four or five
-        // characters of a Japanese title, and there was no way to read the rest.
-        Tooltip(primaryLine) {
-            Text(
-                text = primaryLine,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+        val captionColor = if (selected == true || detailOpen) MaterialTheme.colorScheme.onSecondaryContainer
+            else MaterialTheme.colorScheme.onSurface
+        Column(Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
+            Tooltip(primaryLine) {
+                Text(primaryLine, style = MaterialTheme.typography.titleSmallEmphasized, color = captionColor,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            val supporting = subtitle ?: subtitleFor(item)
+            if (supporting.isNotBlank()) {
+                Text(supporting, style = MaterialTheme.typography.bodySmall,
+                    color = if (selected == true || detailOpen) captionColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
-        Text(
-            text = subtitle ?: subtitleFor(item),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
     }
 }
 
@@ -620,7 +623,7 @@ fun PosterCard(
  */
 @Composable
 private fun PlayOverlay(visible: Boolean, content: @Composable () -> Unit) {
-    AnimatedVisibility(visible = visible, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
+    AnimatedVisibility(visible = visible, enter = fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()), exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()), modifier = Modifier.fillMaxSize()) {
         content()
     }
 }
@@ -652,11 +655,12 @@ fun MediaRow(
     menu: (@Composable ColumnScope.(item: MediaItemDto, dismiss: () -> Unit) -> Unit)? = null,
     /** What the tiles' play button does, if this row's cards should have one. */
     onItemPlay: ((MediaItemDto) -> Unit)? = null,
+    horizontal: Dp = 24.dp,
     onItemClick: (MediaItemDto) -> Unit
 ) {
     if (items.isEmpty()) return
     Column(Modifier.fillMaxWidth()) {
-        SectionHeader(title) {
+        SectionHeader(title, horizontal) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 trailing?.invoke()
                 onSeeAll?.let { TextButton(onClick = it) { Text("查看全部") } }
@@ -670,8 +674,8 @@ fun MediaRow(
             LazyRow(
                 state = rowState,
                 modifier = Modifier.wheelScrollsHorizontally(rowState),
-                contentPadding = PaddingValues(horizontal = 20.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = PaddingValues(horizontal = horizontal),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.Top
             ) {
                 items(items, key = { it.id }) { item ->
@@ -706,7 +710,7 @@ fun MediaRow(
 
 @Composable
 private fun RowArrow(visible: Boolean, left: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut(), modifier = modifier) {
+    AnimatedVisibility(visible, enter = fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()), exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()), modifier = modifier) {
         FilledTonalIconButton(
             onClick = onClick,
             colors = IconButtonDefaults.filledTonalIconButtonColors(
@@ -722,26 +726,40 @@ private fun RowArrow(visible: Boolean, left: Boolean, modifier: Modifier, onClic
 }
 
 @Composable
-fun EmptyState(title: String, description: String, action: @Composable (() -> Unit)? = null) {
+fun EmptyState(
+    title: String,
+    description: String,
+    icon: ImageVector = Icons.Outlined.VideoLibrary,
+    action: @Composable (() -> Unit)? = null
+) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val viewportHeight = maxHeight
+        val margin = pageMargin(maxWidth)
         Column(
             modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
-                .heightIn(min = viewportHeight).padding(horizontal = 24.dp, vertical = 12.dp),
+                .heightIn(min = viewportHeight).padding(horizontal = margin, vertical = 16.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                description,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-            action?.let {
-                Spacer(Modifier.height(20.dp))
-                it()
+            Surface(
+                modifier = Modifier.widthIn(max = 480.dp).fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = MaterialTheme.shapes.extraLargeIncreased
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.secondaryContainer) {
+                        Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) { Icon(icon, contentDescription = null) }
+                    }
+                    Text(title, style = MaterialTheme.typography.headlineSmallEmphasized, textAlign = TextAlign.Center,
+                        modifier = Modifier.semantics { heading() })
+                    Text(description, style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                    action?.invoke()
+                }
             }
         }
     }
@@ -794,6 +812,7 @@ fun LinkText(
                 indication = ripple(),
                 onClick = onClick
             )
+            .heightIn(min = 48.dp)
             .padding(vertical = 12.dp)
             .semantics { role = Role.Button },
         // The caller's colour is honoured rather than overwritten with primary:
@@ -841,13 +860,6 @@ fun Chip(text: String, modifier: Modifier = Modifier, color: Color = Color.Unspe
         )
     }
 }
-
-/**
- * Whether the side rail is on screen. The rail follows the window's width;
- * a page measuring only its own share of it came to a different answer
- * between 600 and about 680dp, and showed the libraries twice.
- */
-val LocalRailShown = androidx.compose.runtime.staticCompositionLocalOf { false }
 
 /**
  * A dropdown menu that holds the keyboard while it is open, so Esc and

@@ -1,16 +1,25 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package com.daview.app.ui
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -22,6 +31,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -73,56 +85,80 @@ fun EditItemDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
         onDismiss()
     }
 
+    val yearField: @Composable (Modifier) -> Unit = { modifier ->
+        OutlinedTextField(
+            year, { year = it.filter { c -> c.isDigit() }.take(4) },
+            label = { Text("年份") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+            modifier = modifier.tracksTextInput()
+        )
+    }
+    val genresField: @Composable (Modifier) -> Unit = { modifier ->
+        OutlinedTextField(
+            genres, { genres = it },
+            label = { Text("类型") },
+            supportingText = { Text("用「、」分隔") },
+            singleLine = true,
+            // The last single-line field: Enter saves, as the button does.
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { save() }),
+            modifier = modifier.tracksTextInput()
+        )
+    }
+
     AdaptiveAlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑条目信息") },
+        icon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+        title = { Text("编辑条目信息", Modifier.semantics { heading() }) },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    "改过的字段会记成手动填写：重新扫描和重新刮削都不会覆盖它们。" +
-                        "要改回刮削到的内容，用详情页「更多」里的「恢复为刮削结果」。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    name, { name = it },
-                    label = { Text("标题") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth().focusRequester(titleFocus).tracksTextInput()
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    originalName, { originalName = it },
-                    label = { Text("原名") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth().tracksTextInput()
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    year, { year = it.filter { c -> c.isDigit() }.take(4) },
-                    label = { Text("年份") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Number,
-                        imeAction = ImeAction.Next
-                    ),
-                    modifier = Modifier.fillMaxWidth().tracksTextInput()
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    genres, { genres = it },
-                    label = { Text("类型") },
-                    supportingText = { Text("用「、」分隔") },
-                    singleLine = true,
-                    // The last single-line field: Enter saves, as the button does.
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { save() }),
-                    modifier = Modifier.fillMaxWidth().tracksTextInput()
-                )
-                Spacer(Modifier.height(8.dp))
+            Column(
+                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    shape = MaterialTheme.shapes.medium
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(item.name, style = MaterialTheme.typography.titleMediumEmphasized)
+                        Text(
+                            "扫描与重新刮削都会保留你改过的字段。若要恢复，打开详情页的「更多」→「恢复为刮削结果」。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("基本信息", Modifier.semantics { heading() }, style = MaterialTheme.typography.titleSmallEmphasized)
+                    OutlinedTextField(
+                        name, { name = it },
+                        label = { Text("标题") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth().focusRequester(titleFocus).tracksTextInput()
+                    )
+                    OutlinedTextField(
+                        originalName, { originalName = it },
+                        label = { Text("原名") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        modifier = Modifier.fillMaxWidth().tracksTextInput()
+                    )
+                    BoxWithConstraints(Modifier.fillMaxWidth()) {
+                        if (maxWidth >= 360.dp && LocalDensity.current.fontScale <= 1.4f) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                yearField(Modifier.weight(1f))
+                                genresField(Modifier.weight(2f))
+                            }
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                yearField(Modifier.fillMaxWidth())
+                                genresField(Modifier.fillMaxWidth())
+                            }
+                        }
+                    }
+                }
                 OutlinedTextField(
                     overview, { overview = it },
                     label = { Text("简介") },
@@ -133,7 +169,10 @@ fun EditItemDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
             }
         },
         confirmButton = {
-            Button(enabled = name.isNotBlank(), onClick = { save() }) { Text("保存") }
+            Button(
+                enabled = name.isNotBlank(), onClick = { save() },
+                shapes = ButtonDefaults.shapes(), contentPadding = ButtonDefaults.SmallContentPadding
+            ) { Text("保存", style = MaterialTheme.typography.labelLargeEmphasized) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )

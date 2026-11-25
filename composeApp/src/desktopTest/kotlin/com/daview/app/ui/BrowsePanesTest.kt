@@ -87,6 +87,32 @@ class BrowsePanesTest {
     }
 
     @Test
+    fun expressiveRailExpandsOnlyWhereItDoesNotTakeSpaceFromACompanion() {
+        val large = expanded.copy(right = 1280.dp)
+        val default = browsePanes(large, null, pair = false, rtl = false)
+        assertTrue(default.canExpandRail)
+        assertEquals(ExpandedBrowseRailWidth, default.railWidth)
+        val collapsed = browsePanes(large, null, pair = false, rtl = false, expandRail = false)
+        assertTrue(collapsed.canExpandRail)
+        assertEquals(BrowseRailWidth, collapsed.railWidth)
+
+        val paired = browsePanes(large, null, pair = true, rtl = false)
+        assertEquals(false, paired.canExpandRail)
+        assertEquals(BrowseRailWidth, paired.railWidth)
+        assertEquals(24.dp, assertNotNull(paired.detail).left - paired.main.right)
+    }
+
+    @Test
+    fun compactNavigationUsesPlatformAppropriateComponentAndGrowsWithText() {
+        val compact = expanded.copy(right = 400.dp)
+        assertEquals(BrowseNavigation.Bar, browsePanes(compact, null, pair = false, rtl = false).navigation)
+        assertEquals(BrowseNavigation.Rail, browsePanes(compact, null, pair = false, rtl = false, preferRail = true).navigation)
+        assertEquals(BrowseNavigation.Hidden, browsePanes(compact, null, pair = false, rtl = false, imeTop = 360.dp).navigation)
+        assertEquals(BrowseBarHeight, browseBarHeight(1f))
+        assertTrue(browseBarHeight(2f) > BrowseBarHeight)
+    }
+
+    @Test
     fun onlyTheNearestCatalogueDestinationCanAccompanySelectedDetail() {
         val home = BackStackEntry(Screen.Home, 1)
         val shelf = BackStackEntry(Screen.Shelf(ShelfKind.FAVOURITES), 2)

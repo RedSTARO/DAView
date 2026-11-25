@@ -1,53 +1,67 @@
 package com.daview.app.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.DriveFolderUpload
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.daview.app.data.AppState
@@ -136,7 +150,7 @@ private fun ScanOption(title: String, detail: String, onClick: () -> Unit) {
  * which language. Only the folder is fixed, because the ids every watch record
  * hangs off are derived from it.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun LibraryEditDialog(state: AppState, library: LibraryDto, onDismiss: () -> Unit) {
     ModalMarker()
@@ -162,81 +176,51 @@ fun LibraryEditDialog(state: AppState, library: LibraryDto, onDismiss: () -> Uni
 
     AdaptiveAlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑媒体库") },
+        title = { LibraryDialogTitle("编辑媒体库", Icons.Filled.Folder) },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    "目录：${library.path}（目录不能改：观看记录都挂在由它算出的 id 上。换目录请新建媒体库）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            LibraryDialogBody {
+                FolderLocation(
+                    label = "WebDAV 目录 · 不可更改",
+                    path = library.path,
+                    detail = "观看记录与此目录关联。若要使用其他目录，请新建媒体库。"
                 )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    name, { name = it },
-                    label = { Text("名称") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().tracksTextInput()
-                )
-                Spacer(Modifier.height(12.dp))
-                Text("类型", style = MaterialTheme.typography.labelLarge)
-                Spacer(Modifier.height(4.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    LibraryKind.entries.forEach { option ->
-                        ToggleButton(checked = kind == option, onCheckedChange = { kind = option }) {
-                            Text(kindLabel(option))
-                        }
-                    }
+                LibraryFormSection("媒体库资料") {
+                    OutlinedTextField(
+                        name, { name = it },
+                        label = { Text("媒体库名称") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        modifier = Modifier.fillMaxWidth().tracksTextInput()
+                    )
+                    LibraryKindChoice(kind) { kind = it }
                 }
-                Spacer(Modifier.height(12.dp))
-                Text("元数据来源（从上到下依次尝试）", style = MaterialTheme.typography.labelLarge)
-                order.forEachIndexed { index, (provider, enabled) ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        // The name answers to a tap as the box does, and a screen
-                        // reader hears one checkbox with its label.
-                        Row(
-                            Modifier
-                                .weight(1f)
-                                .toggleable(value = enabled, role = Role.Checkbox) { on ->
-                                    order = order.toMutableList().also { it[index] = provider to on }
-                                },
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(checked = enabled, onCheckedChange = null)
-                            Column(Modifier.weight(1f)) {
-                                Text(provider.displayName)
-                                if (!configured(provider)) {
-                                    Text(
-                                        "未填写 API Key，不会被使用",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.error
-                                    )
-                                }
+                LibraryFormSection("元数据来源", "勾选要使用的来源，按从上到下的顺序尝试。") {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        order.forEachIndexed { index, (provider, enabled) ->
+                            key(provider) {
+                                ProviderRow(
+                                    provider = provider,
+                                    enabled = enabled,
+                                    configured = configured(provider),
+                                    index = index,
+                                    lastIndex = order.lastIndex,
+                                    onEnabledChange = { on ->
+                                        order = order.toMutableList().also { it[index] = provider to on }
+                                    },
+                                    move = { direction ->
+                                        order = order.toMutableList().also { list -> list.add(index + direction, list.removeAt(index)) }
+                                    }
+                                )
                             }
                         }
-                        IconButton(enabled = index > 0, onClick = {
-                            order = order.toMutableList().also { list -> list.add(index - 1, list.removeAt(index)) }
-                        }) { Icon(Icons.Filled.ArrowUpward, contentDescription = "上移") }
-                        IconButton(enabled = index < order.lastIndex, onClick = {
-                            order = order.toMutableList().also { list -> list.add(index + 1, list.removeAt(index)) }
-                        }) { Icon(Icons.Filled.ArrowDownward, contentDescription = "下移") }
                     }
+                    if (order.none { it.second }) SettingsNotice("至少选择一个元数据来源。", SettingsTone.Error)
                 }
-                Spacer(Modifier.height(8.dp))
-                Text("元数据语言", style = MaterialTheme.typography.labelLarge)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    (listOf("" to "跟随设置") + METADATA_LANGUAGES).forEach { (code, label) ->
-                        ToggleButton(checked = language == code, onCheckedChange = { language = code }) {
-                            Text(label)
-                        }
-                    }
+                LibraryFormSection("元数据语言") {
+                    SettingsChoices(listOf("" to "跟随设置") + METADATA_LANGUAGES, language) { language = it }
                 }
                 if (scrapingChanged) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "改了类型、来源或语言，已有条目要重新获取元数据才会用上新设置。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    SettingsNotice("保存后会重新获取已有条目的元数据，以应用新的类型、来源或语言。", SettingsTone.Attention)
                 }
             }
         },
@@ -254,10 +238,125 @@ fun LibraryEditDialog(state: AppState, library: LibraryDto, onDismiss: () -> Uni
                         rescan = scrapingChanged
                     ) { onDismiss() }
                 }
-            ) { Text(if (scrapingChanged) "保存并重新获取" else "保存") }
+            ) { Text(if (scrapingChanged) "保存并重新获取" else "保存", style = MaterialTheme.typography.labelLargeEmphasized) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun LibraryDialogTitle(title: String, icon: ImageVector) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+        Text(
+            title,
+            style = MaterialTheme.typography.headlineSmallEmphasized,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.semantics { heading() }
+        )
+    }
+}
+
+/** Title and actions stay with the adaptive host; even with IME the form can scroll. */
+@Composable
+private fun LibraryDialogBody(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        content = content
+    )
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun LibraryFormSection(title: String, detail: String? = null, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmallEmphasized,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.semantics { heading() }
+        )
+        detail?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        content()
+    }
+}
+
+private val libraryKinds = LibraryKind.entries.map { it to kindLabel(it) }
+
+@Composable
+private fun LibraryKindChoice(selected: LibraryKind, onSelect: (LibraryKind) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("类型", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        SettingsChoices(libraryKinds, selected, onSelect = onSelect)
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun FolderLocation(label: String, path: String, detail: String? = null) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(
+        Modifier.fillMaxWidth(),
+        color = scheme.secondaryContainer,
+        contentColor = scheme.onSecondaryContainer,
+        shape = MaterialTheme.shapes.medium
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, style = MaterialTheme.typography.labelMediumEmphasized)
+            Text(path, style = MaterialTheme.typography.bodyMediumEmphasized)
+            detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun ProviderRow(
+    provider: MetadataProvider,
+    enabled: Boolean,
+    configured: Boolean,
+    index: Int,
+    lastIndex: Int,
+    onEnabledChange: (Boolean) -> Unit,
+    move: (Int) -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(
+        Modifier.fillMaxWidth(),
+        color = scheme.surfaceContainerHighest,
+        shape = MaterialTheme.shapes.small
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.weight(1f)
+                    .toggleable(value = enabled, role = Role.Checkbox, onValueChange = onEnabledChange)
+                    .heightIn(min = 48.dp).padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Checkbox(checked = enabled, onCheckedChange = null)
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        provider.displayName,
+                        style = if (enabled) MaterialTheme.typography.titleSmallEmphasized else MaterialTheme.typography.titleSmall
+                    )
+                    if (!configured) {
+                        Text("缺少 API Key，不会使用", style = MaterialTheme.typography.bodySmall, color = scheme.tertiary)
+                    }
+                }
+            }
+            IconButton(enabled = index > 0, onClick = { move(-1) }) {
+                Icon(Icons.Filled.ArrowUpward, contentDescription = "上移 ${provider.displayName}")
+            }
+            IconButton(enabled = index < lastIndex, onClick = { move(1) }) {
+                Icon(Icons.Filled.ArrowDownward, contentDescription = "下移 ${provider.displayName}")
+            }
+        }
+    }
 }
 
 /** The four languages the scrapers are actually asked for. */
@@ -271,32 +370,34 @@ internal val METADATA_LANGUAGES = listOf(
 /**
  * Picks the folder a new library points at.
  *
- * The path and the name and kind stay put while the folder list scrolls between
- * them — they used to all scroll together, so with a long list the name field
- * was at the bottom of it and the path had scrolled away. The folder that will
- * be added is said in so many words, and a name typed by hand is not replaced
- * the moment another folder is opened.
+ * The bounded directory list can scroll without moving the current path or the
+ * form, and the whole dialog body can also scroll in short panes. Manual names
+ * and kinds are preserved as people move between directories.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun WebDavPickerDialog(state: AppState, onDismiss: () -> Unit) {
     ModalMarker()
     val scope = rememberCoroutineScope()
     var path by remember { mutableStateOf("/") }
     var entries by remember { mutableStateOf<List<WebDavEntryDto>>(emptyList()) }
-    var loading by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    var attemptedPath by remember { mutableStateOf("/") }
+    val directoryList = rememberLazyListState()
     var name by remember { mutableStateOf("") }
     var nameEdited by remember { mutableStateOf(false) }
     var kind by remember { mutableStateOf(LibraryKind.MOVIE) }
     var kindEdited by remember { mutableStateOf(false) }
 
     fun load(target: String) {
+        loading = true
+        error = null
+        attemptedPath = target
         scope.launch {
-            loading = true
-            error = null
             try {
                 entries = state.library.browseStorage(target)
+                if (path != target) directoryList.requestScrollToItem(0)
                 path = target
                 val folder = target.trim('/').substringAfterLast('/')
                 if (!nameEdited) name = folder
@@ -317,74 +418,95 @@ fun WebDavPickerDialog(state: AppState, onDismiss: () -> Unit) {
 
     AdaptiveAlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加媒体库") },
+        title = { LibraryDialogTitle("添加媒体库", Icons.Filled.FolderOpen) },
         text = {
-            // Scrolls as a whole on a short window: the name and the kind below
-            // the list were pushed out of reach on a phone held sideways.
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Tooltip("回到根目录") {
+            LibraryDialogBody {
+                LibraryFormSection("选择 WebDAV 目录") {
+                    FolderLocation(
+                        label = if (atRoot) "当前目录 · 根目录" else "将添加的目录",
+                        path = path,
+                        detail = if (atRoot) "进入要添加的目录，不可选择根目录。" else null
+                    )
+                    SettingsActions {
                         TextButton(onClick = { load("/") }, enabled = !atRoot && !loading) {
-                            Icon(Icons.Filled.Home, contentDescription = "回到根目录")
+                            Icon(Icons.Filled.Home, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                            Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+                            Text("根目录")
+                        }
+                        TextButton(
+                            onClick = { load("/" + path.trim('/').substringBeforeLast('/', "")) },
+                            enabled = !atRoot && !loading
+                        ) {
+                            Icon(Icons.Filled.DriveFolderUpload, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                            Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+                            Text("上一级")
                         }
                     }
-                    TextButton(
-                        onClick = { load("/" + path.trim('/').substringBeforeLast('/', "")) },
-                        enabled = !atRoot && !loading
-                    ) {
-                        Icon(Icons.Filled.DriveFolderUpload, contentDescription = null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("上一级")
+                    if (loading) {
+                        Text(
+                            "正在读取目录…",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                        )
+                        LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+                    } else {
+                        error?.let {
+                            SettingsNotice(it, SettingsTone.Error)
+                            FilledTonalButton(onClick = { load(attemptedPath) }) { Text("重试读取") }
+                        }
                     }
-                }
-                Text(
-                    path,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    "这一层：${folders.size} 个子目录" + if (videos > 0) "，$videos 个视频文件" else "",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                if (loading) LinearWavyProgressIndicator(Modifier.fillMaxWidth())
-                Spacer(Modifier.height(6.dp))
-                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 260.dp)) {
-                    items(folders, key = { it.path }) { entry ->
-                        Surface(
-                            onClick = { if (!loading) load(entry.path) },
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
-                            shape = MaterialTheme.shapes.small,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
-                        ) {
-                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Filled.Folder, contentDescription = null)
-                                Spacer(Modifier.width(10.dp))
-                                Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (error == null && !loading) {
+                        Text(
+                            if (folders.isEmpty()) {
+                                if (videos > 0) "没有子目录 · 本层有 $videos 个视频文件" else "没有子目录或视频文件"
+                            } else {
+                                "${folders.size} 个子目录" + if (videos > 0) " · 本层有 $videos 个视频文件" else ""
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (folders.isNotEmpty()) {
+                        Box {
+                            LazyColumn(
+                                Modifier.fillMaxWidth().heightIn(max = 224.dp),
+                                state = directoryList,
+                                verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)
+                            ) {
+                                itemsIndexed(folders, key = { _, entry -> entry.path }) { index, entry ->
+                                    SegmentedListItem(
+                                        onClick = { if (!loading) load(entry.path) },
+                                        enabled = !loading,
+                                        shapes = ListItemDefaults.segmentedShapes(index, folders.size),
+                                        colors = ListItemDefaults.segmentedColors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                                        ),
+                                        leadingContent = { Icon(Icons.Filled.Folder, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                                        trailingContent = { Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                                    ) {
+                                        Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    }
+                                }
+                            }
+                            Box(Modifier.matchParentSize()) {
+                                VerticalScrollbarFor(directoryList, Modifier.align(Alignment.CenterEnd).fillMaxHeight())
                             }
                         }
                     }
                 }
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                Text(
-                    if (atRoot) "进入要添加的目录。" else "将添加：$path",
-                    style = MaterialTheme.typography.labelLarge
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    name, { name = it; nameEdited = true },
-                    label = { Text("媒体库名称") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().tracksTextInput()
-                )
-                Spacer(Modifier.height(8.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    LibraryKind.entries.forEach { option ->
-                        ToggleButton(checked = kind == option, onCheckedChange = { kind = option; kindEdited = true }) {
-                            Text(kindLabel(option))
-                        }
+                HorizontalDivider()
+                LibraryFormSection("媒体库资料") {
+                    OutlinedTextField(
+                        name, { name = it; nameEdited = true },
+                        label = { Text("媒体库名称") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        modifier = Modifier.fillMaxWidth().tracksTextInput()
+                    )
+                    LibraryKindChoice(kind) {
+                        kind = it
+                        kindEdited = true
                     }
                 }
             }
@@ -397,7 +519,7 @@ fun WebDavPickerDialog(state: AppState, onDismiss: () -> Unit) {
                         LibraryDto(id = "", name = name.trim(), kind = kind, path = path, language = "")
                     ) { onDismiss() }
                 }
-            ) { Text("添加并扫描") }
+            ) { Text("添加并扫描", style = MaterialTheme.typography.labelLargeEmphasized) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )

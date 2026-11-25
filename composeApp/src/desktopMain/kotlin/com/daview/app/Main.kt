@@ -1,6 +1,9 @@
 package com.daview.app
 
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.CompositionLocalProvider
@@ -30,6 +33,7 @@ import com.daview.app.platform.SingleInstance
 import com.daview.app.platform.WindowsFullscreen
 import com.daview.app.player.MpvNative
 import com.daview.app.platform.createSettingsStore
+import com.daview.app.ui.AdaptiveAlertDialog
 import com.daview.app.ui.DaViewIcon
 import com.daview.app.ui.LocalWindowFullscreen
 import com.daview.server.config.ConfigStore
@@ -174,35 +178,31 @@ fun main() {
             }
 
             CompositionLocalProvider(LocalWindowFullscreen provides fullscreen) {
-                App()
-            }
-
-            fullscreenError?.let { message ->
-                com.daview.app.data.ModalMarker()
-                AlertDialog(
-                    onDismissRequest = { fullscreenError = null },
-                    title = { Text("全屏切换失败") },
-                    text = { Text(message) },
-                    confirmButton = { TextButton(onClick = { fullscreenError = null }) { Text("关闭") } }
-                )
-            }
-
-            if (confirmClose) {
-                com.daview.app.data.ModalMarker()
-                AlertDialog(
-                    onDismissRequest = { confirmClose = false },
-                    title = { Text("还有正在播放的内容") },
-                    text = {
-                        Text(
-                            "外部播放器的画面是从 DAView 取的字节，现在退出会让它当场断流。" +
-                                "已经看到的进度已经记下了。"
+                App {
+                    fullscreenError?.let { message ->
+                        com.daview.app.data.ModalMarker()
+                        AdaptiveAlertDialog(
+                            onDismissRequest = { fullscreenError = null },
+                            icon = { Icon(Icons.Outlined.ErrorOutline, contentDescription = null) },
+                            title = { Text("全屏切换失败") },
+                            text = { Text(message) },
+                            confirmButton = { TextButton(onClick = { fullscreenError = null }) { Text("关闭") } }
                         )
-                    },
-                    confirmButton = { TextButton(onClick = { quit() }) { Text("仍然退出") } },
-                    dismissButton = {
-                        TextButton(onClick = { confirmClose = false }) { Text("取消") }
                     }
-                )
+
+                    if (confirmClose) {
+                        com.daview.app.data.ModalMarker()
+                        AdaptiveAlertDialog(
+                            onDismissRequest = { confirmClose = false },
+                            title = { Text("退出并结束播放？") },
+                            text = { Text("退出 DAView 会停止外部播放器中的影片。已保存的观看进度会保留。") },
+                            confirmButton = {
+                                TextButton(onClick = { quit() }) { Text("仍然退出", color = MaterialTheme.colorScheme.error) }
+                            },
+                            dismissButton = { TextButton(onClick = { confirmClose = false }) { Text("取消") } }
+                        )
+                    }
+                }
             }
         }
     }

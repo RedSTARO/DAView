@@ -1,35 +1,56 @@
 package com.daview.app.ui
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -39,31 +60,43 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInWindow
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
 import com.daview.app.data.AppState
 import com.daview.app.data.PlaybackController
 import com.daview.app.data.UpNext
 import com.daview.app.platform.PlatformInfo
 import com.daview.app.platform.copyToClipboard
+import com.daview.app.theme.DaViewTheme
 import kotlinx.coroutines.delay
 
 @Composable
@@ -81,43 +114,39 @@ fun PlayerScreen(state: AppState, playback: PlaybackController) {
     // hand-over to the next episode used to drop out of full screen and back.
     if (!external) PlaybackPresentation(screen.orientation, fullscreen = state.autoFullscreen)
 
-    Box(Modifier.fillMaxSize().background(if (external) MaterialTheme.colorScheme.background else Color.Black)) {
-        val inPip = LocalAppWindowInfo.current.isInPictureInPicture
-        when {
-            // The countdown still runs in PiP, but never draws a minuscule card in the tile.
-            upNext != null && !playback.starting -> UpNextCard(playback, upNext, showCard = !inPip)
-            info == null -> if (!inPip) PlayerAuxiliaryPane {
-                if (playback.starting) Switching(playback.startingName) else EmptyState(
-                    "没有正在播放的内容",
-                    "回到媒体库选择要播放的影片。"
-                ) {
-                    Button(onClick = { state.back() }) { Text("返回") }
+    // A light library still opens into a dark projection room. Keep the actual picture matte black.
+    DaViewTheme(darkTheme = true) {
+        val matte = if (external) MaterialTheme.colorScheme.surface else Color.Black
+        Box(Modifier.fillMaxSize().background(matte)) {
+            val inPip = LocalAppWindowInfo.current.isInPictureInPicture
+            when {
+                // The countdown still runs in PiP, but never draws a minuscule card in the tile.
+                upNext != null && !playback.starting -> UpNextCard(playback, upNext, showCard = !inPip)
+                info == null -> if (!inPip) PlayerAuxiliaryPane {
+                    if (playback.starting) Switching(playback.startingName) else PlayerIdle { state.back() }
+                } else Unit
+                external || !PlatformInfo.hasInternalPlayer -> PlayerAuxiliaryPane(foldOwner = info.sessionId) {
+                    ExternalPlaybackPanel(state, playback)
                 }
-            } else Unit
-            external || !PlatformInfo.hasInternalPlayer -> PlayerAuxiliaryPane(foldOwner = info.sessionId) {
-                ExternalPlaybackPanel(state, playback)
-            }
-            playback.starting -> if (!inPip) PlayerAuxiliaryPane { Switching(playback.startingName) } else Unit
-            // One engine per session, not per window size, layout or posture.
-            else -> key(info.sessionId) {
-                InternalPlayer(
-                    info = info,
-                    screen = screen,
-                    subtitleScale = state.subtitleScale,
-                    onProgress = { position, paused, audio, subtitle ->
-                        playback.reportProgress(position, paused, audio, subtitle)
-                    },
-                    onClose = { position -> playback.closePlayer(info.sessionId, position) },
-                    // Reaching the end of a file is a different thing from
-                    // being closed: it is the one moment where going on to the
-                    // next episode is what the viewer wants.
-                    onEnded = { position -> playback.onEnded(info.sessionId, position) },
-                    onSkip = { itemId, position ->
-                        // Another episode starts at its beginning; trying this one
-                        // again carries on from where it stopped.
-                        playback.skipTo(itemId, fromStart = itemId != info.item.id, positionMs = position)
-                    }
-                )
+                playback.starting -> if (!inPip) PlayerAuxiliaryPane { Switching(playback.startingName) } else Unit
+                // One engine per session, not per window size, layout or posture.
+                else -> key(info.sessionId) {
+                    InternalPlayer(
+                        info = info,
+                        screen = screen,
+                        subtitleScale = state.subtitleScale,
+                        onProgress = { position, paused, audio, subtitle ->
+                            playback.reportProgress(position, paused, audio, subtitle)
+                        },
+                        onClose = { position -> playback.closePlayer(info.sessionId, position) },
+                        // Closing the player and reaching the end of the file are different events.
+                        onEnded = { position -> playback.onEnded(info.sessionId, position) },
+                        onSkip = { itemId, position ->
+                            // Another episode starts at its beginning; retrying this one carries on.
+                            playback.skipTo(itemId, fromStart = itemId != info.item.id, positionMs = position)
+                        }
+                    )
+                }
             }
         }
     }
@@ -241,21 +270,158 @@ private fun PlayerAuxiliaryPane(foldOwner: Any? = null, content: @Composable () 
     }
 }
 
+/** For non-picture states only. Scroll the deck, not the pane that positions it at the fold. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PlayerCard(maxWidth: Dp, content: @Composable ColumnScope.() -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        val margin = if (this.maxWidth >= 600.dp) 24.dp else if (this.maxWidth >= 280.dp) 16.dp else 8.dp
+        val inset = if (this.maxWidth >= 420.dp) 24.dp else 16.dp
+        Surface(
+            modifier = Modifier.padding(margin).widthIn(max = maxWidth).fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shape = MaterialTheme.shapes.extraLargeIncreased,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        ) {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()).padding(inset),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                content = content
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PlayerIdle(onBack: () -> Unit) {
+    PlayerCard(440.dp) {
+        Icon(Icons.Filled.Movie, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("没有正在播放的内容", style = MaterialTheme.typography.headlineSmallEmphasized, modifier = Modifier.semantics { heading() })
+        Text("回到媒体库选择要播放的影片。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Button(onClick = onBack, modifier = Modifier.align(Alignment.End).heightIn(min = 48.dp)) { Text("返回") }
+    }
+}
+
 /** Between two episodes, while the next one is being opened. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun Switching(name: String?) {
     Column(
-        Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
+        Modifier.widthIn(max = 480.dp).verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        CircularProgressIndicator(color = Color.White)
-        Spacer(Modifier.height(16.dp))
+        LoadingIndicator(modifier = Modifier.semantics { contentDescription = "正在打开视频" })
         Text(
-            name?.let { "正在打开 $it" } ?: "正在打开",
-            color = Color.White.copy(alpha = 0.85f),
-            style = MaterialTheme.typography.bodyMedium
+            "正在打开",
+            style = MaterialTheme.typography.titleMediumEmphasized,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center
         )
+        name?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+/** Colour and a round-to-compact spatial morph make play/pause the one obvious transport target. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun PlaybackMainButton(
+    showPause: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    label: String = if (showPause) "暂停" else "播放"
+) {
+    val corner by animateDpAsState(
+        targetValue = if (showPause) 12.dp else 28.dp,
+        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
+        label = "transport corner"
+    )
+    FilledIconButton(
+        onClick = onClick,
+        modifier = modifier.size(width = 56.dp, height = 48.dp).pointerHoverIcon(PointerIcon.Hand),
+        shape = RoundedCornerShape(corner)
+    ) {
+        Icon(if (showPause) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = label)
+    }
+}
+
+/** A surface-coloured control over video, or a selected/menu action on a transport surface. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun PlaybackToolButton(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    active: Boolean = false,
+    contained: Boolean = false
+) {
+    val scheme = MaterialTheme.colorScheme
+    IconButton(
+        onClick = onClick,
+        modifier = modifier.size(48.dp).then(if (enabled) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier),
+        enabled = enabled,
+        shape = if (active) MaterialTheme.shapes.medium else CircleShape,
+        colors = IconButtonDefaults.iconButtonColors(
+            containerColor = when {
+                active -> scheme.secondaryContainer
+                contained -> scheme.surfaceContainerHigh
+                else -> Color.Transparent
+            },
+            contentColor = if (active) scheme.onSecondaryContainer else scheme.onSurfaceVariant
+        )
+    ) {
+        Icon(icon, contentDescription = label)
+    }
+}
+
+/** Playback controls and time always run left to right, regardless of the surrounding language. */
+@Composable
+internal fun PlaybackTimeDirection(content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr, content = content)
+}
+
+/** Chapter actions are the one warm spot next to the violet transport. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun SkipIntroButton(onClick: () -> Unit, modifier: Modifier = Modifier, label: String = "跳过片头") {
+    Button(
+        onClick = onClick,
+        modifier = modifier.heightIn(min = 48.dp).pointerHoverIcon(PointerIcon.Hand),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+        ),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Text(label, style = MaterialTheme.typography.labelLargeEmphasized)
+    }
+}
+
+/** Keep retry and exit reachable on small or folded panes as well as a desktop window. */
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun PlaybackFailure(message: String, detail: String? = null, onRetry: () -> Unit, onClose: () -> Unit) {
+    PlayerCard(520.dp) {
+        val colors = MaterialTheme.colorScheme
+        Icon(Icons.Filled.ErrorOutline, contentDescription = null, tint = colors.error)
+        Text("无法播放", style = MaterialTheme.typography.headlineSmallEmphasized, modifier = Modifier.semantics { heading() })
+        Text(message, style = MaterialTheme.typography.bodyMedium)
+        detail?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.align(Alignment.End)) {
+            TextButton(onClick = onClose, modifier = Modifier.heightIn(min = 48.dp)) { Text("返回") }
+            Button(onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) { Text("重试") }
+        }
     }
 }
 
@@ -279,60 +445,62 @@ private fun UpNextCard(playback: PlaybackController, upNext: UpNext, showCard: B
     PlayerAuxiliaryPane(foldOwner = upNext.itemId) { UpNextControls(playback, upNext, remaining) }
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun UpNextControls(playback: PlaybackController, upNext: UpNext, remaining: Long?) {
     val focus = remember { FocusRequester() }
+    var shortcutFocus by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 
     Box(
-        Modifier
-            .fillMaxSize()
-            .focusRequester(focus)
-            .focusable()
+        Modifier.fillMaxSize()
             .onKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
                 when (event.key) {
-                    Key.Enter, Key.NumPadEnter, Key.Spacebar -> { playback.playUpNext(auto = false); true }
+                    Key.Enter, Key.NumPadEnter, Key.Spacebar -> {
+                        // When a button is focused it handles Space/Enter itself, including on key-up.
+                        if (shortcutFocus) playback.playUpNext(auto = false)
+                        shortcutFocus
+                    }
                     Key.Escape, Key.Backspace -> { playback.cancelUpNext(); true }
                     else -> false
                 }
-            },
-        contentAlignment = Alignment.Center
+            }
+            .focusRequester(focus)
+            .onFocusChanged { shortcutFocus = it.isFocused }
+            .focusable()
     ) {
-        Column(
-            Modifier.widthIn(max = 480.dp).padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                if (upNext.stillWatching) "还在看吗？" else "下一集",
-                color = Color.White.copy(alpha = 0.7f),
-                style = MaterialTheme.typography.titleMedium
-            )
-            Spacer(Modifier.height(8.dp))
+        PlayerCard(480.dp) {
+            val scheme = MaterialTheme.colorScheme
+            Surface(color = scheme.tertiaryContainer, contentColor = scheme.onTertiaryContainer, shape = CircleShape) {
+                Text(
+                    if (upNext.stillWatching) "还在看吗？" else "下一集",
+                    style = MaterialTheme.typography.labelLargeEmphasized,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                )
+            }
             Text(
                 upNext.name,
-                color = Color.White,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
+                style = MaterialTheme.typography.headlineSmallEmphasized,
+                modifier = Modifier.semantics { heading() }
             )
-            Spacer(Modifier.height(8.dp))
             Text(
                 when {
                     upNext.stillWatching -> "已经连续自动播放了好几集，按下面的按钮接着看。"
                     else -> "${remaining ?: 0} 秒后自动播放"
                 },
-                color = Color.White.copy(alpha = 0.7f),
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center
+                color = scheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium
             )
-            Spacer(Modifier.height(20.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = { playback.playUpNext(auto = false) }) {
-                    Text(if (upNext.stillWatching) "继续看" else "立即播放")
+            FlowRow(
+                Modifier.align(Alignment.End),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+            ) {
+                OutlinedButton(onClick = { playback.cancelUpNext() }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text(if (upNext.stillWatching) "不看了" else "取消")
                 }
-                OutlinedButton(onClick = { playback.cancelUpNext() }) {
-                    Text(if (upNext.stillWatching) "不看了" else "取消", color = Color.White)
+                Button(onClick = { playback.playUpNext(auto = false) }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text(if (upNext.stillWatching) "继续看" else "立即播放", style = MaterialTheme.typography.labelLargeEmphasized)
                 }
             }
         }
@@ -350,88 +518,99 @@ fun ExternalPlaybackPanel(state: AppState, playback: PlaybackController) {
     val session = playback.externalSession
     val label = playback.externalPlayerLabel ?: "外部播放器"
 
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Surface(
-            shape = MaterialTheme.shapes.extraLarge,
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            modifier = Modifier.widthIn(max = 560.dp).padding(24.dp)
-        ) {
-            Column(Modifier.padding(28.dp)) {
-                Text(
-                    "正在通过 $label 播放",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    info.item.seriesName?.let { "$it · ${listOfNotNull(info.item.episodeLabel, info.item.name).joinToString(" ")}" }
-                        ?: info.item.name,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2
-                )
-
-                Spacer(Modifier.height(20.dp))
-                val runtime = session?.runtimeMs ?: info.runtimeMs
-                val position = session?.positionMs ?: info.startPositionMs
-                LinearWavyProgressIndicator(
-                    progress = {
-                        if (runtime != null && runtime > 0) (position.toFloat() / runtime).coerceIn(0f, 1f) else 0f
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(formatDuration(position), style = MaterialTheme.typography.bodySmall)
-                    Text(formatDuration(runtime), style = MaterialTheme.typography.bodySmall)
+    PlayerCard(560.dp) {
+        val colors = MaterialTheme.colorScheme
+        val item = info.item
+        val artwork = item.posterUrl ?: item.backdropUrl
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            // An identifying thumbnail, not a second hero. Omit it where it crowds the title.
+            val showArt = maxWidth >= 300.dp && artwork != null
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (showArt) {
+                    Box(Modifier.size(width = 72.dp, height = 104.dp).clip(MaterialTheme.shapes.medium)) {
+                        ArtworkPlaceholder(item.kind, Modifier.matchParentSize())
+                        AsyncImage(
+                            model = artwork, contentDescription = null, contentScale = ContentScale.Crop,
+                            modifier = Modifier.matchParentSize()
+                        )
+                    }
                 }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("正在通过 $label 播放", style = MaterialTheme.typography.labelLarge, color = colors.tertiary)
+                    Text(
+                        item.name, style = MaterialTheme.typography.headlineSmallEmphasized,
+                        modifier = Modifier.semantics { heading() }
+                    )
+                    item.seriesName?.let { series ->
+                        Text(
+                            listOfNotNull(series, item.episodeLabel).joinToString(" · "),
+                            style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
 
-                Spacer(Modifier.height(6.dp))
+        val runtime = session?.runtimeMs ?: info.runtimeMs
+        val position = session?.positionMs ?: info.startPositionMs
+        Surface(
+            color = colors.surfaceContainerHigh, contentColor = colors.onSurface,
+            shape = MaterialTheme.shapes.large, modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("播放进度", style = MaterialTheme.typography.labelLargeEmphasized)
+                PlaybackTimeDirection {
+                    LinearProgressIndicator(
+                        progress = {
+                            if (runtime != null && runtime > 0) (position.toDouble() / runtime).toFloat().coerceIn(0f, 1f) else 0f
+                        },
+                        modifier = Modifier.fillMaxWidth().semantics { contentDescription = "外部播放器进度" }
+                    )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(if (position > 0) formatDuration(position) else "0:00", style = MaterialTheme.typography.labelMediumEmphasized)
+                        Text(formatDuration(runtime), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                    }
+                }
                 Text(
                     when (session?.positionSource) {
                         "client" -> "进度由播放器上报"
                         "cue+clock", "clock" -> "进度是估算的，可能差几秒；暂停时这里仍会走动"
                         else -> "等待 $label 开始播放…"
                     },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
                 )
+            }
+        }
 
-                Spacer(Modifier.height(22.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    // Browsing while the film plays: the panel steps aside and
-                    // the player keeps going. The only way out used to be the
-                    // button that also killed the player.
-                    // Only where the app can tell when the player exits; on a
-                    // phone the film is in another app, and leaving here ends it.
-                    if (playback.canBrowseDuringExternal) {
-                        FilledTonalButton(onClick = { playback.leaveExternalPanel() }) {
-                            Text("返回浏览")
-                        }
-                    }
-                    TextButton(onClick = {
-                        playback.stopExternal()
-                        state.back()
-                    }) {
-                        Text(if (playback.canBrowseDuringExternal) "结束播放并关闭 $label" else "结束播放")
-                    }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Only offer returning to browse where the app can see when the external player exits.
+            if (playback.canBrowseDuringExternal) {
+                Button(onClick = { playback.leaveExternalPanel() }, modifier = Modifier.heightIn(min = 48.dp)) {
+                    Text("返回浏览", style = MaterialTheme.typography.labelLargeEmphasized)
                 }
-
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    "关掉 $label 时进度会自动记下，并同步到其它设备。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                TextButton(
-                    onClick = {
-                        copyToClipboard(info.streamUrl)
-                        state.notify("已复制。这个地址只在本机、本次播放期间有效")
-                    },
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
-                ) {
-                    Text("复制播放地址（给别的播放器用）", style = MaterialTheme.typography.bodySmall)
-                }
+            }
+            OutlinedButton(
+                onClick = { playback.stopExternal(); state.back() },
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) {
+                Text(if (playback.canBrowseDuringExternal) "结束并关闭播放器" else "结束播放")
+            }
+        }
+        Text(
+            "关掉 $label 时进度会自动记下，并同步到其它设备。",
+            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant
+        )
+        TextButton(
+            onClick = {
+                copyToClipboard(info.streamUrl)
+                state.notify("已复制。这个地址只在本机、本次播放期间有效")
+            },
+            modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "复制播放地址，给别的播放器用" },
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(20.dp))
+                Text("复制播放地址")
             }
         }
     }

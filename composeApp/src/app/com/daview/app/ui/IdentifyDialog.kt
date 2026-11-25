@@ -1,7 +1,9 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package com.daview.app.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -10,27 +12,33 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,7 +52,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -75,7 +89,7 @@ import kotlinx.coroutines.launch
  * the click that picks it: applying replaces every field the scrape wrote, and
  * a stray click on the row below the right one did exactly that.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
     ModalMarker()
@@ -170,198 +184,242 @@ fun IdentifyDialog(state: AppState, item: MediaItemDto, onDismiss: () -> Unit) {
         }
     }
 
+    val loaded = context
+    val colors = MaterialTheme.colorScheme
+    val queryField: @Composable (Modifier) -> Unit = { modifier ->
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            label = { Text("片名") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { search() }),
+            modifier = modifier.focusRequester(queryFocus).tracksTextInput()
+        )
+    }
+    val yearField: @Composable (Modifier) -> Unit = { modifier ->
+        OutlinedTextField(
+            value = year,
+            onValueChange = { year = it.filter { c -> c.isDigit() }.take(4) },
+            label = { Text("年份") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { search() }),
+            modifier = modifier.tracksTextInput()
+        )
+    }
+    val submitSearch: @Composable () -> Unit = {
+        Tooltip("搜索") {
+            FilledTonalIconButton(onClick = { search() }, enabled = provider != null && query.isNotBlank() && !busy) {
+                Icon(Icons.Filled.Search, contentDescription = "搜索")
+            }
+        }
+    }
+
     AdaptiveAlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("手动指定刮削条目") },
+        icon = { Icon(Icons.Filled.Search, contentDescription = null) },
+        title = { Text("手动指定刮削条目", Modifier.semantics { heading() }) },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                val loaded = context
-                Text(
-                    "文件夹识别为「${loaded?.defaultQuery ?: item.name}」" +
-                        (loaded?.defaultYear?.let { " ($it)" } ?: "") +
-                        "。指定后会用该条目的信息替换现在的标题、简介、海报等，手动编辑过的字段也会被替换。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                loaded?.lockedProvider?.let { locked ->
-                    Text(
-                        "当前已手动指定：${locked.displayName} ${loaded.providerIds[locked.name.lowercase()].orEmpty()}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                Spacer(Modifier.height(12.dp))
-                if (loaded != null && loaded.providers.isEmpty()) {
-                    Text(
-                        "没有可用的刮削源。TMDB 与 TheTVDB 需要在设置里填写 API Key。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                } else {
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        loaded?.providers.orEmpty().forEach { option ->
-                            ToggleButton(
-                                checked = provider == option,
-                                onCheckedChange = {
-                                    provider = option
-                                    candidates = emptyList()
-                                    picked = null
-                                    searched = false
-                                    providerId = loaded?.providerIds?.get(option.name.lowercase()).orEmpty()
-                                    search()
+            LazyColumn(Modifier.fillMaxWidth()) {
+                item("context") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Surface(color = colors.surfaceContainerLow, shape = MaterialTheme.shapes.medium) {
+                            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("文件夹识别结果", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+                                Text(
+                                    (loaded?.defaultQuery ?: item.name) + (loaded?.defaultYear?.let { " ($it)" } ?: ""),
+                                    style = MaterialTheme.typography.titleMediumEmphasized
+                                )
+                                loaded?.lockedProvider?.let { locked ->
+                                    Text(
+                                        "当前已手动指定：${locked.displayName} ${loaded.providerIds[locked.name.lowercase()].orEmpty()}",
+                                        style = MaterialTheme.typography.labelMediumEmphasized,
+                                        color = colors.tertiary
+                                    )
                                 }
-                            ) {
-                                Text(option.displayName)
                             }
                         }
+                        Text(
+                            "应用后会用所选条目的标题、简介、海报等替换当前信息，包括手动修改过的字段。",
+                            style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant
+                        )
                     }
                 }
-
-                Spacer(Modifier.height(12.dp))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        label = { Text("片名") },
-                        singleLine = true,
-                        // Enter searches, as it does in every search box.
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = { search() }),
-                        modifier = Modifier.weight(1f).focusRequester(queryFocus).tracksTextInput()
-                    )
-                    OutlinedTextField(
-                        value = year,
-                        onValueChange = { year = it.filter { c -> c.isDigit() }.take(4) },
-                        label = { Text("年份") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = { search() }),
-                        modifier = Modifier.width(96.dp).tracksTextInput()
-                    )
-                    FilledTonalIconButton(
-                        onClick = { search() },
-                        enabled = provider != null && query.isNotBlank() && !busy
-                    ) {
-                        Icon(Icons.Filled.Search, contentDescription = "搜索")
-                    }
-                }
-
-                if (busy) {
-                    Spacer(Modifier.height(8.dp))
-                    LinearWavyProgressIndicator(Modifier.fillMaxWidth())
-                }
-                error?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                }
-                if (searched && candidates.isEmpty() && !busy) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "没有结果。换个写法（中文、日文或原名），或在下面直接填 id。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Column {
-                    candidates.forEach { candidate ->
-                        CandidateRow(state, candidate, selected = picked == candidate) {
-                            picked = candidate
-                            providerId = candidate.providerId
+                item("search") {
+                    Column(Modifier.padding(top = 16.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (loaded != null && loaded.providers.isEmpty()) {
+                            Text(
+                                "没有可用的刮削源。TMDB 与 TheTVDB 需要在设置里填写 API Key。",
+                                style = MaterialTheme.typography.bodyMedium, color = colors.error
+                            )
+                        } else if (!loaded?.providers.isNullOrEmpty()) {
+                            Text("刮削源", Modifier.semantics { heading() }, style = MaterialTheme.typography.titleSmallEmphasized)
+                            FlowRow(Modifier.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                loaded.providers.forEach { option ->
+                                    val checked = provider == option
+                                    ToggleButton(
+                                        checked = checked,
+                                        onCheckedChange = {
+                                            provider = option
+                                            candidates = emptyList()
+                                            picked = null
+                                            searched = false
+                                            providerId = loaded.providerIds[option.name.lowercase()].orEmpty()
+                                            search()
+                                        },
+                                        colors = ToggleButtonDefaults.toggleButtonColors(
+                                            containerColor = colors.surfaceContainerLow,
+                                            contentColor = colors.onSurfaceVariant,
+                                            checkedContainerColor = colors.secondaryContainer,
+                                            checkedContentColor = colors.onSecondaryContainer
+                                        )
+                                    ) {
+                                        if (checked) {
+                                            Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(ToggleButtonDefaults.IconSize))
+                                            Spacer(Modifier.width(ToggleButtonDefaults.IconSpacing))
+                                        }
+                                        Text(
+                                            option.displayName,
+                                            style = if (checked) MaterialTheme.typography.labelLargeEmphasized else MaterialTheme.typography.labelLarge
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        BoxWithConstraints(Modifier.fillMaxWidth()) {
+                            if (maxWidth >= 340.dp && LocalDensity.current.fontScale <= 1.35f) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    queryField(Modifier.weight(1f))
+                                    yearField(Modifier.width(96.dp))
+                                    submitSearch()
+                                }
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    queryField(Modifier.fillMaxWidth())
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        yearField(Modifier.weight(1f))
+                                        submitSearch()
+                                    }
+                                }
+                            }
+                        }
+                        if (busy) LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+                        error?.let {
+                            Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = colors.error, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        if (searched && candidates.isEmpty() && !busy) {
+                            Text(
+                                "没有找到匹配条目。可以改用原名搜索，或直接输入条目 ID。",
+                                style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant
+                            )
                         }
                     }
                 }
-
-                Spacer(Modifier.height(8.dp))
-                HorizontalDivider()
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = providerId,
-                    onValueChange = { providerId = it; picked = null },
-                    label = { Text("或直接填条目 id") },
-                    supportingText = { Text(provider?.idHint.orEmpty()) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { if (provider != null && providerId.isNotBlank()) apply(providerId) }),
-                    modifier = Modifier.fillMaxWidth().tracksTextInput()
-                )
+                if (candidates.isNotEmpty()) item("results-heading") {
+                    Text(
+                        "搜索结果 · ${candidates.size}", Modifier.padding(bottom = 8.dp).semantics { heading() },
+                        style = MaterialTheme.typography.titleSmallEmphasized
+                    )
+                }
+                itemsIndexed(candidates, contentType = { _, _ -> "candidate" }) { index, candidate ->
+                    CandidateRow(state, candidate, picked == candidate, index, candidates.size) {
+                        picked = candidate
+                        providerId = candidate.providerId
+                    }
+                }
+                item("provider-id") {
+                    Column(Modifier.padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        HorizontalDivider()
+                        OutlinedTextField(
+                            value = providerId,
+                            onValueChange = { providerId = it; picked = null },
+                            label = { Text("条目 ID") },
+                            supportingText = { Text(provider?.idHint.orEmpty()) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(onDone = { if (provider != null && providerId.isNotBlank()) apply(providerId) }),
+                            modifier = Modifier.fillMaxWidth().tracksTextInput()
+                        )
+                        picked?.let { match ->
+                            Text("将指定为「${match.title}」", style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant)
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
                 enabled = provider != null && providerId.isNotBlank() && !busy,
-                onClick = { apply(providerId) }
-            ) { Text(picked?.let { "指定为「${it.title}」" } ?: "应用") }
+                onClick = { apply(providerId) },
+                shapes = ButtonDefaults.shapes(), contentPadding = ButtonDefaults.SmallContentPadding
+            ) { Text("应用指定", style = MaterialTheme.typography.labelLargeEmphasized) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
 }
 
 @Composable
-private fun CandidateRow(state: AppState, candidate: ScrapeCandidateDto, selected: Boolean, onClick: () -> Unit) {
-    // The provider's own poster, through the app's image cache. Two works with
-    // the same title are told apart at a glance by their posters and by little
-    // else in a list of titles and years.
-    val poster by produceState<String?>(null, candidate.posterUrl) {
-        value = candidate.posterUrl?.let { url -> runCatching { state.library.remoteImage(url)?.toString() }.getOrNull() }
-    }
-    Surface(
-        onClick = onClick,
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
-        border = if (selected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
-        shape = MaterialTheme.shapes.small,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
-    ) {
-        Row(Modifier.padding(10.dp), verticalAlignment = Alignment.Top) {
-            Surface(
-                modifier = Modifier.width(56.dp).aspectRatio(2f / 3f),
-                shape = MaterialTheme.shapes.extraSmall,
-                color = MaterialTheme.colorScheme.surfaceContainerHighest
-            ) {
-                poster?.let {
-                    AsyncImage(
-                        model = java.io.File(it),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                } ?: ArtworkPlaceholder(null, Modifier.fillMaxSize())
-            }
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
+private fun CandidateRow(
+    state: AppState, candidate: ScrapeCandidateDto, selected: Boolean, index: Int, count: Int, onClick: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(vertical = ListItemDefaults.SegmentedGap / 2)) {
+        val showPoster = maxWidth >= 224.dp && LocalDensity.current.fontScale <= 1.5f
+        SegmentedListItem(
+            selected = selected,
+            onClick = onClick,
+            modifier = Modifier.fillMaxWidth().semantics { role = Role.RadioButton },
+            shapes = ListItemDefaults.segmentedShapes(index, count),
+            colors = ListItemDefaults.segmentedColors(
+                containerColor = colors.surfaceContainerLow,
+                selectedContainerColor = colors.secondaryContainer,
+                selectedContentColor = colors.onSecondaryContainer
+            ),
+            leadingContent = if (showPoster) ({ CandidatePoster(state, candidate.posterUrl) }) else null,
+            trailingContent = { RadioButton(selected = selected, onClick = null) }
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     candidate.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    style = if (selected) MaterialTheme.typography.titleMediumEmphasized else MaterialTheme.typography.titleMedium,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     listOfNotNull(
                         candidate.year?.toString(),
                         candidate.originalTitle?.takeIf { it != candidate.title },
-                        "id ${candidate.providerId}"
+                        "ID ${candidate.providerId}"
                     ).joinToString(" · "),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis
                 )
                 candidate.overview?.takeIf { it.isNotBlank() }?.let {
-                    Spacer(Modifier.height(4.dp))
                     Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
+                        it, style = MaterialTheme.typography.bodySmall,
+                        color = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis
                     )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CandidatePoster(state: AppState, posterUrl: String?) {
+    // Posters distinguish remakes that share the same title. Only visible results request them.
+    val poster by produceState<String?>(null, posterUrl) {
+        value = posterUrl?.let { url -> runCatching { state.library.remoteImage(url)?.toString() }.getOrNull() }
+    }
+    Surface(
+        modifier = Modifier.width(48.dp).aspectRatio(2f / 3f),
+        shape = MaterialTheme.shapes.extraSmall,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest
+    ) {
+        val path = poster
+        if (path == null) ArtworkPlaceholder(null, Modifier.fillMaxSize())
+        else AsyncImage(java.io.File(path), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
     }
 }

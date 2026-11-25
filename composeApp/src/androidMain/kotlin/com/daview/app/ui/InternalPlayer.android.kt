@@ -15,28 +15,26 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.Check
@@ -51,11 +49,10 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.automirrored.filled.Toc
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -74,8 +71,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -143,7 +140,7 @@ import kotlin.math.roundToInt
  * [PlayerScreenState].
  */
 @androidx.annotation.OptIn(UnstableApi::class)
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 actual fun InternalPlayer(
     info: PlaybackInfoDto,
@@ -586,8 +583,13 @@ actual fun InternalPlayer(
         if (dispatcher != null) dispatcher.onBackPressed() else latestOnClose(player.currentPosition)
     }
     val canEnterPip = pipSupported && ratio != null && playbackError == null
+    val landscapeLocked = screen.orientation == ScreenOrientation.LANDSCAPE
+    val orientationLabel = if (landscapeLocked) "已锁定横屏，点按恢复自动旋转" else "锁定为横屏"
+    val toggleLandscape = {
+        screen.orientation = if (landscapeLocked) ScreenOrientation.SENSOR else ScreenOrientation.LANDSCAPE
+    }
 
-    val menuContent: @Composable ColumnScope.(PlayerMenu) -> Unit = { menu ->
+    val menuContent: @Composable ColumnScope.(PlayerMenu, Boolean, Boolean) -> Unit = { menu, showOrientation, showLock ->
         when (menu) {
             PlayerMenu.More -> {
                 listOfNotNull(
@@ -620,6 +622,12 @@ actual fun InternalPlayer(
                         activity?.let { PipRequest.enter(it) }
                     })
                 }
+                if (showOrientation) {
+                    DropdownMenuItem(text = { Text(orientationLabel) }, onClick = { openMenu = null; toggleLandscape() })
+                }
+                if (showLock) {
+                    DropdownMenuItem(text = { Text("锁定屏幕，防止误触") }, onClick = { openMenu = null; locked = true })
+                }
             }
             PlayerMenu.Audio -> {
                 audioStreams.forEach { stream ->
@@ -631,7 +639,7 @@ actual fun InternalPlayer(
                         ?: player.currentTracks.groups.isEmpty()
                     DropdownMenuItem(
                         leadingIcon = { ChosenMark(stream.index == selectedAudio) },
-                        text = { Text(if (playable) stream.displayTitle else "${stream.displayTitle}（无法播放）") },
+                        text = { PlayerMenuLabel(if (playable) stream.displayTitle else "${stream.displayTitle}（无法播放）", stream.index == selectedAudio) },
                         enabled = playable,
                         onClick = {
                             openMenu = null
@@ -654,7 +662,7 @@ actual fun InternalPlayer(
             PlayerMenu.Subtitle -> {
                 DropdownMenuItem(
                     leadingIcon = { ChosenMark(subtitlesOff) },
-                    text = { Text("关闭字幕") },
+                    text = { PlayerMenuLabel("关闭字幕", subtitlesOff) },
                     onClick = {
                         openMenu = null
                         subtitlesOff = true
@@ -668,7 +676,7 @@ actual fun InternalPlayer(
                         leadingIcon = {
                             ChosenMark(!subtitlesOff && mountedSubtitle == null && stream.index == selectedSubtitle)
                         },
-                        text = { Text(stream.displayTitle) },
+                        text = { PlayerMenuLabel(stream.displayTitle, !subtitlesOff && mountedSubtitle == null && stream.index == selectedSubtitle) },
                         onClick = {
                             openMenu = null
                             selectedSubtitle = stream.index
@@ -692,7 +700,7 @@ actual fun InternalPlayer(
                 mountedSubtitle?.let { name ->
                     DropdownMenuItem(
                         leadingIcon = { ChosenMark(!subtitlesOff) },
-                        text = { Text("$name（手机上的文件）") },
+                        text = { PlayerMenuLabel("$name（手机上的文件）", !subtitlesOff) },
                         onClick = { openMenu = null }
                     )
                 }
@@ -709,11 +717,11 @@ actual fun InternalPlayer(
                 val assShowing = assScript != null
                 Text(
                     if (assShowing) "字幕延迟 ${formatDelay(screen.subtitleDelayMs)}" else "字幕延迟只能调 ASS / SSA 字幕",
-                    style = MaterialTheme.typography.labelLarge,
+                    style = MaterialTheme.typography.labelLargeEmphasized,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
                 if (assShowing) {
-                    Row(Modifier.padding(horizontal = 8.dp)) {
+                    FlowRow(Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = { screen.subtitleDelayMs -= 100 }) { Text("−0.1 秒") }
                         TextButton(onClick = { screen.subtitleDelayMs += 100 }) { Text("+0.1 秒") }
                         TextButton(onClick = { screen.subtitleDelayMs = 0 }, enabled = screen.subtitleDelayMs != 0L) { Text("归零") }
@@ -722,11 +730,11 @@ actual fun InternalPlayer(
                 HorizontalDivider()
                 Text(
                     if (assShowing) "字幕大小：ASS / SSA 按原样显示" else "字幕大小 ${(effectiveScale * 100).roundToInt()}%",
-                    style = MaterialTheme.typography.labelLarge,
+                    style = MaterialTheme.typography.labelLargeEmphasized,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
                 if (!assShowing) {
-                    Row(Modifier.padding(horizontal = 8.dp)) {
+                    FlowRow(Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = { screen.subtitleScale = (effectiveScale - 0.1f).coerceIn(0.5f, 3f) }) { Text("小一点") }
                         TextButton(onClick = { screen.subtitleScale = (effectiveScale + 0.1f).coerceIn(0.5f, 3f) }) { Text("大一点") }
                         TextButton(onClick = { screen.subtitleScale = null }, enabled = screen.subtitleScale != null) { Text("按设置") }
@@ -735,13 +743,13 @@ actual fun InternalPlayer(
                 HorizontalDivider()
                 Text(
                     "播放速度",
-                    style = MaterialTheme.typography.labelLarge,
+                    style = MaterialTheme.typography.labelLargeEmphasized,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
                 SPEEDS.forEach { value ->
                     DropdownMenuItem(
                         leadingIcon = { ChosenMark(abs(screen.speed - value) < 0.001f) },
-                        text = { Text(if (value == 1f) "正常" else "$value×") },
+                        text = { PlayerMenuLabel(if (value == 1f) "正常" else "$value×", abs(screen.speed - value) < 0.001f) },
                         onClick = {
                             openMenu = null
                             screen.speed = value
@@ -754,7 +762,9 @@ actual fun InternalPlayer(
                 chapters.forEachIndexed { index, chapter ->
                     DropdownMenuItem(
                         leadingIcon = { ChosenMark(index == currentChapter) },
-                        text = { Text("${formatDuration(chapter.startMs)}  ${chapter.title.ifBlank { "第 ${index + 1} 章" }}") },
+                        text = {
+                            PlayerMenuLabel("${formatDuration(chapter.startMs)}  ${chapter.title.ifBlank { "第 ${index + 1} 章" }}", index == currentChapter)
+                        },
                         onClick = {
                             openMenu = null
                             player.seekTo(chapter.startMs)
@@ -777,6 +787,7 @@ actual fun InternalPlayer(
         if (chromeHidden || locked) openMenu = null
     }
 
+    val projectionColors = MaterialTheme.colorScheme
     val density = LocalDensity.current
     val direction = LocalLayoutDirection.current
     val safeDrawing = WindowInsets.safeDrawing
@@ -816,6 +827,15 @@ actual fun InternalPlayer(
         val compact = !tabletop && !controlsPane.clampTo(stableTouchBounds).fitsPlayerHud()
         val nativeHud = !compact && !tabletop && panes.picture == viewport
         val popupMenus = nativeHud && picturePane == viewport
+        val hasMenuAnchors = popupMenus && controlsPane.clampTo(touchBounds).width >= PlayerDirectToolsWidth
+        val overflowFocus = remember { FocusRequester() }
+        var restoreOverflowFocus by remember { mutableStateOf(false) }
+        LaunchedEffect(openMenu, chromeHidden, locked) {
+            if (openMenu == null && restoreOverflowFocus) {
+                if (!chromeHidden && !locked && !hasMenuAnchors) runCatching { overflowFocus.requestFocus() }
+                restoreOverflowFocus = false
+            }
+        }
         // Track the un-inset root and the placed panes, not transient touch insets or playback progress.
         val controlsArrival = rememberFoldArrival(
             owner = info.sessionId,
@@ -826,6 +846,8 @@ actual fun InternalPlayer(
         val nativeInsets = panePadding(picturePane, touchBounds, direction)
         val showPause = playWhenReady && !playbackSuppressed
         val useNativeControls = nativeHud && !chromeHidden && !locked
+        val showOrientation = nativeHud && !appWindow.isInMultiWindow
+        val paneMenuContent: @Composable ColumnScope.(PlayerMenu) -> Unit = { menu -> menuContent(menu, showOrientation, !compact) }
         var foldHudVisible by remember(nativeHud, tabletop, compact) { mutableStateOf(true) }
         var controlTouches by remember { mutableIntStateOf(0) }
         var scrubbing by remember { mutableStateOf(false) }
@@ -885,6 +907,7 @@ actual fun InternalPlayer(
                     setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
                         controlsVisible = visibility == View.VISIBLE
                     })
+                    styleProjectionHud(projectionColors)
                     if (useController) showController()
                     cancelPictureGesture = installGestures(
                         view = this,
@@ -938,136 +961,114 @@ actual fun InternalPlayer(
             Box(Modifier.playerPane(picturePane, viewport).padding(nativeInsets)) {
                 (if (boosting) "2× 快进中" else hint)?.let { text ->
                     Surface(
-                        color = Color.Black.copy(alpha = 0.6f),
-                        contentColor = Color.White,
-                        shape = MaterialTheme.shapes.medium,
+                        color = projectionColors.surfaceContainerHigh,
+                        contentColor = projectionColors.onSurface,
+                        shape = MaterialTheme.shapes.large,
                         modifier = Modifier.align(if (boosting) Alignment.TopCenter else Alignment.Center)
-                            .padding(top = if (boosting) 24.dp else 0.dp)
+                            .padding(horizontal = 16.dp)
+                            .padding(top = if (boosting) 88.dp else 0.dp)
                     ) {
-                        Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp))
+                        Text(text, style = MaterialTheme.typography.titleMediumEmphasized, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                     }
                 }
             }
 
             Box(
                 Modifier.playerPane(controlsPane, viewport, controlsArrival)
-                    .then(if (tabletop) Modifier.background(Color(0xFF17171B)) else Modifier)
+                    .then(if (tabletop) Modifier.background(projectionColors.surface) else Modifier)
                     .padding(panePadding(controlsPane, touchBounds, direction))
                     .playerArrivalEdge(controlsArrival)
             ) {
+                val overflow: @Composable RowScope.() -> Unit = {
+                    // Keep nested menus in this pane when their individual anchors don't fit.
+                    PlayerMenuButton(PlayerMenu.More, Icons.Filled.MoreVert, false, openMenu, {
+                        openMenu = it
+                        restoreOverflowFocus = true
+                    }, paneMenuContent, focus = overflowFocus)
+                }
                 val buttons: @Composable RowScope.() -> Unit = {
                     info.previousItemId?.let { previous ->
-                        IconButton(onClick = { latestOnSkip(previous, player.currentPosition) }) {
-                            Icon(Icons.Filled.SkipPrevious, contentDescription = "上一集", tint = Color.White)
-                        }
+                        PlaybackToolButton(Icons.Filled.SkipPrevious, "上一集", { latestOnSkip(previous, player.currentPosition) })
                     }
                     info.nextItemId?.let { next ->
-                        IconButton(onClick = { latestOnSkip(next, player.currentPosition) }) {
-                            Icon(Icons.Filled.SkipNext, contentDescription = "下一集", tint = Color.White)
-                        }
+                        PlaybackToolButton(Icons.Filled.SkipNext, "下一集", { latestOnSkip(next, player.currentPosition) })
                     }
                     if (audioStreams.isNotEmpty()) {
-                        PlayerMenuButton(PlayerMenu.Audio, Icons.Filled.Audiotrack, popupMenus, openMenu, { openMenu = it }, menuContent)
+                        PlayerMenuButton(PlayerMenu.Audio, Icons.Filled.Audiotrack, popupMenus, openMenu, { openMenu = it }, paneMenuContent)
                     }
-                    PlayerMenuButton(PlayerMenu.Subtitle, Icons.Filled.ClosedCaption, popupMenus, openMenu, { openMenu = it }, menuContent)
-                    PlayerMenuButton(PlayerMenu.Tuning, Icons.Filled.Tune, popupMenus, openMenu, { openMenu = it }, menuContent)
+                    PlayerMenuButton(PlayerMenu.Subtitle, Icons.Filled.ClosedCaption, popupMenus, openMenu, { openMenu = it }, paneMenuContent)
+                    PlayerMenuButton(PlayerMenu.Tuning, Icons.Filled.Tune, popupMenus, openMenu, { openMenu = it }, paneMenuContent)
                     if (chapters.isNotEmpty()) {
-                        PlayerMenuButton(PlayerMenu.Chapter, Icons.AutoMirrored.Filled.Toc, popupMenus, openMenu, { openMenu = it }, menuContent)
+                        PlayerMenuButton(PlayerMenu.Chapter, Icons.AutoMirrored.Filled.Toc, popupMenus, openMenu, { openMenu = it }, paneMenuContent)
                     }
                     if (canEnterPip) {
-                        IconButton(onClick = { activity?.let { PipRequest.enter(it) } }) {
-                            Icon(Icons.Filled.PictureInPictureAlt, contentDescription = "画中画", tint = Color.White)
-                        }
+                        PlaybackToolButton(Icons.Filled.PictureInPictureAlt, "画中画", { activity?.let { PipRequest.enter(it) } })
                     }
-                    if (nativeHud && !appWindow.isInMultiWindow) {
-                        val landscapeLocked = screen.orientation == ScreenOrientation.LANDSCAPE
-                        IconButton(onClick = {
-                            screen.orientation = if (landscapeLocked) ScreenOrientation.SENSOR else ScreenOrientation.LANDSCAPE
-                        }) {
-                            Icon(
-                                if (landscapeLocked) Icons.Filled.ScreenLockLandscape else Icons.Filled.ScreenRotation,
-                                contentDescription = if (landscapeLocked) "已锁定横屏，点按恢复自动旋转" else "锁定为横屏",
-                                tint = Color.White
+                    if (showOrientation) {
+                        PlaybackToolButton(
+                            if (landscapeLocked) Icons.Filled.ScreenLockLandscape else Icons.Filled.ScreenRotation,
+                            orientationLabel, toggleLandscape, active = landscapeLocked
+                        )
+                    }
+                    PlaybackToolButton(Icons.Filled.LockOpen, "锁定屏幕，防止误触", { locked = true })
+                }
+                when {
+                    locked -> PlaybackToolButton(
+                        Icons.Filled.Lock, "已锁定，点按解锁", { locked = false },
+                        modifier = Modifier.align(Alignment.CenterStart).padding(start = if (compact) 0.dp else 16.dp),
+                        contained = true
+                    )
+                    tabletop -> Column(
+                        Modifier.align(Alignment.Center).widthIn(max = 960.dp).fillMaxWidth().testTag("tabletop-player-controls")
+                            .verticalScroll(rememberScrollState()).padding(vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        FoldTransport(player, showPause, { controlTouches++ }, { scrubbing = it }, onBack = goBack)
+                        PlayerToolbar(title, overflow = overflow, buttons = buttons)
+                        if (introEnd != null) SkipIntroButton(onClick = { player.seekTo(introEnd) })
+                    }
+                    compact -> CompactPlayerActions(
+                        player, showPause, goBack,
+                        modifier = Modifier.align(Alignment.TopCenter).widthIn(max = 320.dp).fillMaxWidth()
+                    ) {
+                        PlayerMenuButton(PlayerMenu.More, Icons.Filled.MoreVert, false, openMenu, {
+                            openMenu = it
+                            restoreOverflowFocus = true
+                        }, paneMenuContent, contained = true, focus = overflowFocus)
+                    }
+                    else -> {
+                        if (introEnd != null) {
+                            SkipIntroButton(
+                                onClick = { player.seekTo(introEnd) },
+                                modifier = Modifier.align(Alignment.BottomEnd)
+                                    .padding(end = 16.dp, bottom = if (showHud) 136.dp else 24.dp)
+                            )
+                        }
+                        AnimatedVisibility(
+                            visible = showHud,
+                            enter = fadeIn(MaterialTheme.motionScheme.fastEffectsSpec()),
+                            exit = fadeOut(MaterialTheme.motionScheme.fastEffectsSpec()),
+                            modifier = Modifier.align(Alignment.TopCenter)
+                        ) { PlayerToolbar(title, onBack = goBack, overflow = overflow, buttons = buttons) }
+                        if (!nativeHud && showHud) {
+                            FoldTransport(
+                                player, showPause,
+                                onInteraction = { controlTouches++ }, onScrubbing = { scrubbing = it },
+                                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp)
                             )
                         }
                     }
-                    IconButton(onClick = { locked = true }) {
-                        Icon(Icons.Filled.LockOpen, contentDescription = "锁定屏幕，防止误触", tint = Color.White)
-                    }
-                }
-                if (locked) {
-                    IconButton(
-                        onClick = { locked = false },
-                        modifier = Modifier.align(Alignment.CenterStart).padding(start = if (compact) 0.dp else 16.dp)
-                            .background(Color.Black.copy(alpha = 0.45f), MaterialTheme.shapes.extraLarge)
-                    ) {
-                        Icon(Icons.Filled.Lock, contentDescription = "已锁定，点按解锁", tint = Color.White)
-                    }
-                } else if (tabletop) {
-                    Column(
-                        Modifier.align(Alignment.Center).widthIn(max = 720.dp).fillMaxWidth().testTag("tabletop-player-controls")
-                            .verticalScroll(rememberScrollState()).padding(vertical = 8.dp)
-                    ) {
-                        FoldTransport(player, showPause, { controlTouches++ }, { scrubbing = it }, onBack = goBack)
-                        PlayerToolbar(title, buttons = buttons)
-                        if (introEnd != null) {
-                            TextButton(onClick = { player.seekTo(introEnd) }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                                Text("跳过片头")
-                            }
-                        }
-                    }
-                } else if (compact) {
-                    CompactPlayerActions(
-                        player, showPause, goBack,
-                        modifier = Modifier.align(Alignment.TopCenter).widthIn(max = 320.dp).fillMaxWidth()
-                            .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.8f), Color.Transparent)))
-                    ) {
-                        PlayerMenuButton(PlayerMenu.More, Icons.Filled.MoreVert, false, openMenu, { openMenu = it }, menuContent)
-                    }
-                } else {
-                    if (introEnd != null) {
-                        Button(
-                            onClick = { player.seekTo(introEnd) },
-                            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = if (showHud) 120.dp else 24.dp)
-                        ) { Text("跳过片头") }
-                    }
-                    AnimatedVisibility(
-                        visible = showHud,
-                        enter = fadeIn(),
-                        exit = fadeOut(),
-                        modifier = Modifier.align(Alignment.TopCenter)
-                    ) { PlayerToolbar(title, onBack = goBack, buttons = buttons) }
-                    if (!nativeHud && showHud) {
-                        FoldTransport(
-                            player, showPause,
-                            onInteraction = { controlTouches++ }, onScrubbing = { scrubbing = it },
-                            modifier = Modifier.align(Alignment.BottomCenter)
-                                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f))))
-                        )
-                    }
                 }
                 val menu = openMenu
-                if (!popupMenus && menu != null && !locked) {
-                    PanePlayerMenu(menu, onDismiss = { openMenu = null }, content = menuContent)
+                if (menu != null && !locked && (menu == PlayerMenu.More || !hasMenuAnchors)) {
+                    PanePlayerMenu(menu, onDismiss = { openMenu = null }, content = paneMenuContent)
                 }
                 playbackError?.let { message ->
-                    Surface(
-                        modifier = Modifier.align(Alignment.Center).padding(16.dp),
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        shape = MaterialTheme.shapes.medium
-                    ) {
-                        Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
-                            Text("无法播放", style = MaterialTheme.typography.titleMedium)
-                            Spacer(Modifier.height(6.dp))
-                            Text(message, style = MaterialTheme.typography.bodyMedium)
-                            Spacer(Modifier.height(12.dp))
-                            Row {
-                                Button(onClick = { latestOnSkip(info.item.id, player.currentPosition) }) { Text("重试") }
-                                Spacer(Modifier.width(8.dp))
-                                TextButton(onClick = { latestOnClose(player.currentPosition) }) { Text("返回") }
-                            }
-                        }
-                    }
+                    PlaybackFailure(
+                        message = message,
+                        onRetry = { latestOnSkip(info.item.id, player.currentPosition) },
+                        onClose = { latestOnClose(player.currentPosition) }
+                    )
                 }
             }
         }
@@ -1102,7 +1103,13 @@ private val SPEEDS = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
  */
 private const val EMBEDDED_ASS_REFRESH_MS = 100L
 
-/** The tick on a menu's current choice. The menus used to list tracks with nothing to say which was playing. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PlayerMenuLabel(label: String, chosen: Boolean) {
+    Text(label, style = if (chosen) MaterialTheme.typography.bodyLargeEmphasized else MaterialTheme.typography.bodyLarge)
+}
+
+/** The tick on a menu's current choice. */
 @Composable
 private fun ChosenMark(chosen: Boolean) {
     Box(Modifier.size(24.dp)) {

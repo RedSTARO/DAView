@@ -1,46 +1,28 @@
 package com.daview.app.ui
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.ToggleButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
+import com.daview.app.data.tracksTextInput
 import com.daview.app.platform.PlatformInfo
-import com.daview.app.player.MpvNative
+import com.daview.app.platform.chooseFile
 import com.daview.app.platform.customPlayerPath
 import com.daview.app.platform.setCustomPlayerPath
+import com.daview.app.player.MpvNative
 import com.daview.app.player.PlayerPreferences
 import com.daview.app.player.VideoAdapter
 import com.daview.app.player.VideoEnhancement
-import java.awt.FileDialog
-import java.awt.Frame
-import java.io.File
 
 /**
  * The desktop player's settings: where libmpv is, the external player, and
@@ -54,7 +36,6 @@ import java.io.File
  * thing is to say what will be asked for, and let the player screen report what
  * mpv logged when it asked.
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalLayoutApi::class)
 @Composable
 actual fun PlatformPlayerSettings() {
     var refresh by remember { mutableStateOf(0) }
@@ -79,22 +60,16 @@ actual fun PlatformPlayerSettings() {
         PlayerPreferences.enhancement = value
     }
 
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        Text("内置播放器", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(8.dp))
-
+    SettingsPanel("内置播放器") {
         key(refresh) {
             val available = PlatformInfo.hasInternalPlayer
-            Text(
-                if (available) "可以使用" else "不可用：没有找到 libmpv，播放会交给外部播放器",
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (available) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            SettingsNotice(
+                if (available) "libmpv 可用" else "未找到 libmpv · 播放时会使用外部播放器",
+                if (available) SettingsTone.Success else SettingsTone.Attention
             )
         }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = {
+        SettingsActions {
+            FilledTonalButton(onClick = {
                 pickLibrary()?.let {
                     PlayerPreferences.libmpvPath = it
                     refresh++
@@ -107,19 +82,15 @@ actual fun PlatformPlayerSettings() {
                 }) { Text("恢复默认位置") }
             }
         }
+    }
 
-        Spacer(Modifier.height(12.dp))
-        Text("外部播放器", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Text(
-            customPlayerPath()?.let { "自定义播放器：$it" }
-                ?: "除了自动找到的 PotPlayer / VLC / mpv，也可以指定任意一个播放器程序。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TextButton(onClick = {
+    SettingsPanel(
+        "自定义外部播放器",
+        customPlayerPath()?.let { "自定义播放器：$it" }
+            ?: "除了自动找到的 PotPlayer / VLC / mpv，也可以指定其他播放器程序。"
+    ) {
+        SettingsActions {
+            FilledTonalButton(onClick = {
                 pickExecutable()?.let {
                     setCustomPlayerPath(it)
                     refresh++
@@ -132,119 +103,50 @@ actual fun PlatformPlayerSettings() {
                 }) { Text("清除") }
             }
         }
+    }
 
-        val windows = MpvNative.isWindows
-        Spacer(Modifier.height(12.dp))
-        Text("RTX 视频增强", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Text(
-            if (windows) {
-                "需要 NVIDIA RTX 显卡，并在 NVIDIA 控制面板或 NVIDIA App 里打开「RTX 视频增强」，否则开了也没有效果。"
-            } else {
-                "只在 Windows 上可用。"
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(8.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("超分辨率")
-                Text(
-                    "用显卡把低分辨率片源放大并锐化。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Spacer(Modifier.width(16.dp))
-            Switch(
-                checked = enhancement.superResolution,
-                enabled = windows,
-                onCheckedChange = { update(enhancement.copy(superResolution = it)) }
-            )
-        }
-
+    val windows = MpvNative.isWindows
+    SettingsPanel(
+        "RTX 视频增强",
+        if (windows) "需要 NVIDIA RTX 显卡，并在 NVIDIA 控制面板或 NVIDIA App 中开启 RTX 视频增强。"
+        else "只在 Windows 上可用。"
+    ) {
+        SettingsSwitch(
+            label = "超分辨率",
+            checked = enhancement.superResolution,
+            enabled = windows,
+            detail = "用显卡把低分辨率片源放大并锐化。"
+        ) { update(enhancement.copy(superResolution = it)) }
         if (enhancement.superResolution) {
-            FlowRow(
-                Modifier.padding(top = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                itemVerticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("放大倍率", style = MaterialTheme.typography.bodySmall)
-                (VideoEnhancement.MIN_SCALE..VideoEnhancement.MAX_SCALE).forEach { scale ->
-                    ToggleButton(
-                        checked = enhancement.scale == scale,
-                        onCheckedChange = { update(enhancement.copy(scale = scale)) }
-                    ) { Text("${scale}×") }
-                }
-            }
+            Text("放大倍率", style = MaterialTheme.typography.labelLarge)
+            SettingsChoices(
+                (VideoEnhancement.MIN_SCALE..VideoEnhancement.MAX_SCALE).map { it to "$it×" },
+                enhancement.scale
+            ) { update(enhancement.copy(scale = it)) }
         }
-
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("HDR 转换")
-                Text(
-                    "把普通（SDR）片源转成 HDR 显示。系统和显示器都要开着 HDR；片源本身是 HDR 时不起作用。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Spacer(Modifier.width(16.dp))
-            Switch(
-                checked = enhancement.videoHdr,
-                enabled = windows,
-                onCheckedChange = { update(enhancement.copy(videoHdr = it)) }
-            )
-        }
-
-        if (windows) {
-            Spacer(Modifier.height(12.dp))
-            Text("用哪块显卡播放", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Text(
-                "双显卡笔记本上，RTX 视频增强只在 NVIDIA 独显上生效。「自动」在开启增强时会选 NVIDIA。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(6.dp))
-            // Adapter names run long; a fixed row pushed the last ones off the edge.
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                ToggleButton(
-                    checked = adapter == null,
-                    onCheckedChange = {
-                        adapter = null
-                        PlayerPreferences.adapter = null
-                        customRejected = false
-                    }
-                ) { Text("自动") }
-                adapters.forEach { candidate ->
-                    ToggleButton(
-                        checked = adapter == candidate,
-                        onCheckedChange = {
-                            adapter = candidate
-                            PlayerPreferences.adapter = candidate
-                            customRejected = false
-                        }
-                    ) { Text(candidate, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                }
+        SettingsSwitch(
+            label = "HDR 转换",
+            checked = enhancement.videoHdr,
+            enabled = windows,
+            detail = "将普通（SDR）片源转为 HDR 显示。系统和显示器都要开启 HDR；不影响 HDR 片源。"
+        ) { update(enhancement.copy(videoHdr = it)) }
+    }
+    if (windows) {
+        SettingsPanel("播放显卡", "双显卡笔记本上，RTX 视频增强只在 NVIDIA 独显上生效。启用增强时，「自动」会选择 NVIDIA。") {
+            SettingsChoices(listOf(null to "自动") + adapters.map { it to it }, adapter) {
+                adapter = it
+                PlayerPreferences.adapter = it
+                customRejected = false
             }
             PlayerPreferences.lastAdapterInUse?.let { used ->
-                Text(
-                    "上次播放用的是：$used",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text("上次播放使用：$used", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+    }
 
-        // What only matters when something is not working: where libmpv was
-        // loaded from, and naming an adapter by hand.
-        TextButton(onClick = { showDetails = !showDetails }, contentPadding = PaddingValues(0.dp)) {
-            Text(if (showDetails) "收起技术细节" else "技术细节")
+    SettingsPanel("播放器技术细节") {
+        TextButton(onClick = { showDetails = !showDetails }) {
+            Text(if (showDetails) "收起技术细节" else "展开技术细节")
         }
         if (showDetails) {
             key(refresh) {
@@ -255,47 +157,34 @@ actual fun PlatformPlayerSettings() {
                     MpvNative.loadError.orEmpty()
                 }
                 if (detail.isNotBlank()) {
-                    Text(
-                        "libmpv：$detail",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text("libmpv：$detail", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (windows) {
-                Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = customAdapter,
-                        onValueChange = { customAdapter = it; customRejected = false },
-                        label = { Text("按名称指定显卡") },
-                        singleLine = true,
-                        isError = customRejected,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    TextButton(
-                        enabled = customAdapter.isNotBlank(),
-                        onClick = {
-                            // mpv rejects a name matching no adapter at the moment it
-                            // is set, so a typo can be refused here instead of turning
-                            // into a black screen at the next play.
-                            if (VideoAdapter.accepts(customAdapter)) {
-                                adapter = customAdapter
-                                PlayerPreferences.adapter = customAdapter
-                                customRejected = false
-                            } else {
-                                customRejected = true
-                            }
-                        }
-                    ) { Text("使用") }
-                }
-                Text(
-                    if (customRejected) "没有显卡的名称以它开头" else "填显卡名称的开头部分即可，不区分大小写。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (customRejected) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.onSurfaceVariant
+                OutlinedTextField(
+                    value = customAdapter,
+                    onValueChange = { customAdapter = it; customRejected = false },
+                    label = { Text("按名称指定显卡") },
+                    supportingText = {
+                        Text(if (customRejected) "没有匹配的显卡" else "输入显卡名称的开头，不区分大小写。")
+                    },
+                    singleLine = true,
+                    isError = customRejected,
+                    modifier = Modifier.fillMaxWidth().tracksTextInput()
                 )
+                FilledTonalButton(
+                    enabled = customAdapter.isNotBlank(),
+                    onClick = {
+                        // Validate before storing; an invalid name can otherwise black out playback.
+                        if (VideoAdapter.accepts(customAdapter)) {
+                            adapter = customAdapter
+                            PlayerPreferences.adapter = customAdapter
+                            customRejected = false
+                        } else {
+                            customRejected = true
+                        }
+                    }
+                ) { Text("使用此显卡") }
             }
         }
     }
@@ -308,9 +197,9 @@ actual fun PlatformPlayerSettings() {
  */
 private fun pickExecutable(): String? {
     val windows = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
-    return com.daview.app.platform.chooseFile("选择播放器程序", if (windows) listOf("exe") else emptyList())?.absolutePath
+    return chooseFile("选择播放器程序", if (windows) listOf("exe") else emptyList())?.absolutePath
 }
 
 /** The platform chooser, filtered to shared libraries. */
 private fun pickLibrary(): String? =
-    com.daview.app.platform.chooseFile("选择 libmpv", listOf("dll", "so", "dylib"))?.absolutePath
+    chooseFile("选择 libmpv", listOf("dll", "so", "dylib"))?.absolutePath

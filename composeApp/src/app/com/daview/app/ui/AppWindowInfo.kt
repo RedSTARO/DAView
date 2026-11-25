@@ -43,15 +43,20 @@ internal data class WindowPane(val left: Dp, val top: Dp, val right: Dp, val bot
 
 internal enum class BrowseNavigation { Rail, Bar, Hidden }
 
-internal val BrowseRailWidth = 88.dp
-internal val BrowseBarHeight = 80.dp
-internal val CompactBrowseBarHeight = 64.dp
+internal val BrowseRailWidth = 96.dp
+internal val ExpandedBrowseRailWidth = 220.dp
+internal val BrowseBarHeight = 64.dp
+private val ExpandedRailBreakpoint = 1200.dp
+
+internal fun browseBarHeight(fontScale: Float) = BrowseBarHeight + (24f * (fontScale - 1f).coerceAtLeast(0f)).dp
 
 internal data class BrowsePanes(
     val main: WindowPane,
     val navigation: BrowseNavigation,
     val detail: WindowPane? = null,
-    val divided: Boolean = false
+    val divided: Boolean = false,
+    val railWidth: Dp = BrowseRailWidth,
+    val canExpandRail: Boolean = false
 )
 
 /**
@@ -65,7 +70,9 @@ internal fun browsePanes(
     pair: Boolean,
     rtl: Boolean,
     fontScale: Float = 1f,
-    imeTop: Dp? = null
+    imeTop: Dp? = null,
+    preferRail: Boolean = false,
+    expandRail: Boolean = true
 ): BrowsePanes {
     val visible = viewport.copy(bottom = imeTop?.coerceIn(viewport.top, viewport.bottom) ?: viewport.bottom)
     val extraText = (fontScale - 1f).coerceAtLeast(0f)
@@ -81,9 +88,14 @@ internal fun browsePanes(
     }
 
     fun single(pane: WindowPane, divided: Boolean = false): BrowsePanes {
-        val rail = pane.width >= (600f + 100f * extraText).dp ||
+        val rail = preferRail || pane.width >= (600f + 100f * extraText).dp ||
             (pane.width >= listMin + BrowseRailWidth && pane.height < 430.dp)
-        return BrowsePanes(pane, navigation(pane, rail), divided = divided)
+        val expandable = !divided && pane.width >= ExpandedRailBreakpoint
+        return BrowsePanes(
+            pane, navigation(pane, rail), divided = divided,
+            railWidth = if (expandable && expandRail) ExpandedBrowseRailWidth else BrowseRailWidth,
+            canExpandRail = expandable
+        )
     }
 
     // Strict on an edge: a zero-width/height fold inside the viewport still divides it,
@@ -100,7 +112,7 @@ internal fun browsePanes(
                 val end = if (rtl) left else right
                 val nav = navigation(start, rail = start.width >= listMin + BrowseRailWidth)
                 val listWidth = start.width - if (nav == BrowseNavigation.Rail) BrowseRailWidth else 0.dp
-                val listHeight = start.height - if (nav == BrowseNavigation.Bar) BrowseBarHeight else 0.dp
+                val listHeight = start.height - if (nav == BrowseNavigation.Bar) browseBarHeight(fontScale) else 0.dp
                 val detailMin = (352f + 140f * extraText).dp
                 if (pair && listWidth >= listMin && end.width >= detailMin && listHeight >= pairMinHeight) {
                     BrowsePanes(start, nav, detail = end, divided = true)
@@ -119,7 +131,7 @@ internal fun browsePanes(
         }
     }
 
-    val gap = 12.dp
+    val gap = 24.dp
     val usableWidth = visible.width - BrowseRailWidth - gap
     val detailMin = (400f + 160f * extraText).dp
     if (!pair || visible.width < 840.dp || visible.height < pairMinHeight || usableWidth < listMin + detailMin) {

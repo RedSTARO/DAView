@@ -7,6 +7,7 @@ RTX Video Super Resolution 与 RTX Video HDR），也可以把播放交给 PotPl
 
 技术栈：**Kotlin Multiplatform + Compose Multiplatform + Material 3 Expressive**。
 桌面端与 Android 端各自跑一份 core，设备之间只通过存储上的同步文件和刮削日志对齐。
+界面使用「放映室」设计，见 [Material 3 Expressive 界面说明](<docs/MATERIAL-EXPRESSIVE.md>)。
 
 DAView 自有代码采用 **GNU GPL v3 或更新版本（SPDX: `GPL-3.0-or-later`）**，
 全文见 [LICENSE](LICENSE)。这允许使用、研究、修改和再分发；再分发时须遵守许可证的

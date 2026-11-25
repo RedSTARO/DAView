@@ -1,22 +1,32 @@
 package com.daview.app.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.TooltipArea
+import androidx.compose.foundation.TooltipPlacement
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -26,15 +36,14 @@ import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.automirrored.filled.Toc
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
@@ -58,8 +67,9 @@ import androidx.compose.ui.awt.ComposeDialog
 import androidx.compose.ui.awt.SwingPanel
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -67,9 +77,17 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.utf16CodePoint
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.onPointerEvent
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogWindow
 import com.daview.app.platform.chooseFile
@@ -81,6 +99,7 @@ import com.daview.app.player.PlayerPreferences
 import com.daview.app.player.TrackMapping
 import com.daview.app.player.TrackMenu
 import com.daview.app.player.VideoAdapter
+import com.daview.app.theme.DaViewTheme
 import com.daview.shared.model.PlaybackInfoDto
 import com.daview.shared.model.SUBTITLE_OFF
 import com.daview.shared.model.StreamType
@@ -105,13 +124,17 @@ import java.awt.event.MouseMotionAdapter
 import java.awt.image.BufferedImage
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.SwingUtilities
+import androidx.compose.foundation.Canvas as ComposeCanvas
 import java.awt.Color as AwtColor
 
 /** How a session ended; the two write different things back. */
 private enum class Ending { FINISHED, ABANDONED }
 
 /** What the controls have opened above themselves. */
-private enum class Panel { AUDIO, SUBTITLE, SUBTITLE_TUNING, SPEED, CHAPTERS }
+private enum class Panel(val title: String) {
+    AUDIO("音轨"), SUBTITLE("字幕"), SUBTITLE_TUNING("字幕调整"),
+    SPEED("播放速度"), CHAPTERS("章节"), OPTIONS("更多播放选项")
+}
 
 /**
  * In-app playback on the desktop, backed by libmpv.
@@ -646,6 +669,8 @@ actual fun InternalPlayer(
             // The same keys mpv answers to, for when the app has the keyboard.
             .onPreviewKeyEvent { event ->
                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                // With no picture the retry/return buttons should get their ordinary Space action.
+                if (failure != null && event.key == Key.Spacebar) return@onPreviewKeyEvent false
                 stirred()
                 val char = event.utf16CodePoint.toChar()
                 when {
@@ -683,7 +708,7 @@ actual fun InternalPlayer(
         if (failed == null) {
             SwingPanel(factory = { canvas }, modifier = Modifier.fillMaxSize())
         } else {
-            FailureCard(
+            PlaybackFailure(
                 message = failed,
                 detail = MpvNative.loadError,
                 onRetry = { latestOnSkip(info.item.id, positionMs) },
@@ -711,7 +736,8 @@ actual fun InternalPlayer(
     if (failure == null && introEnd != null) {
         SkipOverlay(
             canvas = canvas,
-            lift = if (!showControls) 0 else if (panel == null) BAR_HEIGHT else BAR_HEIGHT + PANEL_HEIGHT,
+            showControls = showControls,
+            menuOpen = panel != null,
             onSkip = { skipIntro() }
         )
     }
@@ -720,9 +746,9 @@ actual fun InternalPlayer(
         ControlsOverlay(
             canvas = canvas,
             visible = showControls && player != null,
-            height = if (panel == null) BAR_HEIGHT else BAR_HEIGHT + PANEL_HEIGHT,
+            menuOpen = panel != null,
             onHoverChange = { overControls = it; stirred() }
-        ) {
+        ) { collapsed ->
             Controls(
                 info = info,
                 positionMs = scrubbingMs ?: positionMs,
@@ -744,8 +770,9 @@ actual fun InternalPlayer(
                 selectedSubtitle = selectedSubtitle,
                 mountedSubtitle = mountedSubtitle,
                 subtitleDelayMs = screen.subtitleDelayMs,
+                collapsed = collapsed,
                 onStir = { stirred() },
-                onPanel = { panel = if (panel == it) null else it; stirred() },
+                onPanel = { panel = it; stirred() },
                 onTogglePause = { player?.togglePause(); stirred() },
                 onScrub = { scrubbingMs = it; stirred() },
                 onSeek = { target ->
@@ -793,9 +820,9 @@ private fun controlsShowing(lastActivity: Long, paused: Boolean, panel: Panel?, 
 private fun ControlsOverlay(
     canvas: Canvas,
     visible: Boolean,
-    height: Int,
+    menuOpen: Boolean,
     onHoverChange: (Boolean) -> Unit,
-    content: @Composable () -> Unit
+    content: @Composable (collapsed: Boolean) -> Unit
 ) {
     var bounds by remember { mutableStateOf<Rectangle?>(null) }
     DisposableEffect(canvas) {
@@ -833,7 +860,8 @@ private fun ControlsOverlay(
     }
     val area = bounds ?: return
     val owner = SwingUtilities.getWindowAncestor(canvas) ?: return
-    val overlayHeight = height.coerceAtMost(area.height)
+    val collapsed = area.width < WIDE_TRANSPORT_WIDTH
+    val overlayHeight = controlsOverlayHeight(area.width, menuOpen).coerceAtMost(area.height)
 
     DialogWindow(
         visible = visible,
@@ -865,7 +893,7 @@ private fun ControlsOverlay(
                 .onPointerEvent(PointerEventType.Exit) { onHoverChange(false) }
                 .onPointerEvent(PointerEventType.Move) { onHoverChange(true) }
         ) {
-            content()
+            DaViewTheme(darkTheme = true) { content(collapsed) }
         }
     }
 }
@@ -893,7 +921,7 @@ private fun java.awt.Window.keepOwnerFullscreen() {
 
 /** A small "skip the opening" button over the bottom right of the picture. */
 @Composable
-private fun SkipOverlay(canvas: Canvas, lift: Int, onSkip: () -> Unit) {
+private fun SkipOverlay(canvas: Canvas, showControls: Boolean, menuOpen: Boolean, onSkip: () -> Unit) {
     var bounds by remember { mutableStateOf<Rectangle?>(null) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -903,6 +931,10 @@ private fun SkipOverlay(canvas: Canvas, lift: Int, onSkip: () -> Unit) {
     }
     val area = bounds ?: return
     val owner = SwingUtilities.getWindowAncestor(canvas) ?: return
+    val lift = if (showControls) controlsOverlayHeight(area.width, menuOpen) else 0
+    val skipWidth = 220.coerceAtMost(area.width)
+    val skipHeight = 64.coerceAtMost(area.height)
+    val margin = if (area.width >= skipWidth + 16) 16 else 0
     DialogWindow(
         visible = true,
         onPreviewKeyEvent = { false },
@@ -919,14 +951,20 @@ private fun SkipOverlay(canvas: Canvas, lift: Int, onSkip: () -> Unit) {
         dispose = { it.dispose() },
         update = { dialog ->
             dialog.keepOwnerFullscreen()
-            dialog.setBounds(area.x + area.width - 220, area.y + area.height - 100 - lift, 190, 64) }
+            val x = area.x + area.width - skipWidth - margin
+            val y = (area.y + area.height - lift - skipHeight - 8).coerceAtLeast(area.y)
+            dialog.setBounds(x, y, skipWidth, skipHeight)
+        }
     ) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Button(onClick = onSkip) { Text("跳过片头（Enter）") }
+        DaViewTheme(darkTheme = true) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterEnd) {
+                SkipIntroButton(onClick = onSkip, label = "跳过片头（Enter）")
+            }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun Controls(
     info: PlaybackInfoDto,
@@ -949,8 +987,9 @@ private fun Controls(
     selectedSubtitle: Int?,
     mountedSubtitle: String?,
     subtitleDelayMs: Long,
+    collapsed: Boolean,
     onStir: () -> Unit,
-    onPanel: (Panel) -> Unit,
+    onPanel: (Panel?) -> Unit,
     onTogglePause: () -> Unit,
     onScrub: (Long) -> Unit,
     onSeek: (Long) -> Unit,
@@ -968,150 +1007,206 @@ private fun Controls(
     onToggleFullscreen: () -> Unit,
     onClose: () -> Unit
 ) {
-    val white = Color.White
-    val dim = Color.White.copy(alpha = 0.75f)
+    val colors = MaterialTheme.colorScheme
     Column(
-        Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    0f to Color.Transparent,
-                    0.35f to Color.Black.copy(alpha = 0.55f),
-                    1f to Color.Black.copy(alpha = 0.85f)
-                )
-            )
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.Bottom
+        Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.Bottom,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        panel?.let { open ->
-            Surface(
-                color = Color(0xEE1B1A22),
-                contentColor = white,
-                shape = MaterialTheme.shapes.medium,
-                modifier = Modifier
-                    .align(Alignment.End)
-                    .widthIn(min = 280.dp, max = 460.dp)
-                    .heightIn(max = (PANEL_HEIGHT - 16).dp)
-                    .padding(bottom = 8.dp)
-            ) {
-                PanelContent(
-                    open, info, speed, chapters, chapter, selectedAudio, selectedSubtitle, mountedSubtitle,
-                    subtitleDelayMs, onSpeed, onAudio, onSubtitle, onMountSubtitle, onSubtitleDelay, onSubtitleSize, onChapter
-                )
-            }
-        }
-
-        // Title, and what mpv says about the NVIDIA features.
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(
-                displayTitle(info),
-                color = white,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            if (buffering) {
-                Text(
-                    "缓冲中" + (bufferingPercent?.let { " $it%" } ?: "…"),
-                    color = MaterialTheme.colorScheme.secondary,
-                    style = MaterialTheme.typography.labelMedium
-                )
-            }
-            chapter?.let { chapters.getOrNull(it) }?.title?.takeIf { it.isNotBlank() }?.let {
-                Text(it, color = dim, style = MaterialTheme.typography.labelMedium, maxLines = 1)
-            }
-            adapterInUse?.let {
-                Text(
-                    it, color = dim, style = MaterialTheme.typography.labelSmall, maxLines = 1,
-                    overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 220.dp)
-                )
-            }
-            EnhancementLabel("RTX 超分", superResolution)
-            EnhancementLabel("RTX HDR", videoHdr)
-        }
-
-        SeekBar(
-            positionMs = positionMs,
-            durationMs = durationMs,
-            chapters = chapters,
-            onScrub = onScrub,
-            onSeek = onSeek,
-            onStir = onStir
-        )
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ControlButton("上一集（<）", enabled = onPrevious != null, onClick = { onPrevious?.invoke() }) {
-                Icon(Icons.Filled.SkipPrevious, contentDescription = "上一集（<）", tint = if (onPrevious != null) white else dim.copy(alpha = 0.35f))
-            }
-            ControlButton(if (paused) "播放（空格）" else "暂停（空格）", onClick = onTogglePause) {
-                Icon(
-                    if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                    contentDescription = if (paused) "播放（空格）" else "暂停（空格）",
-                    tint = white
-                )
-            }
-            ControlButton("下一集（>）", enabled = onNext != null, onClick = { onNext?.invoke() }) {
-                Icon(Icons.Filled.SkipNext, contentDescription = "下一集（>）", tint = if (onNext != null) white else dim.copy(alpha = 0.35f))
-            }
-            Spacer(Modifier.width(4.dp))
-            ControlButton(if (muted) "取消静音（M）" else "静音（M）", onClick = onToggleMute) {
-                Icon(
-                    if (muted || volume == 0) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                    contentDescription = if (muted) "取消静音（M）" else "静音（M）",
-                    tint = white
-                )
-            }
-            Slider(
-                value = if (muted) 0f else volume / 100f,
-                onValueChange = { onVolume((it * 100).toInt()) },
-                colors = SliderDefaults.colors(
-                    thumbColor = white,
-                    activeTrackColor = white.copy(alpha = 0.85f),
-                    inactiveTrackColor = white.copy(alpha = 0.3f)
-                ),
-                modifier = Modifier.width(96.dp)
-            )
-            Spacer(Modifier.width(8.dp))
-            Text("${if (muted) 0 else volume}", color = dim, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(28.dp))
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = { onPanel(Panel.SPEED) }) {
-                Text(formatSpeed(speed), color = if (speed != 1f) MaterialTheme.colorScheme.secondary else white)
-            }
-            if (chapters.isNotEmpty()) {
-                ControlButton("章节（PgUp / PgDn）", onClick = { onPanel(Panel.CHAPTERS) }) {
-                    Icon(Icons.AutoMirrored.Filled.Toc, contentDescription = "章节（PgUp / PgDn）", tint = white)
+        if (panel != null) {
+            Box(Modifier.weight(1f, fill = false).fillMaxWidth().padding(bottom = 8.dp), contentAlignment = Alignment.BottomEnd) {
+                Surface(
+                    color = colors.surfaceContainerHigh,
+                    contentColor = colors.onSurface,
+                    shape = MaterialTheme.shapes.largeIncreased,
+                    modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth().heightIn(max = PANEL_HEIGHT.dp)
+                ) {
+                    Column {
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                panel.title, style = MaterialTheme.typography.titleMediumEmphasized,
+                                modifier = Modifier.weight(1f).semantics { heading() }
+                            )
+                            ControlButton(Icons.Filled.Close, "关闭菜单（Esc）", onClick = { onPanel(null) })
+                        }
+                        HorizontalDivider(color = colors.outlineVariant)
+                        androidx.compose.runtime.key(panel) {
+                            PanelContent(
+                                panel, info, speed, chapters, chapter, selectedAudio, selectedSubtitle, mountedSubtitle,
+                                subtitleDelayMs, onSpeed, onAudio, onSubtitle, onMountSubtitle, onSubtitleDelay,
+                                onSubtitleSize, onChapter, onPanel, volume, muted, onVolume, onToggleMute
+                            )
+                        }
+                    }
                 }
             }
-            ControlButton("音轨（#）", onClick = { onPanel(Panel.AUDIO) }) {
-                Icon(Icons.Filled.Audiotrack, contentDescription = "音轨（#）", tint = white)
-            }
-            ControlButton("字幕（J）", onClick = { onPanel(Panel.SUBTITLE) }) {
-                Icon(Icons.Filled.ClosedCaption, contentDescription = "字幕（J）", tint = white)
-            }
-            ControlButton("字幕延迟与大小", onClick = { onPanel(Panel.SUBTITLE_TUNING) }) {
-                Icon(Icons.Filled.Tune, contentDescription = "字幕延迟与大小", tint = white)
-            }
-            ControlButton(if (fullscreen) "退出全屏（Esc / F）" else "全屏（F / 双击画面）", onClick = onToggleFullscreen) {
-                Icon(
-                    if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
-                    contentDescription = if (fullscreen) "退出全屏（Esc / F）" else "全屏（F / 双击画面）",
-                    tint = white
+        }
+        Surface(
+            color = colors.surfaceContainer,
+            contentColor = colors.onSurface,
+            shape = MaterialTheme.shapes.extraLargeIncreased,
+            modifier = Modifier.widthIn(max = 1360.dp).fillMaxWidth()
+        ) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                val currentChapter = chapter?.let(chapters::getOrNull)?.title?.takeIf { it.isNotBlank() }
+                PlaybackMetadata(
+                    title = displayTitle(info),
+                    chapter = currentChapter,
+                    buffering = buffering,
+                    bufferingPercent = bufferingPercent,
+                    adapterInUse = adapterInUse,
+                    superResolution = superResolution,
+                    videoHdr = videoHdr
                 )
-            }
-            ControlButton("结束播放（Q）", onClick = onClose) {
-                Icon(Icons.Filled.Close, contentDescription = "结束播放（Q）", tint = white)
+                PlaybackTimeDirection {
+                    SeekBar(positionMs, durationMs, chapters, onScrub, onSeek, onStir)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Surface(color = colors.surfaceContainerHigh, shape = MaterialTheme.shapes.extraLarge) {
+                            Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                ControlButton(Icons.Filled.SkipPrevious, "上一集（<）", enabled = onPrevious != null, onClick = { onPrevious?.invoke() })
+                                PlaybackControlTip(if (paused) "播放（空格）" else "暂停（空格）") {
+                                    PlaybackMainButton(showPause = !paused, onClick = onTogglePause, modifier = Modifier.size(width = 64.dp, height = 48.dp),
+                                        label = if (paused) "播放（空格）" else "暂停（空格）")
+                                }
+                                ControlButton(Icons.Filled.SkipNext, "下一集（>）", enabled = onNext != null, onClick = { onNext?.invoke() })
+                            }
+                        }
+                        if (!collapsed) {
+                            Spacer(Modifier.width(4.dp))
+                            VolumeButton(muted, volume, onToggleMute)
+                            VolumeSlider(muted, volume, onVolume, Modifier.width(84.dp))
+                            Text(
+                                "${if (muted) 0 else volume}%", Modifier.width(44.dp),
+                                color = colors.onSurfaceVariant, style = MaterialTheme.typography.labelMedium,
+                                textAlign = TextAlign.End, maxLines = 1
+                            )
+                        }
+                        Spacer(Modifier.weight(1f))
+                        if (collapsed) {
+                            VolumeButton(muted, volume, onToggleMute)
+                            ControlButton(Icons.Filled.MoreVert, "更多播放选项", active = panel != null, onClick = {
+                                onPanel(if (panel == null) Panel.OPTIONS else null)
+                            })
+                        } else {
+                            TextButton(
+                                onClick = { onPanel(if (panel == Panel.SPEED) null else Panel.SPEED) },
+                                modifier = Modifier.heightIn(min = 48.dp).widthIn(min = 56.dp, max = 80.dp).pointerHoverIcon(PointerIcon.Hand)
+                                    .semantics { contentDescription = "播放速度 ${formatSpeed(speed)}" },
+                                contentPadding = PaddingValues(horizontal = 4.dp)
+                            ) {
+                                Text(
+                                    formatSpeed(speed),
+                                    style = if (panel == Panel.SPEED) MaterialTheme.typography.labelLargeEmphasized else MaterialTheme.typography.labelLarge,
+                                    color = if (speed != 1f || panel == Panel.SPEED) colors.primary else colors.onSurfaceVariant
+                                )
+                            }
+                            if (chapters.isNotEmpty()) {
+                                PanelButton(Panel.CHAPTERS, panel, Icons.AutoMirrored.Filled.Toc, "章节（PgUp / PgDn）", onPanel)
+                            }
+                            PanelButton(Panel.AUDIO, panel, Icons.Filled.Audiotrack, "音轨（#）", onPanel)
+                            PanelButton(Panel.SUBTITLE, panel, Icons.Filled.ClosedCaption, "字幕（J）", onPanel)
+                            PanelButton(Panel.SUBTITLE_TUNING, panel, Icons.Filled.Tune, "字幕延迟与大小", onPanel)
+                        }
+                        ControlButton(
+                            if (fullscreen) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                            if (fullscreen) "退出全屏（Esc / F）" else "全屏（F / 双击画面）", onClick = onToggleFullscreen
+                        )
+                        ControlButton(Icons.Filled.Close, "结束播放（Q）", onClick = onClose)
+                    }
+                }
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PlaybackMetadata(
+    title: String,
+    chapter: String?,
+    buffering: Boolean,
+    bufferingPercent: Int?,
+    adapterInUse: String?,
+    superResolution: EnhancementState,
+    videoHdr: EnhancementState
+) {
+    val colors = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                title, Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.titleMediumEmphasized,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            if (buffering) {
+                Surface(color = colors.tertiaryContainer, contentColor = colors.onTertiaryContainer, shape = CircleShape) {
+                    Text(
+                        "缓冲中" + (bufferingPercent?.let { " $it%" } ?: "…"),
+                        Modifier.padding(horizontal = 8.dp, vertical = 2.dp), style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+        }
+        if (chapter != null || adapterInUse != null || enhancementSuffix(superResolution) != null || enhancementSuffix(videoHdr) != null) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                chapter?.let {
+                    Text(it, Modifier.weight(1f), color = if (buffering) colors.onSurfaceVariant else colors.tertiary,
+                        style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                } ?: Spacer(Modifier.weight(1f))
+                adapterInUse?.let {
+                    Text(it, Modifier.widthIn(max = 148.dp), color = colors.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                EnhancementLabel("RTX 超分", superResolution)
+                EnhancementLabel("RTX HDR", videoHdr)
+            }
+        }
+    }
+}
+
+@Composable
+private fun VolumeButton(muted: Boolean, volume: Int, onClick: () -> Unit) {
+    ControlButton(
+        if (muted || volume == 0) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+        if (muted) "取消静音（M）" else "静音（M）", onClick = onClick
+    )
+}
+
+@Composable
+private fun VolumeSlider(muted: Boolean, volume: Int, onVolume: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    val value = if (muted) 0 else volume
+    Slider(
+        value = value / 100f,
+        onValueChange = { onVolume((it * 100).toInt()) },
+        colors = SliderDefaults.colors(thumbColor = colors.onSurfaceVariant, activeTrackColor = colors.secondary),
+        modifier = modifier.heightIn(min = 48.dp).semantics {
+            contentDescription = "音量"
+            stateDescription = "$value%"
+        }
+    )
+}
+
+@Composable
+private fun PanelButton(panel: Panel, openPanel: Panel?, icon: ImageVector, tip: String, onPanel: (Panel?) -> Unit) {
+    ControlButton(icon, tip, active = openPanel == panel, onClick = { onPanel(if (openPanel == panel) null else panel) })
 }
 
 /**
  * The seek bar, with the chapters marked on it, the time under the pointer
  * while it hovers, and the total that turns into "time left" when clicked.
  */
-@OptIn(ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun SeekBar(
     positionMs: Long,
@@ -1121,25 +1216,23 @@ private fun SeekBar(
     onSeek: (Long) -> Unit,
     onStir: () -> Unit
 ) {
-    val white = Color.White
+    val colors = MaterialTheme.colorScheme
     val seekable = durationMs > 0
-    // Where the handle was left, held here rather than read back from
-    // [positionMs] on the way out: a click on the track calls both callbacks
-    // inside one frame, so the parameter still holds the old position.
+    // A click on the track calls both callbacks inside one frame; retain the newly selected value.
     var dragged by remember { mutableStateOf<Float?>(null) }
     var hoverFraction by remember { mutableStateOf<Float?>(null) }
     var showRemaining by remember { mutableStateOf(false) }
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
             hoverFraction?.takeIf { seekable }?.let { "→ " + formatDuration((it * durationMs).toLong()) }
-                ?: formatDuration(positionMs),
-            color = white.copy(alpha = 0.9f),
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.width(76.dp)
+                ?: if (positionMs > 0) formatDuration(positionMs) else "0:00",
+            color = colors.primary,
+            style = MaterialTheme.typography.labelMediumEmphasized,
+            maxLines = 1,
+            modifier = Modifier.width(76.dp).padding(start = 4.dp)
         )
         Box(
-            Modifier
-                .weight(1f)
+            Modifier.weight(1f)
                 .onPointerEvent(PointerEventType.Move) { event ->
                     val change = event.changes.firstOrNull() ?: return@onPointerEvent
                     val width = size.width.takeIf { it > 0 } ?: return@onPointerEvent
@@ -1149,7 +1242,7 @@ private fun SeekBar(
                 .onPointerEvent(PointerEventType.Exit) { hoverFraction = null }
         ) {
             Slider(
-                value = dragged ?: if (seekable) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f,
+                value = dragged ?: if (seekable) (positionMs.toDouble() / durationMs).toFloat().coerceIn(0f, 1f) else 0f,
                 onValueChange = {
                     dragged = it
                     if (seekable) onScrub((it * durationMs).toLong())
@@ -1160,37 +1253,39 @@ private fun SeekBar(
                     if (seekable && at != null) onSeek((at * durationMs).toLong())
                 },
                 enabled = seekable,
-                colors = SliderDefaults.colors(
-                    thumbColor = white,
-                    activeTrackColor = MaterialTheme.colorScheme.primary,
-                    inactiveTrackColor = white.copy(alpha = 0.3f)
-                ),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
+                    contentDescription = "播放进度"
+                    stateDescription = "${if (positionMs > 0) formatDuration(positionMs) else "0:00"} / ${formatDuration(durationMs)}"
+                }
             )
-            // Chapter marks, drawn over the track.
+            // Chapter marks sit below the track: they don't obscure the playhead or intercept a seek.
             if (seekable && chapters.size > 1) {
-                androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
+                ComposeCanvas(Modifier.matchParentSize()) {
+                    val inset = 4.dp.toPx()
                     chapters.drop(1).forEach { mark ->
-                        val x = size.width * (mark.startMs.toFloat() / durationMs).coerceIn(0f, 1f)
-                        drawRect(
-                            color = Color.Black.copy(alpha = 0.7f),
-                            topLeft = androidx.compose.ui.geometry.Offset(x - 1f, size.height / 2 - 6f),
-                            size = androidx.compose.ui.geometry.Size(2f, 12f)
-                        )
+                        val x = inset + (size.width - inset * 2).coerceAtLeast(0f) * (mark.startMs.toFloat() / durationMs).coerceIn(0f, 1f)
+                        drawCircle(color = colors.tertiary, radius = 2.dp.toPx(), center = Offset(x, size.height - 3.dp.toPx()))
                     }
                 }
             }
         }
-        Text(
-            if (showRemaining && seekable) "-" + formatDuration((durationMs - positionMs).coerceAtLeast(0))
-            else formatDuration(durationMs),
-            color = white.copy(alpha = 0.9f),
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.width(76.dp).padding(start = 8.dp).clickable { showRemaining = !showRemaining }
-        )
+        val endTime = if (showRemaining && seekable) "−" + formatDuration((durationMs - positionMs).coerceAtLeast(0)).replace("--:--", "0:00")
+            else formatDuration(durationMs)
+        Box(
+            Modifier.width(76.dp).heightIn(min = 48.dp)
+                .clickable(enabled = seekable, role = Role.Button, onClickLabel = if (showRemaining) "显示总时长" else "显示剩余时间") {
+                    showRemaining = !showRemaining
+                }
+                .then(if (seekable) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
+                .padding(end = 4.dp),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Text(endTime, color = colors.onSurfaceVariant, style = MaterialTheme.typography.labelMedium, maxLines = 1, textAlign = TextAlign.End)
+        }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PanelContent(
     panel: Panel,
@@ -1208,118 +1303,166 @@ private fun PanelContent(
     onMountSubtitle: () -> Unit,
     onSubtitleDelay: (Long) -> Unit,
     onSubtitleSize: (Boolean) -> Unit,
-    onChapter: (Int) -> Unit
+    onChapter: (Int) -> Unit,
+    onPanel: (Panel?) -> Unit,
+    volume: Int,
+    muted: Boolean,
+    onVolume: (Int) -> Unit,
+    onToggleMute: () -> Unit
 ) {
+    val itemPadding = PaddingValues(4.dp)
     when (panel) {
-        // Every track at once, picked directly. The list used to be an OSD
-        // message stepped through one press at a time, each step switching the
-        // track on the way past.
-        Panel.AUDIO -> LazyColumn {
-            item { PanelTitle("音轨") }
+        Panel.AUDIO -> LazyColumn(contentPadding = itemPadding) {
             val entries = info.item.mediaStreams.filter { it.type == StreamType.AUDIO }
+            if (entries.isEmpty()) item { PanelNote("没有可选音轨") }
             itemsIndexed(entries) { _, stream ->
-                PanelChoice(stream.displayTitle, stream.index == selectedAudio) { onAudio(stream.index) }
+                PanelChoice(stream.displayTitle, chosen = stream.index == selectedAudio) { onAudio(stream.index) }
             }
         }
-        Panel.SUBTITLE -> LazyColumn {
-            item { PanelTitle("字幕") }
+        Panel.SUBTITLE -> LazyColumn(contentPadding = itemPadding) {
             val entries = info.item.mediaStreams.filter { it.type == StreamType.SUBTITLE }
-            item { PanelChoice("关闭字幕", selectedSubtitle == null && mountedSubtitle == null) { onSubtitle(null) } }
+            item { PanelChoice("关闭字幕", chosen = selectedSubtitle == null && mountedSubtitle == null) { onSubtitle(null) } }
             itemsIndexed(entries) { _, stream ->
-                PanelChoice(stream.displayTitle, stream.index == selectedSubtitle && mountedSubtitle == null) {
+                PanelChoice(stream.displayTitle, chosen = stream.index == selectedSubtitle && mountedSubtitle == null) {
                     onSubtitle(stream.index)
                 }
             }
-            mountedSubtitle?.let { name -> item { PanelChoice("$name（本次加载）", true) {} } }
-            item { PanelChoice("从电脑加载字幕文件…", false, onMountSubtitle) }
+            mountedSubtitle?.let { name -> item { PanelNote("当前字幕：$name（本次加载）") } }
+            item {
+                HorizontalDivider(Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                PanelChoice("从电脑加载字幕文件…", onClick = onMountSubtitle)
+            }
         }
-        Panel.SUBTITLE_TUNING -> Column(Modifier.padding(14.dp)) {
-            PanelTitle("字幕调整（这次播放期间有效）")
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("延迟 ${formatDelay(subtitleDelayMs)}", modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = { onSubtitleDelay(-100) }) { Text("−0.1 秒", color = Color.White) }
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = { onSubtitleDelay(100) }) { Text("+0.1 秒", color = Color.White) }
+        Panel.SUBTITLE_TUNING -> Column(
+            Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text("延迟 ${formatDelay(subtitleDelayMs)}", style = MaterialTheme.typography.labelLarge)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onSubtitleDelay(-100) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("−0.1 秒") }
+                OutlinedButton(onClick = { onSubtitleDelay(100) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("+0.1 秒") }
             }
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("大小", modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = { onSubtitleSize(false) }) { Text("缩小", color = Color.White) }
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = { onSubtitleSize(true) }) { Text("放大", color = Color.White) }
+            Text("大小", style = MaterialTheme.typography.labelLarge)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onSubtitleSize(false) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("缩小") }
+                OutlinedButton(onClick = { onSubtitleSize(true) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("放大") }
             }
-            Spacer(Modifier.height(6.dp))
             Text(
                 "默认大小在「设置 → 播放」里改。",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White.copy(alpha = 0.7f)
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Panel.SPEED -> LazyColumn {
-            item { PanelTitle("播放速度（[ / ]）") }
+        Panel.SPEED -> LazyColumn(contentPadding = itemPadding) {
+            item { PanelNote("快捷键 [ / ]") }
             itemsIndexed(SPEEDS) { _, value ->
-                PanelChoice(formatSpeed(value), kotlin.math.abs(value - speed) < 0.001f) { onSpeed(value) }
+                PanelChoice(formatSpeed(value), chosen = kotlin.math.abs(value - speed) < 0.001f) { onSpeed(value) }
             }
         }
-        Panel.CHAPTERS -> LazyColumn {
-            item { PanelTitle("章节") }
+        Panel.CHAPTERS -> LazyColumn(contentPadding = itemPadding) {
             itemsIndexed(chapters) { index, item ->
-                PanelChoice("${formatDuration(item.startMs)}  ${item.title.ifBlank { "第 ${index + 1} 章" }}", index == chapter) {
-                    onChapter(index)
+                PanelChoice(
+                    item.title.ifBlank { "第 ${index + 1} 章" },
+                    chosen = index == chapter,
+                    supporting = formatDuration(item.startMs)
+                ) { onChapter(index) }
+            }
+        }
+        Panel.OPTIONS -> Column(Modifier.verticalScroll(rememberScrollState()).padding(4.dp)) {
+            PlaybackTimeDirection {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    VolumeButton(muted, volume, onToggleMute)
+                    VolumeSlider(muted, volume, onVolume, Modifier.weight(1f))
+                    Text("${if (muted) 0 else volume}%", Modifier.width(52.dp), textAlign = TextAlign.End, style = MaterialTheme.typography.labelMedium)
                 }
             }
+            HorizontalDivider(Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+            PanelChoice("播放速度 ${formatSpeed(speed)}", icon = Icons.Filled.Tune) { onPanel(Panel.SPEED) }
+            if (chapters.isNotEmpty()) {
+                PanelChoice("章节（PgUp / PgDn）", icon = Icons.AutoMirrored.Filled.Toc) { onPanel(Panel.CHAPTERS) }
+            }
+            PanelChoice("音轨（#）", icon = Icons.Filled.Audiotrack) { onPanel(Panel.AUDIO) }
+            PanelChoice("字幕（J）", icon = Icons.Filled.ClosedCaption) { onPanel(Panel.SUBTITLE) }
+            PanelChoice("字幕延迟与大小", icon = Icons.Filled.Tune) { onPanel(Panel.SUBTITLE_TUNING) }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun PanelChoice(label: String, chosen: Boolean, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically
+private fun PanelChoice(
+    label: String,
+    chosen: Boolean? = null,
+    supporting: String? = null,
+    icon: ImageVector? = null,
+    onClick: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    val action = if (chosen != null) Modifier.selectable(selected = chosen, role = Role.RadioButton, onClick = onClick)
+        else Modifier.clickable(role = Role.Button, onClick = onClick)
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = if (chosen == true) colors.secondaryContainer else Color.Transparent,
+        contentColor = if (chosen == true) colors.onSecondaryContainer else colors.onSurface
     ) {
-        Box(Modifier.width(26.dp)) {
-            if (chosen) Icon(Icons.Filled.Check, contentDescription = "当前", tint = MaterialTheme.colorScheme.primary)
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 48.dp).then(action).pointerHoverIcon(PointerIcon.Hand)
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            val leading = if (chosen == true) Icons.Filled.Check else icon
+            Box(Modifier.size(24.dp)) {
+                if (leading != null) Icon(leading, contentDescription = null)
+            }
+            Text(
+                label,
+                Modifier.weight(1f),
+                style = if (chosen == true) MaterialTheme.typography.bodyLargeEmphasized else MaterialTheme.typography.bodyLarge
+            )
+            supporting?.let {
+                Text(it, style = MaterialTheme.typography.labelMedium, color = if (chosen == true) colors.onSecondaryContainer else colors.tertiary)
+            }
         }
-        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
 @Composable
-private fun PanelTitle(text: String) {
+private fun PanelNote(text: String) {
     Text(
-        text,
-        style = MaterialTheme.typography.labelLarge,
-        color = Color.White.copy(alpha = 0.7f),
-        modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 4.dp)
+        text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
     )
 }
 
-/**
- * A control on the bar. No hover tooltip: one would open above the button,
- * which is the picture, and the bar's own window is too short to hold it. The
- * label goes to the screen reader and every key is listed under 设置 → 通用.
- */
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun ControlButton(tip: String, enabled: Boolean = true, onClick: () -> Unit, content: @Composable () -> Unit) {
-    // Above the button, inside the controls' own window: a tooltip below it
-    // would fall outside the window and not be drawn.
-    androidx.compose.foundation.TooltipArea(
+private fun ControlButton(icon: ImageVector, tip: String, enabled: Boolean = true, active: Boolean = false, onClick: () -> Unit) {
+    PlaybackControlTip(tip) {
+        PlaybackToolButton(icon, tip, onClick, enabled = enabled, active = active)
+    }
+}
+
+/** Keep labels above buttons and inside the separate, non-focusable controls window. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PlaybackControlTip(tip: String, content: @Composable () -> Unit) {
+    TooltipArea(
         tooltip = {
-            Surface(color = Color(0xE6202020), contentColor = Color.White, shape = MaterialTheme.shapes.small) {
+            Surface(
+                color = MaterialTheme.colorScheme.inverseSurface,
+                contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                shape = MaterialTheme.shapes.small
+            ) {
                 Text(tip, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
             }
         },
         delayMillis = 400,
-        tooltipPlacement = androidx.compose.foundation.TooltipPlacement.ComponentRect(
+        tooltipPlacement = TooltipPlacement.ComponentRect(
             anchor = Alignment.TopCenter,
             alignment = Alignment.TopCenter,
-            offset = androidx.compose.ui.unit.DpOffset(0.dp, (-4).dp)
+            offset = DpOffset(0.dp, (-4).dp)
         )
-    ) {
-        IconButton(onClick = onClick, enabled = enabled) { content() }
-    }
+    ) { content() }
 }
 
 /** A read-only status in the same register as the rest of the bar. */
@@ -1329,38 +1472,9 @@ private fun EnhancementLabel(label: String, state: EnhancementState) {
     Text(
         "$label · $suffix",
         style = MaterialTheme.typography.labelSmall,
-        color = when (state) {
-            EnhancementState.ACTIVE -> MaterialTheme.colorScheme.primary
-            EnhancementState.FAILED -> MaterialTheme.colorScheme.error
-            else -> Color.White.copy(alpha = 0.7f)
-        }
+        color = if (state == EnhancementState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1
     )
-}
-
-/** A file that could not be played, with a way to try again and a way out. */
-@Composable
-private fun FailureCard(message: String, detail: String?, onRetry: () -> Unit, onClose: () -> Unit) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Surface(
-            color = MaterialTheme.colorScheme.errorContainer,
-            shape = MaterialTheme.shapes.medium,
-            modifier = Modifier.padding(24.dp).widthIn(max = 520.dp)
-        ) {
-            Column(Modifier.padding(20.dp)) {
-                Text("无法播放", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onErrorContainer)
-                Spacer(Modifier.height(6.dp))
-                Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onErrorContainer)
-                detail?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onErrorContainer)
-                }
-                Spacer(Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onRetry) { Text("重试") }
-                    TextButton(onClick = onClose) { Text("返回") }
-                }
-            }
-        }
-    }
 }
 
 /**
@@ -1459,9 +1573,13 @@ private fun doubleClickMs(): Long =
 /** mpv's own step, so ← and → mean the same whichever side has the keyboard. */
 private const val SEEK_STEP_SECONDS = 5
 
-/** The controls' window: the bar, and the bar with a list open above it. */
-private const val BAR_HEIGHT = 150
+/** AWT uses logical pixels. These budgets resize only the overlay, never the native picture. */
+private const val WIDE_TRANSPORT_WIDTH = 760
+private const val BAR_HEIGHT = 184
 private const val PANEL_HEIGHT = 300
+
+private fun controlsOverlayHeight(width: Int, menuOpen: Boolean): Int =
+    BAR_HEIGHT + (if (width < WIDE_TRANSPORT_WIDTH) 8 else 0) + (if (menuOpen) PANEL_HEIGHT else 0)
 
 private const val OSD_MS = 3000
 private const val FAILURE_MS = 8000

@@ -1,22 +1,29 @@
 package com.daview.app.ui
 
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.FlowRowScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -24,39 +31,54 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Update
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.PrimaryScrollableTabRow
+import androidx.compose.material3.SegmentedListItem
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TonalToggleButton
+import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,8 +86,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -82,6 +109,7 @@ import com.daview.app.data.ResumeBehavior
 import com.daview.app.data.Screen
 import com.daview.app.data.ThemeMode
 import com.daview.app.data.tracksTextInput
+import com.daview.app.libraryIcon
 import com.daview.app.platform.PlatformInfo
 import com.daview.app.platform.canSelfUpdate
 import com.daview.app.platform.openUrl
@@ -107,20 +135,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * The settings, in groups. They were one page of eight sections, the connection
- * to the share below the list of libraries that could not be added without it.
- */
-private enum class SettingsTab(val label: String) {
-    LIBRARIES("媒体库"),
-    STORAGE("存储与刮削"),
-    PLAYBACK("播放"),
-    SYNC("同步与备份"),
-    OFFLINE("离线内容"),
-    GENERAL("通用")
+private enum class SettingsTab(val label: String, val detail: String, val icon: ImageVector) {
+    LIBRARIES("媒体库", "管理目录与扫描", Icons.Filled.VideoLibrary),
+    STORAGE("存储与刮削", "连接 WebDAV 与设置元数据", Icons.Filled.Cloud),
+    PLAYBACK("播放", "续播、音轨和字幕", Icons.Filled.PlayCircle),
+    SYNC("同步与备份", "跨设备同步与数据迁移", Icons.Filled.Sync),
+    OFFLINE("离线内容", "本机下载与空间", Icons.Filled.Download),
+    GENERAL("通用", "外观、首页与更新", Icons.Filled.Tune)
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun SettingsScreen(state: AppState) {
     val storageReady = state.serverInfo?.storageConfigured == true
@@ -128,7 +151,21 @@ fun SettingsScreen(state: AppState) {
     var tab by rememberSaveable { mutableStateOf(if (storageReady) SettingsTab.LIBRARIES else SettingsTab.STORAGE) }
     var pendingTab by remember { mutableStateOf<SettingsTab?>(null) }
     val scroll = rememberScrollState()
-    LaunchedEffect(tab) { scroll.scrollTo(0) }
+    val tabScroll = rememberScrollState()
+    var previousTab by remember { mutableStateOf(tab) }
+    LaunchedEffect(tab) {
+        if (tab != previousTab) {
+            scroll.scrollTo(0)
+            previousTab = tab
+        }
+    }
+
+    val select: (SettingsTab) -> Unit = { next ->
+        if (next != tab) {
+            if (state.unsavedSettings) pendingTab = next else tab = next
+        }
+    }
+    val goBack: (() -> Unit)? = if (state.canGoBack) ({ state.back() }) else null
 
     pendingTab?.let { next ->
         ModalMarker()
@@ -146,50 +183,154 @@ fun SettingsScreen(state: AppState) {
         )
     }
 
-    Box(Modifier.fillMaxSize().imePadding()) {
-        // In a short pane the heading, tabs and update notes can be taller than
-        // the space above the keyboard. Scroll them with the form, keeping the
-        // same form/scroll node when resize or posture changes.
-        Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(bottom = 32.dp)) {
-            ScreenTopBar(title = "设置", onBack = if (state.canGoBack) ({ state.back() }) else null)
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                SettingsTab.entries.forEach { entry ->
-                    FilterChip(
-                        selected = tab == entry,
-                        // Moving to another group drops this one's unsaved edits,
-                        // so it asks first, as leaving the page does.
-                        onClick = { if (state.unsavedSettings && entry != tab) pendingTab = entry else tab = entry },
-                        label = { Text(entry.label) }
+    // Constraints here are for the usable Browse pane, not the whole window:
+    // on a book fold the workspace may only own one side of the hinge.
+    BoxWithConstraints(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.TopCenter) {
+        val extraText = (LocalDensity.current.fontScale - 1f).coerceAtLeast(0f)
+        val split = maxWidth >= (840f + 160f * extraText).dp
+        val headerPinned = split && maxHeight >= 360.dp
+        val margin = if (maxWidth < 600.dp) 16.dp else 24.dp
+        Column(Modifier.widthIn(max = 1200.dp).fillMaxSize()) {
+            if (headerPinned) ScreenTopBar("设置", onBack = goBack)
+            Row(Modifier.fillMaxSize()) {
+                if (split) {
+                    SettingsCategories(
+                        tab = tab,
+                        onSelect = select,
+                        modifier = Modifier
+                            .padding(start = margin, end = 24.dp, top = 12.dp, bottom = 12.dp)
+                            .width((248f + 64f * extraText).dp)
                     )
                 }
-            }
-            Spacer(Modifier.height(8.dp))
-            // Forms read best at a form's width, not at the window's.
-            Column(Modifier.fillMaxWidth().wrapContentWidth(Alignment.Start).widthIn(max = 840.dp)) {
-                UpdateBanner(state)
-                when (tab) {
-                    SettingsTab.LIBRARIES -> LibrariesTab(state, storageReady) { tab = SettingsTab.STORAGE }
-                    SettingsTab.STORAGE -> {
-                        StorageSection(state)
-                        ScraperSection(state)
+                Box(Modifier.weight(1f).fillMaxSize()) {
+                    // Keep the same editor/scroll nodes when switching chrome.
+                    // In a short pane even the top bar and tabs can scroll away.
+                    Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(bottom = 24.dp)) {
+                        if (!headerPinned) ScreenTopBar("设置", onBack = goBack)
+                        if (!split) SettingsCategoryTabs(tab, tabScroll, select)
+
+                        Column(
+                            Modifier.fillMaxWidth()
+                                .wrapContentWidth(if (split) Alignment.Start else Alignment.CenterHorizontally)
+                                .widthIn(max = 840.dp)
+                                .padding(start = if (split) 0.dp else margin, end = margin, top = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            if (split) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    SettingsHeading(tab.label, major = true)
+                                    Hint(tab.detail)
+                                }
+                            }
+                            UpdateBanner(state)
+                            when (tab) {
+                                SettingsTab.LIBRARIES -> LibrariesTab(state, storageReady) { select(SettingsTab.STORAGE) }
+                                SettingsTab.STORAGE -> {
+                                    StorageSection(state)
+                                    ScraperSection(state)
+                                }
+                                SettingsTab.PLAYBACK -> {
+                                    PlaybackSection(state)
+                                    PlatformPlayerSettings()
+                                }
+                                SettingsTab.SYNC -> {
+                                    SyncSection(state)
+                                    BackupSection(state)
+                                }
+                                SettingsTab.OFFLINE -> DownloadsSection(state)
+                                SettingsTab.GENERAL -> GeneralSection(state)
+                            }
+                        }
                     }
-                    SettingsTab.PLAYBACK -> {
-                        PlaybackSection(state)
-                        PlatformPlayerSettings()
-                    }
-                    SettingsTab.SYNC -> {
-                        SyncSection(state)
-                        BackupSection(state)
-                    }
-                    SettingsTab.OFFLINE -> DownloadsSection(state)
-                    SettingsTab.GENERAL -> GeneralSection(state)
+                    VerticalScrollbarFor(scroll, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp).fillMaxHeight())
                 }
             }
         }
-        VerticalScrollbarFor(scroll, Modifier.align(Alignment.CenterEnd).padding(vertical = 8.dp))
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun SettingsCategoryTabs(
+    tab: SettingsTab,
+    scroll: ScrollState,
+    onSelect: (SettingsTab) -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    PrimaryScrollableTabRow(
+        selectedTabIndex = tab.ordinal,
+        scrollState = scroll,
+        containerColor = scheme.surfaceContainer,
+        contentColor = scheme.onSurface,
+        indicator = {
+            TabRowDefaults.PrimaryIndicator(
+                Modifier.tabIndicatorOffset(tab.ordinal, matchContentSize = true),
+                color = scheme.secondary
+            )
+        }
+    ) {
+        SettingsTab.entries.forEach { entry ->
+            val selected = tab == entry
+            Tab(
+                selected = selected,
+                onClick = { onSelect(entry) },
+                text = {
+                    Text(
+                        entry.label,
+                        style = if (selected) MaterialTheme.typography.labelLargeEmphasized else MaterialTheme.typography.labelLarge,
+                        maxLines = 1
+                    )
+                },
+                selectedContentColor = scheme.onSurface,
+                unselectedContentColor = scheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun SettingsCategories(tab: SettingsTab, onSelect: (SettingsTab) -> Unit, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    val colors = ListItemDefaults.segmentedColors(
+        containerColor = scheme.surfaceContainerHigh,
+        selectedContainerColor = scheme.secondaryContainer,
+        selectedContentColor = scheme.onSecondaryContainer,
+        selectedLeadingContentColor = scheme.onSecondaryContainer,
+        selectedSupportingContentColor = scheme.onSecondaryContainer,
+        selectedTrailingContentColor = scheme.onSecondaryContainer
+    )
+    val scroll = rememberScrollState()
+    Surface(modifier, color = scheme.surfaceContainer, shape = MaterialTheme.shapes.extraLarge) {
+        Column(Modifier.verticalScroll(scroll).padding(12.dp)) {
+            Text(
+                "设置分类",
+                style = MaterialTheme.typography.labelLarge,
+                color = scheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 12.dp).semantics { heading() }
+            )
+            Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+                SettingsTab.entries.forEachIndexed { index, entry ->
+                    val selected = tab == entry
+                    SegmentedListItem(
+                        selected = selected,
+                        onClick = { onSelect(entry) },
+                        shapes = ListItemDefaults.segmentedShapes(index, SettingsTab.entries.size),
+                        leadingContent = { Icon(entry.icon, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                        supportingContent = { Text(entry.detail) },
+                        trailingContent = if (selected) {
+                            { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(20.dp)) }
+                        } else null,
+                        colors = colors
+                    ) {
+                        Text(
+                            entry.label,
+                            style = if (selected) MaterialTheme.typography.titleMediumEmphasized else MaterialTheme.typography.titleMedium
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -198,42 +339,30 @@ fun SettingsScreen(state: AppState) {
 @Composable
 private fun LibrariesTab(state: AppState, storageReady: Boolean, openStorage: () -> Unit) {
     var pickerOpen by remember { mutableStateOf(false) }
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        if (!storageReady) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("还没有连接 WebDAV", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "媒体库是 WebDAV 上的目录，要先在「存储与刮削」里填写地址和账号。",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = openStorage) { Text("去填写") }
-                }
+    if (!storageReady) {
+        SettingsPanel("还没有连接 WebDAV", "连接 WebDAV 后，就能把其中的目录添加为媒体库。") {
+            Button(onClick = openStorage) { PrimaryLabel("连接 WebDAV…") }
+        }
+    }
+    SettingsPanel(
+        title = "媒体库目录",
+        description = if (state.libraries.isEmpty()) "添加目录后，DAView 会扫描视频并获取海报和简介。" else null
+    ) {
+        Button(onClick = { pickerOpen = true }, enabled = storageReady) {
+            Icon(Icons.Filled.Folder, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+            Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+            PrimaryLabel("添加媒体库…")
+        }
+    }
+    if (state.libraries.isNotEmpty()) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            state.libraries.forEach { library ->
+                key(library.id) { LibraryCard(state, library) }
             }
         }
-        if (state.libraries.isEmpty() && storageReady) {
-            Text(
-                "还没有媒体库。添加一个目录，DAView 会扫描里面的视频并获取海报和简介。",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 8.dp)
-            )
-        }
     }
-    state.libraries.forEach { library -> LibraryCard(state, library) }
-    Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-        Button(onClick = { pickerOpen = true }, enabled = storageReady) {
-            Icon(Icons.Filled.Folder, contentDescription = null)
-            Spacer(Modifier.width(6.dp))
-            Text("添加媒体库…")
-        }
-    }
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        SwitchRow(
+    SettingsPanel("扫描偏好") {
+        SettingsSwitch(
             "启动时检查新增内容",
             state.scanOnStartup,
             enabled = storageReady,
@@ -251,82 +380,74 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
     val status = state.scanStatus.firstOrNull { it.libraryId == library.id }
     var editOpen by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp),
-        // surfaceContainerLow sits 1.05:1 from the page behind it, which with
-        // no elevation and no outline is an invisible card edge.
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    LinkText(
-                        library.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        onClick = { state.switchTo(Screen.Library(library.id)) }
-                    )
-                    Text(
-                        "${kindLabel(library.kind)} · ${library.path} · ${library.itemCount} 项",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "元数据来源：" + library.providerOrder.joinToString(" → ") { it.displayName } +
-                            (library.lastScanAt?.let { " · 上次扫描 ${formatAgo(it)}" } ?: " · 还没有扫描过"),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Box {
-                    var scanMenu by remember { mutableStateOf(false) }
-                    TipIconButton("扫描", onClick = { scanMenu = true }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "扫描")
-                    }
-                    AppMenu(scanMenu, onDismissRequest = { scanMenu = false }) {
-                        ScanMenuItems(state, library.id) { scanMenu = false }
-                    }
-                }
-                TipIconButton("编辑媒体库", onClick = { editOpen = true }) {
-                    Icon(Icons.Filled.Edit, contentDescription = "编辑媒体库")
-                }
-                TipIconButton("删除媒体库", onClick = { confirmDelete = true }) {
-                    Icon(Icons.Filled.Delete, contentDescription = "删除媒体库")
-                }
+    SettingsPanel {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            val scheme = MaterialTheme.colorScheme
+            Surface(shape = MaterialTheme.shapes.small, color = scheme.secondaryContainer, contentColor = scheme.onSecondaryContainer) {
+                Icon(libraryIcon(library.kind), contentDescription = null, modifier = Modifier.padding(8.dp).size(24.dp))
             }
-            if (status != null && status.running) {
-                Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "${scanPhaseLabel(status.phase)}" +
-                            (if (status.total > 0) " ${status.current}/${status.total}" else "") +
-                            (status.message.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""),
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    // A scan of a large share is minutes of round trips; starting
-                    // one by accident should not mean waiting it out.
-                    TextButton(onClick = { state.cancelScan(library.id) }) { Text("停止") }
+            LinkText(
+                library.name,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleMediumEmphasized,
+                color = scheme.primary,
+                maxLines = 2,
+                onClick = { state.switchTo(Screen.Library(library.id)) }
+            )
+            Box {
+                var open by remember { mutableStateOf(false) }
+                TipIconButton("媒体库操作", onClick = { open = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "媒体库操作")
                 }
-                Spacer(Modifier.height(6.dp))
-                // Until the scan knows how much there is, it says it is working
-                // rather than sitting at 0%.
-                if (status.total > 0) {
-                    LinearWavyProgressIndicator(
-                        progress = { status.current.toFloat() / status.total },
-                        modifier = Modifier.fillMaxWidth()
+                AppMenu(open, onDismissRequest = { open = false }) {
+                    DropdownMenuItem(
+                        text = { Text("编辑媒体库") },
+                        leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                        onClick = { open = false; editOpen = true }
                     )
-                } else {
-                    LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+                    DropdownMenuItem(
+                        text = { Text("删除媒体库", color = scheme.error) },
+                        leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null, tint = scheme.error) },
+                        onClick = { open = false; confirmDelete = true }
+                    )
                 }
-            }
-            status?.error?.let {
-                Spacer(Modifier.height(8.dp))
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
         }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Hint("${kindLabel(library.kind)} · ${library.itemCount} 项 · ${library.lastScanAt?.let { "上次扫描 ${formatAgo(it)}" } ?: "还没有扫描过"}")
+            Text(library.path, style = MaterialTheme.typography.bodyMedium)
+            Hint("元数据来源：" + library.providerOrder.joinToString(" → ") { it.displayName })
+        }
+        if (status?.running == true) {
+            Hint(
+                scanPhaseLabel(status.phase) +
+                    (if (status.total > 0) " ${status.current}/${status.total}" else "") +
+                    (status.message.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
+            )
+            // Until the scan knows how much there is, show activity rather than 0%.
+            if (status.total > 0) {
+                LinearWavyProgressIndicator(
+                    progress = { status.current.toFloat() / status.total },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+            }
+            TextButton(onClick = { state.cancelScan(library.id) }) { Text("停止扫描") }
+        } else {
+            Box {
+                var scanMenu by remember { mutableStateOf(false) }
+                FilledTonalButton(onClick = { scanMenu = true }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                    Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+                    Text("扫描")
+                }
+                AppMenu(scanMenu, onDismissRequest = { scanMenu = false }) {
+                    ScanMenuItems(state, library.id) { scanMenu = false }
+                }
+            }
+        }
+        status?.error?.let { SettingsNotice(it, SettingsTone.Error) }
     }
     if (editOpen) LibraryEditDialog(state, library, onDismiss = { editOpen = false })
     if (confirmDelete) {
@@ -360,35 +481,94 @@ private fun LibraryCard(state: AppState, library: LibraryDto) {
 
 // ---------------------------------------------------------------- building blocks
 
-/** A section heading, so the sections stop each spelling it out again. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun SectionTitle(text: String) {
+private fun SettingsHeading(text: String, major: Boolean = false) {
     Text(
         text,
-        style = MaterialTheme.typography.titleLarge,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 8.dp, bottom = 8.dp)
+        style = if (major) MaterialTheme.typography.headlineSmallEmphasized else MaterialTheme.typography.titleMediumEmphasized,
+        modifier = Modifier.semantics { heading() }
     )
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun Hint(text: String, error: Boolean = false) {
-    Text(
-        text,
-        style = MaterialTheme.typography.bodySmall,
-        color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+internal fun SettingsPanel(
+    title: String? = null,
+    description: String? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.largeIncreased, color = scheme.surfaceContainerLow) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (title != null || description != null) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    title?.let { SettingsHeading(it) }
+                    description?.let { Hint(it) }
+                }
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+private fun Hint(text: String, modifier: Modifier = Modifier) {
+    Text(text, modifier, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun Metric(label: String, value: String) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(shape = MaterialTheme.shapes.extraSmall, color = scheme.surfaceContainerHigh) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.titleMediumEmphasized)
+        }
+    }
+}
+
+internal enum class SettingsTone { Success, Attention, Error }
+
+@Composable
+internal fun SettingsNotice(text: String, tone: SettingsTone) {
+    val scheme = MaterialTheme.colorScheme
+    val (container, content) = when (tone) {
+        SettingsTone.Success -> scheme.secondaryContainer to scheme.onSecondaryContainer
+        SettingsTone.Attention -> scheme.tertiaryContainer to scheme.onTertiaryContainer
+        SettingsTone.Error -> scheme.errorContainer to scheme.onErrorContainer
+    }
+    Surface(
+        Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite },
+        shape = MaterialTheme.shapes.extraSmall,
+        color = container,
+        contentColor = content
+    ) {
+        Text(text, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun PrimaryLabel(text: String) {
+    Text(text, style = MaterialTheme.typography.labelLargeEmphasized)
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun SettingsActions(content: @Composable FlowRowScope.() -> Unit) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
+        content = content
     )
 }
 
-/**
- * A label and a switch that answer to the whole row.
- *
- * Written as a bare Row the switch was the only live part: 52dp of a 360dp row,
- * with the label inert and the row invisible to a screen reader, which read the
- * switch alone and could not say what it switched.
- */
+// Make the entire row the switch's target and accessibility node.
 @Composable
-private fun SwitchRow(
+internal fun SettingsSwitch(
     label: String,
     checked: Boolean,
     enabled: Boolean = true,
@@ -404,11 +584,12 @@ private fun SwitchRow(
                 role = Role.Switch,
                 onValueChange = onCheckedChange
             )
+            .heightIn(min = 48.dp)
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(label)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyLarge)
             detail?.let { Hint(it) }
         }
         Spacer(Modifier.width(16.dp))
@@ -416,41 +597,97 @@ private fun SwitchRow(
     }
 }
 
-/** A labelled single choice from a short list, as a segmented row. */
+/** Use the short connected group only where all labels can fit; don't wrap its buttons. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun <T> ChoiceRow(label: String, options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
-    Column(Modifier.padding(vertical = 6.dp)) {
-        Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(6.dp))
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            options.forEachIndexed { index, (value, text) ->
-                SegmentedButton(
-                    selected = value == selected,
-                    onClick = { onSelect(value) },
-                    shape = SegmentedButtonDefaults.itemShape(index, options.size)
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val groupWidth = minOf(maxWidth, 480.dp)
+        if (groupWidth < (options.size * 136f * fontScale).dp) {
+            ChipChoiceRow(label, options, selected, onSelect = onSelect)
+        } else {
+            val scheme = MaterialTheme.colorScheme
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                OptionLabel(label)
+                Row(
+                    Modifier.widthIn(max = 480.dp).fillMaxWidth().selectableGroup(),
+                    horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)
                 ) {
-                    Text(text, maxLines = 1)
+                    options.forEachIndexed { index, (value, text) ->
+                        val checked = value == selected
+                        TonalToggleButton(
+                            checked = checked,
+                            onCheckedChange = { if (it) onSelect(value) },
+                            modifier = Modifier.weight(1f),
+                            shapes = when (index) {
+                                0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                                options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                                else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+                            },
+                            colors = ToggleButtonDefaults.tonalToggleButtonColors(
+                                containerColor = scheme.surfaceContainerHigh,
+                                contentColor = scheme.onSurfaceVariant,
+                                checkedContainerColor = scheme.secondaryContainer,
+                                checkedContentColor = scheme.onSecondaryContainer
+                            )
+                        ) {
+                            if (checked) {
+                                Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(ToggleButtonDefaults.IconSize))
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Text(text, style = if (checked) MaterialTheme.typography.labelLargeEmphasized else MaterialTheme.typography.labelLarge)
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/**
- * The same choice as chips that wrap, for options too long for a segment: on
- * a 360dp phone each of four segments is about 80dp, and the selected one
- * also carries a check mark.
- */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun <T> ChipChoiceRow(label: String, options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
-    Column(Modifier.padding(vertical = 6.dp)) {
-        Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(6.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            options.forEach { (value, text) ->
-                FilterChip(selected = value == selected, onClick = { onSelect(value) }, label = { Text(text) })
-            }
+private fun OptionLabel(label: String) {
+    Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun <T> ChipChoiceRow(
+    label: String,
+    options: List<Pair<T, String>>,
+    selected: T,
+    enabled: Boolean = true,
+    onSelect: (T) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OptionLabel(label)
+        SettingsChoices(options, selected, enabled, onSelect)
+    }
+}
+
+/** Longer lists of choices keep their labels and flow across lines on narrow panes. */
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun <T> SettingsChoices(
+    options: List<Pair<T, String>>,
+    selected: T,
+    enabled: Boolean = true,
+    onSelect: (T) -> Unit
+) {
+    FlowRow(Modifier.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        options.forEach { (value, text) ->
+            val checked = value == selected
+            FilterChip(
+                selected = checked,
+                enabled = enabled,
+                onClick = { onSelect(value) },
+                label = {
+                    Text(text, style = if (checked) MaterialTheme.typography.labelLargeEmphasized else MaterialTheme.typography.labelLarge)
+                },
+                leadingIcon = if (checked) {
+                    { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+                } else null
+            )
         }
     }
 }
@@ -475,8 +712,9 @@ private fun SecretField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
+    supportingText: String? = null,
     imeAction: ImeAction = ImeAction.Next,
-    onImeAction: () -> Unit = {},
+    onDone: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var visible by remember { mutableStateOf(false) }
@@ -484,6 +722,7 @@ private fun SecretField(
         value,
         onValueChange,
         label = { Text(label) },
+        supportingText = supportingText?.let { { Text(it) } },
         singleLine = true,
         visualTransformation =
             if (visible) VisualTransformation.None else PasswordVisualTransformation(),
@@ -491,10 +730,7 @@ private fun SecretField(
             keyboardType = KeyboardType.Password,
             imeAction = imeAction
         ),
-        keyboardActions = KeyboardActions(
-            onNext = { onImeAction() },
-            onDone = { onImeAction() }
-        ),
+        keyboardActions = KeyboardActions(onDone = { onDone() }),
         trailingIcon = {
             IconButton(onClick = { visible = !visible }) {
                 Icon(
@@ -512,33 +748,31 @@ private fun SecretField(
  * back, or forget it. Stored keys were write-only and could not be removed.
  */
 @Composable
-private fun StoredSecret(state: AppState, key: String, label: String, isSet: Boolean, onClear: () -> Unit) {
+private fun StoredSecret(state: AppState, key: String, isSet: Boolean, onClear: () -> Unit) {
     if (!isSet) return
     val scope = rememberCoroutineScope()
     var shown by remember { mutableStateOf<String?>(null) }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            shown?.let { "$label：$it" } ?: "$label 已保存",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-        )
-        TextButton(onClick = {
-            if (shown != null) shown = null
-            else scope.launch { shown = state.library.storedSecrets()[key].orEmpty() }
-        }) { Text(if (shown != null) "隐藏" else "查看") }
-        TextButton(onClick = onClear) { Text("清除", color = MaterialTheme.colorScheme.error) }
+    Column {
+        SettingsActions {
+            TextButton(onClick = {
+                if (shown != null) shown = null
+                else scope.launch { shown = state.library.storedSecrets()[key].orEmpty() }
+            }) { Text(if (shown != null) "隐藏已存值" else "查看已存值") }
+            TextButton(onClick = onClear) { Text("清除", color = MaterialTheme.colorScheme.error) }
+        }
+        shown?.let { Hint(it) }
     }
 }
 
 // ---------------------------------------------------------------- storage and scrapers
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun StorageSection(state: AppState) {
-    val settings = state.serverSettings ?: return
+    val settings = state.serverSettings
+    if (settings == null) {
+        SettingsPanel("WebDAV 存储") { Hint("正在读取存储设置…") }
+        return
+    }
     val scope = rememberCoroutineScope()
     // Keyed on the storage part alone: saving anything else on the page —
     // the metadata language, a key — rebuilt this form and threw away what
@@ -561,10 +795,7 @@ private fun StorageSection(state: AppState) {
         }
     }
 
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        SectionTitle("WebDAV 存储")
-        Hint("媒体库都是这里的目录。填好后先测试连接，再保存。")
-        Spacer(Modifier.height(12.dp))
+    SettingsPanel("WebDAV 存储", "媒体库都来自这里。测试连接后，再保存地址和凭据。") {
         OutlinedTextField(
             url, { url = it; testResult = null },
             label = { Text("地址") },
@@ -586,25 +817,31 @@ private fun StorageSection(state: AppState) {
             } else null,
             modifier = Modifier.fillMaxWidth().tracksTextInput()
         )
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            user, { user = it; testResult = null },
-            label = { Text("账号") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-            modifier = Modifier.fillMaxWidth().tracksTextInput()
+        // Flow left-to-right when both fields have room, otherwise keep IME
+        // order in a column. These remain the same focus nodes on resize.
+        WebDavCredentials(
+            username = {
+                OutlinedTextField(
+                    user, { user = it; testResult = null },
+                    label = { Text("账号") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    modifier = Modifier.fillMaxWidth().tracksTextInput()
+                )
+            },
+            password = {
+                SecretField(
+                    password, { password = it; testResult = null },
+                    label = "密码",
+                    supportingText = "已保存 · 留空保留原密码".takeIf { settings.storage.passwordSet },
+                    imeAction = ImeAction.Done,
+                    onDone = { save() },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                StoredSecret(state, "password", settings.storage.passwordSet) { confirmClear = true }
+            }
         )
-        Spacer(Modifier.height(8.dp))
-        SecretField(
-            password, { password = it; testResult = null },
-            label = if (settings.storage.passwordSet) "新密码（留空保持不变）" else "密码",
-            imeAction = ImeAction.Done,
-            onImeAction = { save() },
-            modifier = Modifier.fillMaxWidth()
-        )
-        StoredSecret(state, "password", "密码", settings.storage.passwordSet) { confirmClear = true }
-        Spacer(Modifier.height(12.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+        SettingsActions {
             // Asked of the share with what is in the boxes now, saved or not.
             FilledTonalButton(
                 enabled = url.isNotBlank() && !testing,
@@ -622,18 +859,12 @@ private fun StorageSection(state: AppState) {
                     }
                 }
             ) { Text(if (testing) "正在测试…" else "测试连接") }
-            Button(enabled = dirty, onClick = { save() }) { Text("保存") }
-            if (dirty) Hint("有未保存的修改")
+            Button(enabled = dirty, onClick = { save() }) { PrimaryLabel("保存连接") }
         }
+        if (dirty) SettingsNotice("有未保存的修改", SettingsTone.Attention)
         testResult?.let { (ok, message) ->
-            Spacer(Modifier.height(6.dp))
-            Text(
-                message,
-                style = MaterialTheme.typography.bodySmall,
-                color = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-            )
+            SettingsNotice(message, if (ok) SettingsTone.Success else SettingsTone.Error)
         }
-        Spacer(Modifier.height(24.dp))
     }
     if (confirmClear) {
         ModalMarker()
@@ -649,6 +880,23 @@ private fun StorageSection(state: AppState) {
             },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("取消") } }
         )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun WebDavCredentials(username: @Composable () -> Unit, password: @Composable ColumnScope.() -> Unit) {
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val single = maxWidth < (512f * fontScale).dp
+        val fieldWidth = if (single) maxWidth else (maxWidth - 12.dp) / 2
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(Modifier.width(fieldWidth)) { username() }
+            Column(Modifier.width(fieldWidth), content = password)
+        }
     }
 }
 
@@ -674,55 +922,46 @@ private fun ScraperSection(state: AppState) {
         }
     }
 
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        SectionTitle("元数据来源")
-        Hint("海报、简介和演职人员从这些网站获取。TMDB 与 TheTVDB 需要自己申请 API Key；bangumi.tv 不需要，填 Token 只是提高访问频率。")
-        Spacer(Modifier.height(12.dp))
+    SettingsPanel(
+        "元数据来源",
+        "TMDB 与 TheTVDB 需要 API Key，才能获取海报、简介和演职人员。bangumi.tv 的 Token 是可选的，可提高访问频率。"
+    ) {
         SecretField(
             tmdb, { tmdb = it },
-            label = if (settings.scraper.tmdbApiKeySet) "新的 TMDB API Key（留空保持不变）" else "TMDB API Key",
+            label = "TMDB API Key",
+            supportingText = "已保存 · 留空保留原值".takeIf { settings.scraper.tmdbApiKeySet },
             modifier = Modifier.fillMaxWidth()
         )
-        StoredSecret(state, "tmdb", "TMDB API Key", settings.scraper.tmdbApiKeySet) {
+        StoredSecret(state, "tmdb", settings.scraper.tmdbApiKeySet) {
             save(settings.scraper.copy(clearTmdbApiKey = true))
         }
-        Spacer(Modifier.height(8.dp))
         SecretField(
             tvdb, { tvdb = it },
-            label = if (settings.scraper.tvdbApiKeySet) "新的 TheTVDB API Key（留空保持不变）" else "TheTVDB API Key",
+            label = "TheTVDB API Key",
+            supportingText = "已保存 · 留空保留原值".takeIf { settings.scraper.tvdbApiKeySet },
             modifier = Modifier.fillMaxWidth()
         )
-        StoredSecret(state, "tvdb", "TheTVDB API Key", settings.scraper.tvdbApiKeySet) {
+        StoredSecret(state, "tvdb", settings.scraper.tvdbApiKeySet) {
             save(settings.scraper.copy(clearTvdbApiKey = true))
         }
-        Spacer(Modifier.height(8.dp))
         SecretField(
             bangumi, { bangumi = it },
-            label = if (settings.scraper.bangumiTokenSet) "新的 bangumi.tv Token（留空保持不变）" else "bangumi.tv Token（可选）",
+            label = "bangumi.tv Token",
+            supportingText = if (settings.scraper.bangumiTokenSet) "已保存 · 留空保留原值" else "可选",
             imeAction = ImeAction.Done,
-            onImeAction = { if (dirty) save() },
+            onDone = { if (dirty) save() },
             modifier = Modifier.fillMaxWidth()
         )
-        StoredSecret(state, "bangumi", "bangumi.tv Token", settings.scraper.bangumiTokenSet) {
+        StoredSecret(state, "bangumi", settings.scraper.bangumiTokenSet) {
             save(settings.scraper.copy(clearBangumiToken = true))
         }
-        Spacer(Modifier.height(12.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(enabled = dirty, onClick = { save() }) { Text("保存密钥") }
-            if (dirty) Hint("有未保存的修改")
-        }
-        Spacer(Modifier.height(12.dp))
-        // A choice among four, which takes effect as it is made — it looked like
-        // it did, and used to wait for a save button further down.
-        ChipChoiceRow(
-            label = "元数据语言（媒体库可以单独设置）",
-            options = METADATA_LANGUAGES,
-            selected = settings.scraper.language
-        ) { language ->
+        Button(enabled = dirty, onClick = { save() }) { PrimaryLabel("保存密钥") }
+        if (dirty) SettingsNotice("有未保存的修改", SettingsTone.Attention)
+    }
+    SettingsPanel("默认元数据语言", "选择后立即生效；每个媒体库也可以单独设置。") {
+        SettingsChoices(METADATA_LANGUAGES, settings.scraper.language) { language ->
             state.saveServerSettings(settings.copy(scraper = settings.scraper.copy(language = language, tmdbApiKey = "", tvdbApiKey = "", bangumiToken = "")))
         }
-        Spacer(Modifier.height(24.dp))
     }
 }
 
@@ -730,15 +969,14 @@ private fun ScraperSection(state: AppState) {
 
 @Composable
 private fun PlaybackSection(state: AppState) {
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        SectionTitle("播放")
-        SwitchRow(
+    SettingsPanel("播放行为") {
+        SettingsSwitch(
             "播完自动播下一集",
             state.autoPlayNext,
             detail = "播完后倒计时几秒再放下一集，可以取消；连续自动播放几集后会先问一下"
         ) { state.setAutoPlay(it) }
         if (PlatformInfo.isDesktop) {
-            SwitchRow("开始播放时进入全屏", state.autoFullscreen, detail = "关掉后在窗口里播放，按 F 或 F11 随时全屏") {
+            SettingsSwitch("开始播放时进入全屏", state.autoFullscreen, detail = "关掉后在窗口里播放，按 F 或 F11 随时全屏") {
                 state.changeAutoFullscreen(it)
             }
         }
@@ -747,8 +985,8 @@ private fun PlaybackSection(state: AppState) {
             options = ResumeBehavior.entries.map { it to it.label },
             selected = state.resumeBehavior
         ) { state.changeResumeBehavior(it) }
-        // Chips that wrap rather than a segmented row: six languages do not fit
-        // across a phone, which is why the list used to stop at three.
+    }
+    SettingsPanel("音轨和字幕", "只用于还没选过音轨或字幕的内容；剧集会沿用上一次的选择。") {
         ChipChoiceRow(
             label = "首选音轨语言",
             options = listOf("" to "默认") + PREFERRED_LANGUAGES,
@@ -759,16 +997,13 @@ private fun PlaybackSection(state: AppState) {
             options = listOf("" to "默认") + PREFERRED_LANGUAGES + (SUBTITLE_PREF_OFF to "关闭"),
             selected = state.preferredSubtitleLanguage
         ) { state.changePreferredSubtitleLanguage(it) }
-        Hint("只用于还没选过音轨和字幕的内容。在某一集里换了音轨或字幕，同一部剧的下一集会沿用那个选择。")
         ChipChoiceRow(
             label = "字幕大小",
             options = listOf(0.8f to "小", 1f to "标准", 1.25f to "大", 1.5f to "特大"),
             selected = listOf(0.8f, 1f, 1.25f, 1.5f).minByOrNull { kotlin.math.abs(it - state.subtitleScale) } ?: 1f
         ) { state.changeSubtitleScale(it) }
-        Spacer(Modifier.height(8.dp))
-        DefaultPlayerRow(state)
-        Spacer(Modifier.height(24.dp))
     }
+    DefaultPlayerRow(state)
 }
 
 /**
@@ -786,11 +1021,7 @@ private fun DefaultPlayerRow(state: AppState) {
     var open by remember { mutableStateOf(false) }
     val chosen = players.firstOrNull { it.id == state.preferredPlayerId }
 
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("内置播放器不可用时使用")
-            Hint(chosen?.label ?: "自动（按检测顺序）")
-        }
+    SettingsPanel("备用播放器", "内置播放器不可用时使用 · ${chosen?.label ?: "自动（按检测顺序）"}") {
         Box {
             TextButton(onClick = { open = true }) { Text("更改") }
             AppMenu(open, onDismissRequest = { open = false }) {
@@ -870,15 +1101,8 @@ private fun SyncSection(state: AppState) {
         if (path == base.remotePath) path = updated.remotePath
     }
 
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        SectionTitle("跨端同步")
-        Hint(
-            "把观看进度、收藏、媒体库定义和手动指定写成 WebDAV 上的一个文件，其它设备读回来合并；" +
-                "同一条记录以较新的一方为准。"
-        )
-
-        Spacer(Modifier.height(10.dp))
-        SwitchRow(
+    SettingsPanel("跨端同步", "通过 WebDAV 同步观看进度、收藏、媒体库定义和手动指定。设备之间以较新的记录为准。") {
+        SettingsSwitch(
             label = "启用同步",
             checked = current?.enabled == true,
             enabled = current != null && !busy,
@@ -902,10 +1126,11 @@ private fun SyncSection(state: AppState) {
             ChipChoiceRow(
                 label = "检查间隔",
                 options = listOf(5 to "5 分钟", 10 to "10 分钟", 30 to "30 分钟", 60 to "1 小时"),
-                selected = listOf(5, 10, 30, 60).minByOrNull { kotlin.math.abs(it - sync.minIntervalMinutes) } ?: 10
+                selected = listOf(5, 10, 30, 60).minByOrNull { kotlin.math.abs(it - sync.minIntervalMinutes) } ?: 10,
+                enabled = !busy
             ) { minutes -> update { it.copy(minIntervalMinutes = minutes) } }
 
-            SwitchRow(
+            SettingsSwitch(
                 label = "同步刮削数据",
                 checked = sync.metadata,
                 enabled = sync.enabled && !busy,
@@ -914,7 +1139,6 @@ private fun SyncSection(state: AppState) {
             ) { want -> update { it.copy(metadata = want) } }
         }
 
-        Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = path,
             onValueChange = { path = it },
@@ -927,11 +1151,14 @@ private fun SyncSection(state: AppState) {
             modifier = Modifier.fillMaxWidth().tracksTextInput()
         )
         if (pathDirty) {
-            TextButton(onClick = { update { it.copy(remotePath = path) } }) { Text("保存路径") }
+            SettingsActions {
+                Button(enabled = !busy, onClick = { update { it.copy(remotePath = path) } }) { PrimaryLabel("保存路径") }
+                Hint("有未保存的修改")
+            }
         }
-
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    }
+    SettingsPanel("同步状态") {
+        SettingsActions {
             Button(
                 enabled = !busy,
                 onClick = {
@@ -946,7 +1173,7 @@ private fun SyncSection(state: AppState) {
                         settings = state.library.syncSettings()
                     }
                 }
-            ) { Text("立即上传") }
+            ) { PrimaryLabel("立即上传") }
 
             FilledTonalButton(
                 enabled = !busy,
@@ -961,35 +1188,21 @@ private fun SyncSection(state: AppState) {
             ) { Text("立即拉取") }
         }
 
-        if (busy) {
-            Spacer(Modifier.height(8.dp))
-            LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+        if (busy) LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+        current?.let { sync ->
+            SettingsActions {
+                Metric("上次上传", formatAgo(sync.lastUploadAt) ?: "尚未上传")
+                Metric("上次拉取", formatAgo(sync.lastPullAt) ?: "尚未拉取")
+                sync.lastMetadataAt?.let { Metric("刮削数据更新", formatAgo(it).orEmpty()) }
+            }
+            when (sync.writable) {
+                true -> Hint("存储可写")
+                false -> SettingsNotice("存储只读，无法同步", SettingsTone.Attention)
+                null -> Unit
+            }
         }
-        current?.let {
-            Spacer(Modifier.height(8.dp))
-            // When, not only whether: "已上传" said nothing about last night.
-            Hint(
-                listOfNotNull(
-                    it.lastUploadAt?.let { at -> "上次上传 ${formatAgo(at)}" } ?: "还没有上传过",
-                    it.lastPullAt?.let { at -> "上次拉取 ${formatAgo(at)}" } ?: "还没有拉取过",
-                    it.lastMetadataAt?.let { at -> "刮削数据 ${formatAgo(at)}有变化" },
-                    when (it.writable) {
-                        true -> "存储可写"
-                        false -> "存储只读，无法同步"
-                        null -> null
-                    }
-                ).joinToString(" · ")
-            )
-        }
-        message?.let {
-            Spacer(Modifier.height(6.dp))
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-        }
-        (error ?: current?.lastError ?: current?.metadataError)?.let {
-            Spacer(Modifier.height(6.dp))
-            Hint(it, error = true)
-        }
-        Spacer(Modifier.height(20.dp))
+        message?.let { SettingsNotice(it, SettingsTone.Success) }
+        (error ?: current?.lastError ?: current?.metadataError)?.let { SettingsNotice(it, SettingsTone.Error) }
     }
 }
 
@@ -1008,31 +1221,19 @@ private fun BackupSection(state: AppState) {
     var error by remember { mutableStateOf<String?>(null) }
     var preview by remember { mutableStateOf<BackupFileDto?>(null) }
 
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        SectionTitle("备份与迁移")
-        Hint(
-            "导出一个 JSON：应用设置、媒体库定义、观看进度（位置 / 已看 / 收藏 / 音轨字幕选择），" +
-                "以及可选的全部元数据。在新设备上点「导入」选中这个文件即可。"
-        )
-
-        Spacer(Modifier.height(4.dp))
-        // Checkboxes, not filled buttons. Selected, these two looked exactly
-        // like the "导出" button ten dp below them — two states and two actions
-        // in one visual register.
+    SettingsPanel(
+        "备份与迁移",
+        "导出 JSON 文件，保存应用设置、媒体库定义与观看记录；可选元数据及凭据。新设备可从文件导入。"
+    ) {
         CheckboxRow("包含元数据", includeItems) { includeItems = it }
         CheckboxRow("包含凭据", includeSecrets) { includeSecrets = it }
         if (includeSecrets) {
-            Spacer(Modifier.height(6.dp))
-            Hint("文件里会明文带上 WebDAV 账号密码与 API Key。不勾选的话，导入方保留自己已有的凭据。", error = true)
+            SettingsNotice("文件会明文保存 WebDAV 账号密码和 API Key。不勾选时，导入方保留本机已有的凭据。", SettingsTone.Attention)
         }
         if (!includeItems) {
-            Spacer(Modifier.height(6.dp))
-            Hint("不含元数据时文件只有几十 KB，但新设备需要重新扫描一遍；手动指定的条目仍会带上。")
+            Hint("不含元数据时文件只有几十 KB。新设备需要重新扫描，但手动指定的条目仍会带上。")
         }
-
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        SettingsActions {
             Button(
                 enabled = !busy,
                 onClick = {
@@ -1062,7 +1263,7 @@ private fun BackupSection(state: AppState) {
                         }
                     }
                 }
-            ) { Text("导出…") }
+            ) { PrimaryLabel("导出…") }
 
             FilledTonalButton(
                 enabled = !busy,
@@ -1088,19 +1289,9 @@ private fun BackupSection(state: AppState) {
             ) { Text("导入…") }
         }
 
-        if (busy) {
-            Spacer(Modifier.height(8.dp))
-            LinearWavyProgressIndicator(Modifier.fillMaxWidth())
-        }
-        message?.let {
-            Spacer(Modifier.height(8.dp))
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-        }
-        error?.let {
-            Spacer(Modifier.height(8.dp))
-            Hint(it, error = true)
-        }
-        Spacer(Modifier.height(20.dp))
+        if (busy) LinearWavyProgressIndicator(Modifier.fillMaxWidth())
+        message?.let { SettingsNotice(it, SettingsTone.Success) }
+        error?.let { SettingsNotice(it, SettingsTone.Error) }
     }
 
     preview?.let { backup ->
@@ -1109,7 +1300,7 @@ private fun BackupSection(state: AppState) {
             onDismissRequest = { preview = null },
             title = { Text("导入这个备份？") },
             text = {
-                Column {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text(
                         listOfNotNull(
                             backup.createdAt.takeIf { it > 0 }?.let { "创建于 ${formatAgo(it)}" },
@@ -1155,13 +1346,14 @@ private fun BackupSection(state: AppState) {
     }
 }
 
-/** A label and a checkbox that answer to the whole row, as [SwitchRow] does. */
+/** A label and a checkbox that answer to the whole row, as [SettingsSwitch] does. */
 @Composable
 private fun CheckboxRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .toggleable(value = checked, role = Role.Checkbox, onValueChange = onCheckedChange)
+            .heightIn(min = 48.dp)
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1190,54 +1382,52 @@ private fun DownloadsSection(state: AppState) {
         state.loadOfflineSettings()
     }
 
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        SectionTitle("离线内容")
-        Hint("下载的是视频连同它的外挂字幕，只留在这台设备上，不会同步到别的设备。播放时直接读本地文件，不走网络。")
-        Spacer(Modifier.height(8.dp))
+    SettingsPanel("下载设置", "视频和外挂字幕只保留在这台设备上，不会跨端同步。离线播放直接读取本地文件。") {
         OfflineLocationRow(state)
         if (PlatformInfo.isAndroid) {
-            SwitchRow(
+            SettingsSwitch(
                 "仅在 Wi-Fi 下下载",
                 state.downloadWifiOnly,
                 detail = "用移动数据时先排队等着，连上 Wi-Fi 后从中断处继续"
             ) { state.changeDownloadWifiOnly(it) }
         }
-        Spacer(Modifier.height(6.dp))
-
-        val active = downloads.filter { it.active }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                listOfNotNull(
-                    "已占用 ${formatSize(state.downloadedBytes).ifBlank { "0 B" }}",
-                    "${downloads.count { it.state == DownloadState.DONE }} 个文件",
-                    "${active.size} 个在排队或下载".takeIf { active.isNotEmpty() }
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.weight(1f)
-            )
-            if (active.isNotEmpty()) {
-                TextButton(onClick = {
-                    state.stopDownloads("停止全部 ${active.size} 个下载？", active) { state.cancelAllDownloads() }
-                }) { Text("全部取消") }
-            }
+    }
+    val active = downloads.filter { it.active }
+    SettingsPanel("本机下载") {
+        SettingsActions {
+            Metric("已占用", formatSize(state.downloadedBytes).ifBlank { "0 B" })
+            Metric("本机文件", "${downloads.count { it.state == DownloadState.DONE }} 个")
+            if (active.isNotEmpty()) Metric("排队或下载", "${active.size} 个")
+        }
+        if (active.isNotEmpty()) {
+            TextButton(onClick = {
+                state.stopDownloads("停止全部 ${active.size} 个下载？", active) { state.cancelAllDownloads() }
+            }) { Text("全部取消") }
         }
         if (downloads.isEmpty()) {
-            Spacer(Modifier.height(8.dp))
             Hint("还没有下载。在任意影片或分集的菜单里选「下载到本机」，或在剧集页下载整部、整季。")
         }
-        Spacer(Modifier.height(8.dp))
-
-        downloads.groupBy { it.seriesId ?: it.itemId }.forEach { (_, rows) ->
-            val first = rows.first()
-            if (first.seriesId == null) {
-                DownloadRow(state, first, indent = false)
-            } else {
-                SeriesDownloadHeader(state, first, rows)
-                rows.sortedWith(compareBy({ it.seasonNumber ?: Int.MAX_VALUE }, { it.episodeNumber ?: Int.MAX_VALUE }))
-                    .forEach { DownloadRow(state, it, indent = true) }
+    }
+    if (downloads.isNotEmpty()) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            downloads.groupBy { it.seriesId ?: it.itemId }.forEach { (id, rows) ->
+                key(id) {
+                    SettingsPanel {
+                        val first = rows.first()
+                        if (first.seriesId == null) {
+                            DownloadRow(state, first, indent = false)
+                        } else {
+                            SeriesDownloadHeader(state, first, rows)
+                            rows.sortedWith(compareBy({ it.seasonNumber ?: Int.MAX_VALUE }, { it.episodeNumber ?: Int.MAX_VALUE }))
+                                .forEach { download ->
+                                    HorizontalDivider()
+                                    key(download.itemId) { DownloadRow(state, download, indent = true) }
+                                }
+                        }
+                    }
+                }
             }
         }
-        Spacer(Modifier.height(24.dp))
     }
 }
 
@@ -1246,9 +1436,9 @@ private fun DownloadsSection(state: AppState) {
 private fun OfflineLocationRow(state: AppState) {
     val settings = state.offlineSettings
     val scope = rememberCoroutineScope()
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("存储位置")
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("存储位置", style = MaterialTheme.typography.titleSmall)
             Hint(
                 settings?.let { current ->
                     listOfNotNull(
@@ -1264,18 +1454,20 @@ private fun OfflineLocationRow(state: AppState) {
             }
         }
         if (PlatformInfo.isDesktop) {
-            TextButton(onClick = {
-                scope.launch {
-                    pickDirectory("选择下载目录", settings?.effectiveDirectory)?.let { state.changeOfflineDirectory(it) }
+            SettingsActions {
+                TextButton(onClick = {
+                    scope.launch {
+                        pickDirectory("选择下载目录", settings?.effectiveDirectory)?.let { state.changeOfflineDirectory(it) }
+                    }
+                }) { Text("更改…") }
+                if (settings?.directory?.isNotBlank() == true) {
+                    TextButton(onClick = { state.changeOfflineDirectory(null) }) { Text("恢复默认") }
                 }
-            }) { Text("更改…") }
-            if (settings?.directory?.isNotBlank() == true) {
-                TextButton(onClick = { state.changeOfflineDirectory(null) }) { Text("恢复默认") }
+                TextButton(
+                    enabled = settings != null,
+                    onClick = { settings?.effectiveDirectory?.let { revealInFileManager(it) } }
+                ) { Text("打开") }
             }
-            TextButton(
-                enabled = settings != null,
-                onClick = { settings?.effectiveDirectory?.let { revealInFileManager(it) } }
-            ) { Text("打开") }
         }
     }
 }
@@ -1284,7 +1476,7 @@ private fun OfflineLocationRow(state: AppState) {
 @Composable
 private fun SeriesDownloadHeader(state: AppState, first: DownloadDto, rows: List<DownloadDto>) {
     val done = rows.filter { it.state == DownloadState.DONE }
-    Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(first.seriesName ?: "剧集", style = MaterialTheme.typography.titleSmall)
             Hint(
@@ -1314,17 +1506,17 @@ private fun SeriesDownloadHeader(state: AppState, first: DownloadDto, rows: List
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun DownloadRow(state: AppState, download: DownloadDto, indent: Boolean) {
-    Row(
-        Modifier.fillMaxWidth().padding(start = if (indent) 16.dp else 0.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Column(
+        Modifier.fillMaxWidth().padding(start = if (indent) 12.dp else 0.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Column(Modifier.weight(1f)) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             // Under its show's header the show's name is said already.
             val title = download.seriesName
                 ?.takeIf { indent }
                 ?.let { download.name.removePrefix("$it · ") }
                 ?: download.name
-            Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Text(
                 when (download.state) {
                     DownloadState.DONE -> listOfNotNull(
@@ -1343,12 +1535,9 @@ private fun DownloadRow(state: AppState, download: DownloadDto, indent: Boolean)
                     download.state == DownloadState.FAILED -> MaterialTheme.colorScheme.error
                     download.note != null -> MaterialTheme.colorScheme.tertiary
                     else -> MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                }
             )
             if (download.active) {
-                Spacer(Modifier.height(4.dp))
                 // Indeterminate until the size is known, rather than a bar
                 // sitting at zero while a queued item waits.
                 if (download.totalBytes > 0 && download.state == DownloadState.RUNNING) {
@@ -1361,59 +1550,57 @@ private fun DownloadRow(state: AppState, download: DownloadDto, indent: Boolean)
                 }
             }
         }
-        if (download.state == DownloadState.FAILED) {
-            TextButton(onClick = { state.retryDownload(download.itemId) }) { Text("重试") }
-        }
-        val file = download.file
-        if (download.state == DownloadState.DONE && PlatformInfo.isDesktop && file != null) {
-            TipIconButton("在文件夹中显示", onClick = { revealInFileManager(file) }) {
-                Icon(Icons.Filled.FolderOpen, contentDescription = "在文件夹中显示")
+        SettingsActions {
+            if (download.state == DownloadState.FAILED) {
+                TextButton(onClick = { state.retryDownload(download.itemId) }) { Text("重试") }
             }
-        }
-        TextButton(onClick = {
-            if (download.state == DownloadState.DONE) {
-                state.confirm(
-                    com.daview.app.data.Confirmation(
-                        title = "删除「${download.name}」的本地文件？",
-                        text = "删除后要再联网播放或重新下载。${formatSize(download.totalBytes)}".trim(),
-                        confirmLabel = "删除",
-                        destructive = true,
-                        action = { state.removeDownload(download.itemId) }
+            val file = download.file
+            if (download.state == DownloadState.DONE && PlatformInfo.isDesktop && file != null) {
+                TipIconButton("在文件夹中显示", onClick = { revealInFileManager(file) }) {
+                    Icon(Icons.Filled.FolderOpen, contentDescription = "在文件夹中显示")
+                }
+            }
+            TextButton(onClick = {
+                if (download.state == DownloadState.DONE) {
+                    state.confirm(
+                        com.daview.app.data.Confirmation(
+                            title = "删除「${download.name}」的本地文件？",
+                            text = "删除后要再联网播放或重新下载。${formatSize(download.totalBytes)}".trim(),
+                            confirmLabel = "删除",
+                            destructive = true,
+                            action = { state.removeDownload(download.itemId) }
+                        )
                     )
-                )
-            } else if (download.active) {
-                state.stopDownloads("停止下载「${download.name}」？", listOf(download)) {
-                    state.cancelDownload(download.itemId)
+                } else if (download.active) {
+                    state.stopDownloads("停止下载「${download.name}」？", listOf(download)) {
+                        state.cancelDownload(download.itemId)
+                    }
+                } else {
+                    // A failed download keeps what arrived for 「重试」 to resume from.
+                    state.stopDownloads("删除「${download.name}」已下载的部分？", listOf(download), confirmLabel = "删除") {
+                        state.removeDownload(download.itemId)
+                    }
                 }
-            } else {
-                // A failed download keeps what arrived for 「重试」 to resume from.
-                state.stopDownloads("删除「${download.name}」已下载的部分？", listOf(download), confirmLabel = "删除") {
-                    state.removeDownload(download.itemId)
-                }
+            }) {
+                Text(if (download.active) "取消" else "删除")
             }
-        }) {
-            Text(if (download.active) "取消" else "删除")
         }
     }
 }
 
 // ---------------------------------------------------------------- general
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun GeneralSection(state: AppState) {
-    Column(Modifier.padding(horizontal = 20.dp)) {
-        SectionTitle("外观")
+    SettingsPanel("外观") {
         ChoiceRow(
             label = "主题",
             options = ThemeMode.entries.map { it to it.label },
             selected = state.themeMode
         ) { state.setTheme(it) }
 
-        HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        SectionTitle("首页")
-        Hint("勾选要显示的行，用箭头调整顺序。")
-        Spacer(Modifier.height(4.dp))
+    }
+    SettingsPanel("首页布局", "勾选要显示的内容，用箭头调整顺序。") {
         val sections = state.homeSections
         sections.forEachIndexed { index, (section, shown) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1432,33 +1619,18 @@ private fun GeneralSection(state: AppState) {
                 }
                 IconButton(enabled = index > 0, onClick = {
                     state.changeHomeSections(sections.toMutableList().also { it.add(index - 1, it.removeAt(index)) })
-                }) { Icon(Icons.Filled.ArrowUpward, contentDescription = "上移") }
+                }) { Icon(Icons.Filled.ArrowUpward, contentDescription = "上移「${section.label}」") }
                 IconButton(enabled = index < sections.lastIndex, onClick = {
                     state.changeHomeSections(sections.toMutableList().also { it.add(index + 1, it.removeAt(index)) })
-                }) { Icon(Icons.Filled.ArrowDownward, contentDescription = "下移") }
+                }) { Icon(Icons.Filled.ArrowDownward, contentDescription = "下移「${section.label}」") }
             }
         }
 
-        HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        SectionTitle("存储空间")
-        ImageCacheRow(state)
-
-        if (PlatformInfo.isDesktop) {
-            HorizontalDivider(Modifier.padding(vertical = 12.dp))
-            SectionTitle("键盘快捷键")
-            DesktopShortcuts.reference.forEach { (keys, action) ->
-                Row(Modifier.padding(vertical = 3.dp)) {
-                    Text(keys, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, modifier = Modifier.width(200.dp))
-                    Text(action, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-
-        HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        UpdateSection(state)
-
-        HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        SectionTitle("关于")
+    }
+    SettingsPanel("存储空间") { ImageCacheRow(state) }
+    if (PlatformInfo.isDesktop) ShortcutsPanel()
+    UpdateSection(state)
+    SettingsPanel("关于") {
         Hint(
             "DAView ${BuildInfo.VERSION}（安装包版本 ${BuildInfo.PACKAGE_VERSION}）· ${PlatformInfo.name}" +
                 (state.serverInfo?.let { " · 共 ${it.itemCount} 个条目" } ?: "")
@@ -1469,7 +1641,30 @@ private fun GeneralSection(state: AppState) {
         if (PlatformInfo.hasFfmpegDecoders) {
             Hint("DTS、TrueHD 等音轨由 FFmpeg 6.1.6 解码（LGPL 2.1 或更高版本，未经修改，以共享库随安装包提供）；许可证全文与源代码地址见安装包内 assets/licenses/ffmpeg/。")
         }
-        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun ShortcutsPanel() {
+    SettingsPanel("键盘快捷键") {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val fullColumns = maxWidth >= (360f * LocalDensity.current.fontScale.coerceAtLeast(1f)).dp
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                DesktopShortcuts.reference.forEach { (keys, action) ->
+                    if (fullColumns) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Text(keys, Modifier.weight(2f), style = MaterialTheme.typography.labelLarge)
+                            Hint(action, Modifier.weight(3f))
+                        }
+                    } else {
+                        Column {
+                            Text(keys, style = MaterialTheme.typography.labelLarge)
+                            Hint(action)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1520,43 +1715,49 @@ private fun UpdateBanner(state: AppState) {
         is UpdateState.Failed -> update.manifest ?: return
         else -> return
     }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp)
+    val scheme = MaterialTheme.colorScheme
+    Surface(
+        Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.largeIncreased,
+        color = scheme.tertiaryContainer,
+        contentColor = scheme.onTertiaryContainer
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Text("有新版本 ${manifest.version}", style = MaterialTheme.typography.titleSmall)
-            Hint(
-                "当前 ${BuildInfo.VERSION}" +
-                    (manifest.publishedAt?.take(10)?.let { " · 发布于 $it" } ?: "")
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.Filled.Update, contentDescription = null)
+                SettingsHeading("有新版本 ${manifest.version}")
+            }
+            Text(
+                "当前 ${BuildInfo.VERSION}" + (manifest.publishedAt?.take(10)?.let { " · 发布于 $it" } ?: ""),
+                style = MaterialTheme.typography.bodyMedium
             )
             manifest.notes?.takeIf { it.isNotBlank() }?.let { notes ->
-                Spacer(Modifier.height(6.dp))
-                Text(notes, style = MaterialTheme.typography.bodySmall, maxLines = 8, overflow = TextOverflow.Ellipsis)
+                Text(notes, style = MaterialTheme.typography.bodyMedium, maxLines = 8, overflow = TextOverflow.Ellipsis)
             }
-            Spacer(Modifier.height(10.dp))
             when (update) {
-                is UpdateState.Available -> FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    itemVerticalAlignment = Alignment.CenterVertically
-                ) {
+                is UpdateState.Available -> SettingsActions {
                     val asset = update.asset
                     if (asset != null) {
                         Button(onClick = { state.downloadUpdate() }) {
-                            Text("下载并安装" + formatSize(asset.size).takeIf { it.isNotBlank() }?.let { "（$it）" }.orEmpty())
+                            PrimaryLabel("下载并安装" + formatSize(asset.size).takeIf { it.isNotBlank() }?.let { "（$it）" }.orEmpty())
                         }
                     } else {
-                        Hint("这个版本没有给 ${PlatformInfo.name} 的安装包")
+                        Text("这个版本没有给 ${PlatformInfo.name} 的安装包", style = MaterialTheme.typography.bodyMedium)
                     }
                     manifest.pageUrl?.let { url ->
-                        TextButton(onClick = { openUrl(url) }) { Text("发布页") }
+                        TextButton(
+                            onClick = { openUrl(url) },
+                            colors = ButtonDefaults.textButtonColors(contentColor = scheme.onTertiaryContainer)
+                        ) { Text("发布页") }
                     }
                 }
                 is UpdateState.Downloading -> {
                     val total = update.total
                     val received = formatSize(update.received).ifBlank { "0 B" }
-                    Hint(if (total != null && total > 0) "正在下载 $received / ${formatSize(total)}" else "正在下载 $received")
-                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        if (total != null && total > 0) "正在下载 $received / ${formatSize(total)}" else "正在下载 $received",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                     if (total != null && total > 0) {
                         LinearWavyProgressIndicator(
                             progress = { (update.received.toFloat() / total).coerceIn(0f, 1f) },
@@ -1566,18 +1767,20 @@ private fun UpdateBanner(state: AppState) {
                         LinearWavyProgressIndicator(Modifier.fillMaxWidth())
                     }
                 }
-                is UpdateState.Downloaded -> Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(onClick = { state.installUpdate() }) { Text(installLabel()) }
+                is UpdateState.Downloaded -> SettingsActions {
+                    Button(onClick = { state.installUpdate() }) { PrimaryLabel(installLabel()) }
                     if (PlatformInfo.isDesktop) {
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(onClick = { revealInFileManager(update.file) }) { Text("定位文件") }
+                        TextButton(
+                            onClick = { revealInFileManager(update.file) },
+                            colors = ButtonDefaults.textButtonColors(contentColor = scheme.onTertiaryContainer)
+                        ) { Text("定位文件") }
                     }
                 }
-                is UpdateState.Installing -> Hint("正在退出并启动安装程序…")
+                is UpdateState.Installing -> Text("正在退出并启动安装程序…", style = MaterialTheme.typography.bodyMedium)
                 is UpdateState.Failed -> {
-                    Hint(update.message, error = true)
+                    SettingsNotice(update.message, SettingsTone.Error)
                     if (update.asset != null) {
-                        TextButton(onClick = { state.downloadUpdate() }) { Text("重试") }
+                        Button(onClick = { state.downloadUpdate() }) { PrimaryLabel("重试") }
                     }
                 }
                 else -> Unit
@@ -1595,47 +1798,43 @@ private fun installLabel(): String = when {
 
 @Composable
 private fun UpdateSection(state: AppState) {
-    SectionTitle("更新")
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        val busy = state.update is UpdateState.Checking || state.update is UpdateState.Downloading ||
-            state.update is UpdateState.Installing
+    SettingsPanel("应用更新") {
+        val update = state.update
+        val busy = update is UpdateState.Checking || update is UpdateState.Downloading || update is UpdateState.Installing
         FilledTonalButton(onClick = { state.checkForUpdates() }, enabled = !busy) { Text("检查更新") }
-        Spacer(Modifier.width(12.dp))
-        when (val update = state.update) {
+        when (update) {
             UpdateState.Idle -> Unit
             UpdateState.Checking -> Hint("正在检查…")
-            is UpdateState.UpToDate -> Hint("已是最新版本（${update.version}）")
+            is UpdateState.UpToDate -> SettingsNotice("已是最新版本（${update.version}）", SettingsTone.Success)
             is UpdateState.Failed ->
-                if (update.manifest == null) Hint(update.message, error = true) else Hint("有新版本，见页面顶部")
+                if (update.manifest == null) SettingsNotice(update.message, SettingsTone.Error) else Hint("有新版本，见页面顶部")
             else -> Hint("有新版本，见页面顶部")
         }
+        if (!canSelfUpdate()) {
+            Hint("这是调试版本：不会自动检查更新，发布版的安装包也装不到它上面")
+        }
+        SettingsSwitch(
+            "启动时自动检查更新",
+            state.checkUpdatesOnStartup,
+            detail = "仅在发现新版本时提示"
+        ) { state.changeCheckUpdatesOnStartup(it) }
+        OutlinedTextField(
+            state.updateSource,
+            { state.changeUpdateSource(it) },
+            label = { Text("更新清单地址") },
+            placeholder = { Text(DEFAULT_UPDATE_SOURCE) },
+            supportingText = { Text("留空使用默认地址：仓库 updates 分支上的 update.json，每次发布由 CI 写入") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().tracksTextInput()
+        )
+        OutlinedTextField(
+            state.updateMirror,
+            { state.changeUpdateMirror(it) },
+            label = { Text("GitHub 镜像前缀（可选）") },
+            placeholder = { Text("https://ghproxy.net/") },
+            supportingText = { Text("加在清单和安装包地址前面，用于难以直连 GitHub 的网络") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().tracksTextInput()
+        )
     }
-    if (!canSelfUpdate()) {
-        Hint("这是调试版本：不会自动检查更新，发布版的安装包也装不到它上面")
-    }
-    SwitchRow(
-        "启动时自动检查更新",
-        state.checkUpdatesOnStartup,
-        detail = "只在有新版本时提示一句"
-    ) { state.changeCheckUpdatesOnStartup(it) }
-    Spacer(Modifier.height(6.dp))
-    OutlinedTextField(
-        state.updateSource,
-        { state.changeUpdateSource(it) },
-        label = { Text("更新清单地址") },
-        placeholder = { Text(DEFAULT_UPDATE_SOURCE) },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth().tracksTextInput()
-    )
-    Hint("留空用默认地址：仓库 updates 分支上的 update.json，每次发布由 CI 写入")
-    Spacer(Modifier.height(6.dp))
-    OutlinedTextField(
-        state.updateMirror,
-        { state.changeUpdateMirror(it) },
-        label = { Text("GitHub 镜像前缀（可选）") },
-        placeholder = { Text("https://ghproxy.net/") },
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth().tracksTextInput()
-    )
-    Hint("填了会加在清单和安装包地址前面，给直连 GitHub 困难的网络用")
 }
