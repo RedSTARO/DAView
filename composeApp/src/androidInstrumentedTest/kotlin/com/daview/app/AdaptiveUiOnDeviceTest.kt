@@ -85,18 +85,31 @@ class AdaptiveUiOnDeviceTest {
     @Test
     fun settingsRemainReachableWithoutEditing() = onDevice("settings-read-only", AdaptiveDeviceWindow.SMALL) {
         clickUsable("设置")
-        for (next in listOf(AdaptiveDeviceWindow.SMALL, AdaptiveDeviceWindow.BOOK, AdaptiveDeviceWindow.TABLETOP)) {
+        for (next in listOf(
+            AdaptiveDeviceWindow.SMALL, AdaptiveDeviceWindow.LARGE_LANDSCAPE,
+            AdaptiveDeviceWindow.BOOK, AdaptiveDeviceWindow.TABLETOP
+        )) {
             if (next != frame.profile) resize(next)
             assertUsable("WebDAV 存储", ui.awaitVisible("WebDAV 存储"))
             val address = ui.awaitVisible("non-password WebDAV editor") { it.isEditable && !it.isPassword }
             assertUsable("WebDAV editor", address)
-            // Android exposes the current Material tab as selected, not clickable.
             val storage = ui.awaitVisible("selected storage category") { node ->
                 node.hasLabel("存储与刮削") && generateSequence(node) { it.parent }.any { it.isSelected }
             }
             assertUsable("存储与刮削", storage)
             assertUsable("播放 category action", ui.awaitAction("播放"))
+            if (next == AdaptiveDeviceWindow.LARGE_LANDSCAPE) {
+                val categories = ui.awaitVisible("设置分类")
+                assertUsable("settings category pane", categories)
+                check(categories.screenBounds().right <= address.screenBounds().left) {
+                    "Settings categories are not beside the editor"
+                }
+            }
         }
+        clickUsable("播放")
+        assertUsable("播放行为", ui.awaitVisible("播放行为"))
+        resize(AdaptiveDeviceWindow.LARGE_LANDSCAPE)
+        assertUsable("播放行为 after resizing", ui.awaitVisible("播放行为"))
     }
 
     @Test

@@ -1,6 +1,9 @@
 package com.daview.app.ui
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,9 +25,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -47,6 +53,12 @@ import androidx.compose.material.icons.filled.Update
 import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
@@ -61,15 +73,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearWavyProgressIndicator
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryScrollableTabRow
-import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TonalToggleButton
@@ -86,6 +95,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -98,6 +109,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.daview.app.BuildInfo
 import com.daview.app.data.AppState
@@ -135,13 +147,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class SettingsTab(val label: String, val detail: String, val icon: ImageVector) {
-    LIBRARIES("媒体库", "管理目录与扫描", Icons.Filled.VideoLibrary),
-    STORAGE("存储与刮削", "连接 WebDAV 与设置元数据", Icons.Filled.Cloud),
-    PLAYBACK("播放", "续播、音轨和字幕", Icons.Filled.PlayCircle),
-    SYNC("同步与备份", "跨设备同步与数据迁移", Icons.Filled.Sync),
-    OFFLINE("离线内容", "本机下载与空间", Icons.Filled.Download),
-    GENERAL("通用", "外观、首页与更新", Icons.Filled.Tune)
+private enum class SettingsTab(val label: String, val detail: String, val filled: ImageVector, val outlined: ImageVector) {
+    LIBRARIES("媒体库", "管理目录与扫描", Icons.Filled.VideoLibrary, Icons.Outlined.VideoLibrary),
+    STORAGE("存储与刮削", "连接 WebDAV 与设置元数据", Icons.Filled.Cloud, Icons.Outlined.Cloud),
+    PLAYBACK("播放", "续播、音轨和字幕", Icons.Filled.PlayCircle, Icons.Outlined.PlayCircle),
+    SYNC("同步与备份", "跨设备同步与数据迁移", Icons.Filled.Sync, Icons.Outlined.Sync),
+    OFFLINE("离线内容", "本机下载与空间", Icons.Filled.Download, Icons.Outlined.Download),
+    GENERAL("通用", "外观、首页与更新", Icons.Filled.Tune, Icons.Outlined.Tune)
 }
 
 @Composable
@@ -187,19 +199,24 @@ fun SettingsScreen(state: AppState) {
     // on a book fold the workspace may only own one side of the hinge.
     BoxWithConstraints(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.TopCenter) {
         val extraText = (LocalDensity.current.fontScale - 1f).coerceAtLeast(0f)
-        val split = maxWidth >= (840f + 160f * extraText).dp
-        val headerPinned = split && maxHeight >= 360.dp
         val margin = if (maxWidth < 600.dp) 16.dp else 24.dp
-        Column(Modifier.widthIn(max = 1200.dp).fillMaxSize()) {
+        val navigationWidth = (220f + 64f * extraText).dp
+        val paneGap = 24.dp
+        // Budget the category list and the editor after the app rail, hinge and insets.
+        // A wide phone needn't reach the whole-window Expanded breakpoint again here.
+        val editorMinWidth = (408f + 96f * extraText).dp
+        val split = maxWidth >= margin * 2 + navigationWidth + paneGap + editorMinWidth && maxHeight >= 200.dp
+        val headerPinned = split && maxHeight >= 360.dp
+        Column(Modifier.fillMaxSize()) {
             if (headerPinned) ScreenTopBar("设置", onBack = goBack)
-            Row(Modifier.fillMaxSize()) {
+            Row(Modifier.align(Alignment.CenterHorizontally).widthIn(max = 1040.dp).fillMaxSize()) {
                 if (split) {
                     SettingsCategories(
                         tab = tab,
                         onSelect = select,
                         modifier = Modifier
-                            .padding(start = margin, end = 24.dp, top = 12.dp, bottom = 12.dp)
-                            .width((248f + 64f * extraText).dp)
+                            .padding(start = margin, end = paneGap, top = 12.dp, bottom = 12.dp)
+                            .width(navigationWidth)
                     )
                 }
                 Box(Modifier.weight(1f).fillMaxSize()) {
@@ -207,16 +224,18 @@ fun SettingsScreen(state: AppState) {
                     // In a short pane even the top bar and tabs can scroll away.
                     Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(bottom = 24.dp)) {
                         if (!headerPinned) ScreenTopBar("设置", onBack = goBack)
-                        if (!split) SettingsCategoryTabs(tab, tabScroll, select)
+                        if (!split) SettingsCategoryTabs(tab, tabScroll, select, margin)
 
                         Column(
                             Modifier.fillMaxWidth()
                                 .wrapContentWidth(if (split) Alignment.Start else Alignment.CenterHorizontally)
-                                .widthIn(max = 840.dp)
+                                .widthIn(max = 760.dp)
                                 .padding(start = if (split) 0.dp else margin, end = margin, top = 12.dp),
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            if (split) {
+                            // In a short or narrow pane the selected tab already identifies the
+                            // category. Leave the first form and its controls above the fold.
+                            if (headerPinned) {
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     SettingsHeading(tab.label, major = true)
                                     Hint(tab.detail)
@@ -254,82 +273,111 @@ fun SettingsScreen(state: AppState) {
 private fun SettingsCategoryTabs(
     tab: SettingsTab,
     scroll: ScrollState,
-    onSelect: (SettingsTab) -> Unit
+    onSelect: (SettingsTab) -> Unit,
+    margin: Dp
 ) {
-    val scheme = MaterialTheme.colorScheme
-    PrimaryScrollableTabRow(
-        selectedTabIndex = tab.ordinal,
-        scrollState = scroll,
-        containerColor = scheme.surfaceContainer,
-        contentColor = scheme.onSurface,
-        indicator = {
-            TabRowDefaults.PrimaryIndicator(
-                Modifier.tabIndicatorOffset(tab.ordinal, matchContentSize = true),
-                color = scheme.secondary
-            )
-        }
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = margin).padding(top = 4.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = MaterialTheme.shapes.largeIncreased
     ) {
-        SettingsTab.entries.forEach { entry ->
-            val selected = tab == entry
-            Tab(
-                selected = selected,
-                onClick = { onSelect(entry) },
-                text = {
-                    Text(
-                        entry.label,
-                        style = if (selected) MaterialTheme.typography.labelLargeEmphasized else MaterialTheme.typography.labelLarge,
-                        maxLines = 1
-                    )
-                },
-                selectedContentColor = scheme.onSurface,
-                unselectedContentColor = scheme.onSurfaceVariant
+        PrimaryScrollableTabRow(
+            selectedTabIndex = tab.ordinal,
+            modifier = Modifier.padding(vertical = 4.dp).focusGroup(),
+            scrollState = scroll,
+            containerColor = Color.Transparent,
+            edgePadding = 4.dp,
+            minTabWidth = 48.dp,
+            indicator = {},
+            divider = {}
+        ) {
+            SettingsTab.entries.forEach { entry ->
+                SettingsCategoryTab(
+                    entry = entry,
+                    selected = entry == tab,
+                    onClick = { onSelect(entry) },
+                    modifier = Modifier.padding(horizontal = 2.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsCategories(tab: SettingsTab, onSelect: (SettingsTab) -> Unit, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    val scroll = rememberScrollState()
+    val active = remember { BringIntoViewRequester() }
+    // When the short landscape list scrolls, reveal its selected item on entry or resize.
+    LaunchedEffect(tab, scroll.viewportSize) {
+        if (scroll.viewportSize > 0) active.bringIntoView()
+    }
+    Surface(modifier, color = scheme.surfaceContainer, shape = MaterialTheme.shapes.extraLarge) {
+        Column(Modifier.verticalScroll(scroll).padding(8.dp)) {
+            Text(
+                "设置分类",
+                style = MaterialTheme.typography.labelLarge,
+                color = scheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 8.dp).semantics { heading() }
             )
+            Column(Modifier.selectableGroup().focusGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                SettingsTab.entries.forEach { entry ->
+                    SettingsCategoryTab(
+                        entry = entry,
+                        selected = entry == tab,
+                        onClick = { onSelect(entry) },
+                        modifier = Modifier.fillMaxWidth().then(if (entry == tab) Modifier.bringIntoViewRequester(active) else Modifier),
+                        verticalList = true
+                    )
+                }
+            }
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun SettingsCategories(tab: SettingsTab, onSelect: (SettingsTab) -> Unit, modifier: Modifier = Modifier) {
+private fun SettingsCategoryTab(
+    entry: SettingsTab,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    verticalList: Boolean = false
+) {
     val scheme = MaterialTheme.colorScheme
-    val colors = ListItemDefaults.segmentedColors(
-        containerColor = scheme.surfaceContainerHigh,
-        selectedContainerColor = scheme.secondaryContainer,
-        selectedContentColor = scheme.onSecondaryContainer,
-        selectedLeadingContentColor = scheme.onSecondaryContainer,
-        selectedSupportingContentColor = scheme.onSecondaryContainer,
-        selectedTrailingContentColor = scheme.onSecondaryContainer
+    val fill by animateColorAsState(
+        targetValue = if (selected) scheme.secondaryContainer else scheme.surfaceContainer,
+        animationSpec = MaterialTheme.motionScheme.fastEffectsSpec(),
+        label = "settings-category-fill"
     )
-    val scroll = rememberScrollState()
-    Surface(modifier, color = scheme.surfaceContainer, shape = MaterialTheme.shapes.extraLarge) {
-        Column(Modifier.verticalScroll(scroll).padding(12.dp)) {
-            Text(
-                "设置分类",
-                style = MaterialTheme.typography.labelLarge,
-                color = scheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 12.dp).semantics { heading() }
+    // Use real tabs in both arrangements. The tonal fill replaces the underline;
+    // Tab supplies the same selection announcement, keyboard action and ripple.
+    Tab(
+        selected = selected,
+        onClick = onClick,
+        modifier = modifier.clip(RoundedCornerShape(if (verticalList) 20.dp else 16.dp)).background(fill),
+        selectedContentColor = scheme.onSecondaryContainer,
+        unselectedContentColor = scheme.onSurfaceVariant
+    ) {
+        Row(
+            modifier = Modifier
+                .then(if (verticalList) Modifier.fillMaxWidth() else Modifier)
+                .heightIn(min = if (verticalList) 56.dp else 48.dp)
+                .padding(horizontal = if (verticalList) 16.dp else 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                if (selected) entry.filled else entry.outlined,
+                contentDescription = null,
+                modifier = Modifier.size(if (verticalList) 24.dp else 20.dp)
             )
-            Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
-                SettingsTab.entries.forEachIndexed { index, entry ->
-                    val selected = tab == entry
-                    SegmentedListItem(
-                        selected = selected,
-                        onClick = { onSelect(entry) },
-                        shapes = ListItemDefaults.segmentedShapes(index, SettingsTab.entries.size),
-                        leadingContent = { Icon(entry.icon, contentDescription = null, modifier = Modifier.size(20.dp)) },
-                        supportingContent = { Text(entry.detail) },
-                        trailingContent = if (selected) {
-                            { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(20.dp)) }
-                        } else null,
-                        colors = colors
-                    ) {
-                        Text(
-                            entry.label,
-                            style = if (selected) MaterialTheme.typography.titleMediumEmphasized else MaterialTheme.typography.titleMedium
-                        )
-                    }
-                }
-            }
+            Text(
+                entry.label,
+                modifier = if (verticalList) Modifier.weight(1f) else Modifier,
+                style = if (selected) MaterialTheme.typography.labelLargeEmphasized else MaterialTheme.typography.labelLarge
+            )
+            if (verticalList && selected) Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(20.dp))
         }
     }
 }
