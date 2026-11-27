@@ -113,6 +113,19 @@ class BrowsePanesTest {
     }
 
     @Test
+    fun imeChangesHeightWithoutIntroducingOrRemovingASideRail() {
+        val portrait = expanded.copy(right = 500.dp)
+        val typing = browsePanes(portrait, null, pair = false, rtl = false, imeTop = 400.dp)
+        assertEquals(BrowseNavigation.Bar, browsePanes(portrait, null, pair = false, rtl = false).navigation)
+        assertEquals(BrowseNavigation.Hidden, typing.navigation)
+        assertEquals(portrait.copy(bottom = 400.dp), typing.main)
+
+        val landscape = portrait.copy(bottom = 420.dp)
+        assertEquals(BrowseNavigation.Rail, browsePanes(landscape, null, pair = false, rtl = false).navigation)
+        assertEquals(BrowseNavigation.Rail, browsePanes(landscape, null, pair = false, rtl = false, imeTop = 280.dp).navigation)
+    }
+
+    @Test
     fun onlyTheNearestCatalogueDestinationCanAccompanySelectedDetail() {
         val home = BackStackEntry(Screen.Home, 1)
         val shelf = BackStackEntry(Screen.Shelf(ShelfKind.FAVOURITES), 2)

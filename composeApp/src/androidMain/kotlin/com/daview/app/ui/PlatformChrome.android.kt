@@ -3,6 +3,9 @@ package com.daview.app.ui
 import android.content.pm.ActivityInfo
 import android.view.WindowManager
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.ui.Modifier
@@ -91,6 +94,10 @@ actual fun SystemBarAppearance(darkTheme: Boolean) {
         onDispose { }
     }
 }
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal actual fun platformStableBrowseInsets(): WindowInsets = WindowInsets.systemBarsIgnoringVisibility
 
 @Composable
 actual fun PlatformBackHandler(enabled: Boolean, onBack: () -> Unit) {

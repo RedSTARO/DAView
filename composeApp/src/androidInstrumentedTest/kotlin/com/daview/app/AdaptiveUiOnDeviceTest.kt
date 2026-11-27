@@ -43,7 +43,18 @@ class AdaptiveUiOnDeviceTest {
         // callback sets the query, and results don't depend on IME/clipboard/device keyboard state.
         ui.reveal("genre link $SEARCH_GENRE") { it.hasLabel(SEARCH_GENRE) && it.clickableAncestor() != null }
         clickUsable(SEARCH_GENRE)
-        assertSearchResult()
+        fun horizontalEdgesInDp(): Pair<Float, Float> {
+            val editor = assertSearchResult().screenBounds()
+            val windowLeft = frame.shell.left
+            return (editor.left - windowLeft) / frame.density to (editor.right - windowLeft) / frame.density
+        }
+        val tall = horizontalEdgesInDp()
+        resize(AdaptiveDeviceWindow.SHORT_LANDSCAPE)
+        val short = horizontalEdgesInDp()
+        // A fitted harness can use a different pixel density after a height change.
+        check(kotlin.math.abs(tall.first - short.first) < 2f && kotlin.math.abs(tall.second - short.second) < 2f) {
+            "Search changed its horizontal bounds when only the height changed: $tall → $short dp"
+        }
         resize(AdaptiveDeviceWindow.BOOK)
         assertSearchResult()
         resize(AdaptiveDeviceWindow.LARGE_LANDSCAPE)
@@ -158,12 +169,13 @@ class AdaptiveUiOnDeviceTest {
         assertUsable("$FILM_TITLE in source after Back", ui.awaitAction(FILM_TITLE))
     }
 
-    private fun AdaptiveDeviceHarness.assertSearchResult() {
+    private fun AdaptiveDeviceHarness.assertSearchResult(): android.view.accessibility.AccessibilityNodeInfo {
         val editor = ui.awaitVisible("unchanged query '$SEARCH_GENRE'") {
             it.isEditable && !it.isPassword && it.text?.toString() == SEARCH_GENRE
         }
         assertUsable("search editor", editor)
         assertUsable("result $FILM_TITLE", ui.awaitAction(FILM_TITLE))
+        return editor
     }
 
     private fun AdaptiveDeviceHarness.openLibrary(library: String, firstTitle: String) {

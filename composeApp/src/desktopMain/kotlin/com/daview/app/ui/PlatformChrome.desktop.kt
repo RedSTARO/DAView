@@ -7,6 +7,7 @@ import androidx.compose.foundation.TooltipPlacement
 import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.defaultScrollbarStyle
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -66,6 +67,9 @@ actual fun PlaybackPresentation(orientation: ScreenOrientation, fullscreen: Bool
 /** Desktop windows have no system bars whose icons could go unreadable. */
 @Composable
 actual fun SystemBarAppearance(darkTheme: Boolean) = Unit
+
+@Composable
+internal actual fun platformStableBrowseInsets(): WindowInsets = WindowInsets(0, 0, 0, 0)
 
 /** No system-level back gesture on the desktop; the keyboard and mouse have their own. */
 @Composable

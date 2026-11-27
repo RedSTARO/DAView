@@ -11,9 +11,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -127,21 +129,17 @@ fun SearchScreen(state: AppState, playback: PlaybackController, showBack: Boolea
                     status = "全部媒体库",
                     margin = margin,
                     prominent = wide,
-                    onBack = if (showBack) ({ state.back() }) else null
+                    onBack = null
                 )
             }
-            // Keep the same editor in composition when the IME or a fold makes the pane shorter.
-            Row(
-                Modifier.fillMaxWidth().then(if (short) Modifier.windowInsetsPadding(WindowInsets.statusBars) else Modifier)
-                    .padding(start = margin, end = margin, top = if (short) 4.dp else 0.dp, bottom = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // Only the vertical layout changes in a short pane. The editor and progress
+            // share the same width, and Back lives inside it instead of taking extra space.
+            Column(
+                Modifier
+                    .then(if (short) Modifier.windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top)) else Modifier)
+                    .padding(start = margin, end = margin, top = if (short) 4.dp else 0.dp)
+                    .widthIn(max = 720.dp).fillMaxWidth()
             ) {
-                if (short && showBack) {
-                    TipIconButton("返回（Alt + ←）", onClick = { state.back() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                }
                 BrowseSearchField(
                     query = query,
                     onQueryChange = { query = it },
@@ -154,12 +152,11 @@ fun SearchScreen(state: AppState, playback: PlaybackController, showBack: Boolea
                         focusManager.clearFocus()
                     },
                     focusRequester = focusRequester,
-                    modifier = Modifier.widthIn(max = 720.dp).weight(1f, fill = false).fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    onBack = if (showBack) ({ state.back() }) else null
                 )
-            }
-            Box(Modifier.fillMaxWidth().padding(horizontal = margin).height(4.dp)) {
-                if (pending && query.isNotBlank()) {
-                    LinearProgressIndicator(Modifier.widthIn(max = 720.dp).fillMaxWidth())
+                Box(Modifier.fillMaxWidth().padding(top = 8.dp).height(4.dp)) {
+                    if (pending && query.isNotBlank()) LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
             }
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -206,7 +203,8 @@ internal fun BrowseSearchField(
     clearLabel: String,
     onSearch: () -> Unit,
     focusRequester: FocusRequester,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onBack: (() -> Unit)? = null
 ) {
     val colors = MaterialTheme.colorScheme
     val interaction = remember { MutableInteractionSource() }
@@ -221,7 +219,12 @@ internal fun BrowseSearchField(
         onValueChange = onQueryChange,
         textStyle = MaterialTheme.typography.bodyLarge,
         placeholder = { Text(hint, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+        leadingIcon = {
+            if (onBack == null) Icon(Icons.Filled.Search, contentDescription = null)
+            else TipIconButton("返回（Alt + ←）", onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            }
+        },
         trailingIcon = if (query.isNotEmpty()) ({
             IconButton(onClick = { onQueryChange("") }) {
                 Icon(Icons.Filled.Close, contentDescription = clearLabel)

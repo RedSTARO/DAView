@@ -60,6 +60,7 @@ internal enum class AdaptiveDeviceWindow(
     SMALL(width = 336, height = 700),
     LARGE_PORTRAIT(width = 680, height = 940),
     LARGE_LANDSCAPE(width = 960, height = 624),
+    SHORT_LANDSCAPE(width = 960, height = 310),
     ROOMY_DETAIL(width = 1080, height = 720),
     BOOK(width = 984, height = 708, axis = FoldAxis.Vertical, hingeAt = 480),
     TABLETOP(width = 696, height = 800, axis = FoldAxis.Horizontal, hingeAt = 300),

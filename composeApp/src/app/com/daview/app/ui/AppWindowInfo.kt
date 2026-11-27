@@ -74,7 +74,9 @@ internal fun browsePanes(
     preferRail: Boolean = false,
     expandRail: Boolean = true
 ): BrowsePanes {
-    val visible = viewport.copy(bottom = imeTop?.coerceIn(viewport.top, viewport.bottom) ?: viewport.bottom)
+    fun WindowPane.aboveIme() = copy(bottom = imeTop?.coerceIn(top, bottom) ?: bottom)
+
+    val visible = viewport.aboveIme()
     val extraText = (fontScale - 1f).coerceAtLeast(0f)
     val listMin = (320f + 120f * extraText).dp
     val pairMinHeight = (420f + 160f * extraText).dp
@@ -88,11 +90,14 @@ internal fun browsePanes(
     }
 
     fun single(pane: WindowPane, divided: Boolean = false): BrowsePanes {
+        // Use the pane before IME clipping to pick a rail or bar. Hiding a bottom
+        // bar for typing must not turn it into a rail and steal the editor's width.
         val rail = preferRail || pane.width >= (600f + 100f * extraText).dp ||
             (pane.width >= listMin + BrowseRailWidth && pane.height < 430.dp)
         val expandable = !divided && pane.width >= ExpandedRailBreakpoint
+        val available = pane.aboveIme()
         return BrowsePanes(
-            pane, navigation(pane, rail), divided = divided,
+            available, navigation(available, rail), divided = divided,
             railWidth = if (expandable && expandRail) ExpandedBrowseRailWidth else BrowseRailWidth,
             canExpandRail = expandable
         )
@@ -106,27 +111,29 @@ internal fun browsePanes(
         val clearance = 8.dp
         return when (fold.axis) {
             FoldAxis.Vertical -> {
-                val left = visible.copy(right = (fold.left - clearance).coerceIn(visible.left, visible.right))
-                val right = visible.copy(left = (fold.right + clearance).coerceIn(visible.left, visible.right))
+                val left = viewport.copy(right = (fold.left - clearance).coerceIn(viewport.left, viewport.right))
+                val right = viewport.copy(left = (fold.right + clearance).coerceIn(viewport.left, viewport.right))
                 val start = if (rtl) right else left
                 val end = if (rtl) left else right
-                val nav = navigation(start, rail = start.width >= listMin + BrowseRailWidth)
+                val availableStart = start.aboveIme()
+                val nav = navigation(availableStart, rail = start.width >= listMin + BrowseRailWidth)
                 val listWidth = start.width - if (nav == BrowseNavigation.Rail) BrowseRailWidth else 0.dp
-                val listHeight = start.height - if (nav == BrowseNavigation.Bar) browseBarHeight(fontScale) else 0.dp
+                val listHeight = availableStart.height - if (nav == BrowseNavigation.Bar) browseBarHeight(fontScale) else 0.dp
                 val detailMin = (352f + 140f * extraText).dp
                 if (pair && listWidth >= listMin && end.width >= detailMin && listHeight >= pairMinHeight) {
-                    BrowsePanes(start, nav, detail = end, divided = true)
+                    BrowsePanes(availableStart, nav, detail = end.aboveIme(), divided = true)
                 } else {
                     single(if (start.width >= end.width) start else end, divided = true)
                 }
             }
             FoldAxis.Horizontal -> {
-                val top = visible.copy(bottom = (fold.top - clearance).coerceIn(visible.top, visible.bottom))
-                val bottom = visible.copy(top = (fold.bottom + clearance).coerceIn(visible.top, visible.bottom))
+                val top = viewport.copy(bottom = (fold.top - clearance).coerceIn(viewport.top, viewport.bottom))
+                val bottom = viewport.copy(top = (fold.bottom + clearance).coerceIn(viewport.top, viewport.bottom))
                 // Prefer the touch-facing half when it has room. The IME can take that
                 // half away: choose from what is actually visible, not the hinge midpoint.
                 val lowerEnough = (320f + 120f * extraText).dp
-                single(if (bottom.height >= lowerEnough || bottom.height >= top.height) bottom else top, divided = true)
+                val bottomHeight = bottom.aboveIme().height
+                single(if (bottomHeight >= lowerEnough || bottomHeight >= top.aboveIme().height) bottom else top, divided = true)
             }
         }
     }
@@ -135,7 +142,7 @@ internal fun browsePanes(
     val usableWidth = visible.width - BrowseRailWidth - gap
     val detailMin = (400f + 160f * extraText).dp
     if (!pair || visible.width < 840.dp || visible.height < pairMinHeight || usableWidth < listMin + detailMin) {
-        return single(visible)
+        return single(viewport)
     }
 
     // The reading-side rectangle owns the rail and the list. The gap is empty, not a slot.

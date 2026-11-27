@@ -94,11 +94,14 @@ internal fun AdaptiveBrowse(
     val rtl = direction == LayoutDirection.Rtl
     val ime = WindowInsets.ime
     val safe = WindowInsets.systemBars.union(WindowInsets.displayCutout)
+    // A side system bar can change visibility while the keyboard animates. Keep its
+    // horizontal clearance so the browse pane doesn't resize with that visibility.
+    val safeHorizontal = safe.union(platformStableBrowseInsets())
     BoxWithConstraints(Modifier.fillMaxSize().clipToBounds().onGloballyPositioned { origin = it.positionInWindow() }) {
         val x = with(density) { origin.x.toDp() }
         val y = with(density) { origin.y.toDp() }
-        val leftInset = with(density) { safe.getLeft(this, direction).toDp() }
-        val rightInset = with(density) { safe.getRight(this, direction).toDp() }
+        val leftInset = with(density) { safeHorizontal.getLeft(this, direction).toDp() }
+        val rightInset = with(density) { safeHorizontal.getRight(this, direction).toDp() }
         val topInset = with(density) { safe.getTop(this).toDp() }
         val safeBottom = with(density) { safe.getBottom(this).toDp() }
         val imeBottom = with(density) { ime.getBottom(this).toDp() }

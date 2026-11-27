@@ -1,6 +1,7 @@
 package com.daview.app.ui
 
 import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.Composable
@@ -39,6 +40,10 @@ expect fun PlaybackPresentation(orientation: ScreenOrientation, fullscreen: Bool
  */
 @Composable
 expect fun SystemBarAppearance(darkTheme: Boolean)
+
+/** System-bar space reserved by the platform even while the bars are hidden. */
+@Composable
+internal expect fun platformStableBrowseInsets(): WindowInsets
 
 /**
  * Routes the platform's own "go back" gesture into the app's back stack while
