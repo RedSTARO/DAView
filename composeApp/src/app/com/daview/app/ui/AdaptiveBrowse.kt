@@ -160,10 +160,10 @@ internal fun AdaptiveBrowse(
         fun WindowPane.atStatusEdge(): WindowPane =
             if (height > 0.dp && top == viewport.top) allowDecoration(copy(top = y)) else this
 
-        fun WindowPane.forPage(entry: BackStackEntry): WindowPane = when (entry.screen) {
-            is Screen.Home, is Screen.Detail -> atStatusEdge()
-            else -> this
-        }
+        // On Home the cover is contained in its card; only Detail can extend artwork
+        // above the pane. The root surface paints behind the Home status bar.
+        fun WindowPane.forPage(entry: BackStackEntry): WindowPane =
+            if (entry.screen is Screen.Detail) atStatusEdge() else this
 
         val mainPaint = mainPane.forPage(mainEntry)
         val detailPaint = detailEntry?.let { checkNotNull(detailPane).forPage(it) }

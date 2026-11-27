@@ -59,10 +59,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
@@ -71,7 +69,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
 import com.daview.app.data.AppState
 import com.daview.app.data.HomeSection
@@ -88,7 +85,6 @@ private const val HomeHeroKey = "hero"
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(state: AppState, playback: PlaybackController) {
-    val topOverlap = LocalBrowseTopOverlap.current
     val home = state.home
     val sections = state.homeSections.filter { it.second }.map { it.first }
     val heroItem = if (HomeSection.HERO in sections) {
@@ -107,10 +103,9 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
     val downloaded = { item: MediaItemDto -> state.isDownloaded(item) }
     val play: (MediaItemDto) -> Unit = { playback.play(it) }
     val open: (MediaItemDto) -> Unit = { state.navigate(Screen.Detail(it.id)) }
-    val safeContent = Modifier.fillMaxSize().browseSafeTop(topOverlap)
     val listState = rememberLazyListState()
 
-    BoxWithConstraints(safeContent) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
         val margin = pageMargin(maxWidth)
         val splitHero = maxWidth >= 720.dp
         val short = maxHeight < 480.dp
@@ -120,17 +115,6 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
         val noLibrary = state.libraries.isEmpty() && home.latest.isEmpty()
         val emptyLibraries = state.libraries.all { it.itemCount == 0 } && home.latest.isEmpty() &&
             home.resume.isEmpty() && home.nextUp.isEmpty() && home.favourites.isEmpty()
-
-        if (ready && firstIsHero && topOverlap > 0.dp) {
-            // The only part of the hero allowed into the status bar is its decoration.
-            // The image in the panel and all of its actions stay in the safe scroll area.
-            BrowseHeroBackdrop(listState, HomeHeroKey, topOverlap, Modifier.matchParentSize().zIndex(-1f)
-                .drawWithContent { clipRect(top = -topOverlap.toPx(), bottom = 0f) { this@drawWithContent.drawContent() } }
-            ) {
-                HomeHeroArtwork(checkNotNull(heroItem))
-                Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.surface.copy(alpha = 0.83f)))
-            }
-        }
 
         if (!ready) {
             val failed = state.homeError
