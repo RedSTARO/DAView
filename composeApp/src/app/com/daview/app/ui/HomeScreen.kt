@@ -1,24 +1,16 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
 
 package com.daview.app.ui
 
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,22 +20,17 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.MoreHoriz
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Storage
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -51,25 +38,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.input.pointer.PointerType
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import coil3.compose.AsyncImage
 import com.daview.app.data.AppState
 import com.daview.app.data.HomeSection
 import com.daview.app.data.PlaybackController
@@ -107,10 +83,8 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val margin = pageMargin(maxWidth)
-        val splitHero = maxWidth >= 720.dp
-        val short = maxHeight < 480.dp
-        val artHeight = if (splitHero) (maxWidth * 0.25f).coerceIn(188.dp, 312.dp)
-            else if (short) 96.dp else (maxWidth * 0.45f).coerceIn(132.dp, 224.dp)
+        val wideShelves = maxWidth >= 720.dp
+        val shortPane = maxHeight < 400.dp
         val ready = state.homeLoaded
         val noLibrary = state.libraries.isEmpty() && home.latest.isEmpty()
         val emptyLibraries = state.libraries.all { it.itemCount == 0 } && home.latest.isEmpty() &&
@@ -157,16 +131,15 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
                                     item(key = HomeHeroKey) {
                                         Column {
                                             if (firstIsHero) HomeHeading(state, margin)
-                                            HeroPanel(
+                                            HomeSpotlight(
                                                 item = hero,
                                                 label = highlight,
-                                                split = splitHero,
-                                                artHeight = artHeight,
-                                                margin = margin,
-                                                menu = { dismiss -> ItemMenuItems(state, playback, hero, dismiss) },
+                                                shortPane = shortPane,
                                                 onPlay = { play(hero) },
-                                                onSeries = hero.seriesId?.let { id -> { state.navigate(Screen.Detail(id)) } }
-                                            ) { open(hero) }
+                                                onOpen = { open(hero) },
+                                                onSeries = hero.seriesId?.let { id -> { state.navigate(Screen.Detail(id)) } },
+                                                modifier = Modifier.padding(start = margin, end = margin, bottom = 16.dp)
+                                            ) { dismiss -> ItemMenuItems(state, playback, hero, dismiss) }
                                         }
                                     }
                                 }
@@ -176,7 +149,7 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
                                 HomeSection.RESUME -> item(key = "resume") {
                                     MediaRow(
                                         "继续观看", home.resume.withoutSpotlight(heroItem, highlight == "继续观看"),
-                                        itemWidth = if (splitHero) 256.dp else 212.dp, shape = CardShape.LANDSCAPE,
+                                        itemWidth = if (wideShelves) 256.dp else 212.dp, shape = CardShape.LANDSCAPE,
                                         onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.RESUME)) }.takeIf { home.resume.size > 1 },
                                         downloaded = downloaded, menu = itemMenu, onItemPlay = play, horizontal = margin, onItemClick = open
                                     )
@@ -184,7 +157,7 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
                                 HomeSection.NEXT_UP -> item(key = "nextUp") {
                                     MediaRow(
                                         "接下来", home.nextUp.withoutSpotlight(heroItem, highlight == "接下来"),
-                                        itemWidth = if (splitHero) 256.dp else 212.dp, shape = CardShape.LANDSCAPE,
+                                        itemWidth = if (wideShelves) 256.dp else 212.dp, shape = CardShape.LANDSCAPE,
                                         onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.NEXT_UP)) },
                                         downloaded = downloaded, menu = itemMenu, onItemPlay = play, horizontal = margin, onItemClick = open
                                     )
@@ -192,7 +165,7 @@ fun HomeScreen(state: AppState, playback: PlaybackController) {
                                 HomeSection.LATEST -> item(key = "latest") {
                                     MediaRow(
                                         "最近添加", home.latest.withoutSpotlight(heroItem, highlight == "最近添加"),
-                                        itemWidth = if (splitHero) 256.dp else 212.dp, shape = CardShape.LANDSCAPE,
+                                        itemWidth = if (wideShelves) 256.dp else 212.dp, shape = CardShape.LANDSCAPE,
                                         onSeeAll = { state.navigate(Screen.Shelf(ShelfKind.LATEST)) },
                                         downloaded = downloaded, menu = itemMenu, onItemPlay = play, horizontal = margin, onItemClick = open
                                     )
@@ -243,132 +216,6 @@ private fun HomeHeading(state: AppState, margin: Dp) {
                 Icon(Icons.Filled.Refresh, contentDescription = "刷新首页")
             }
         }
-    }
-}
-
-@Composable
-private fun HeroPanel(
-    item: MediaItemDto,
-    label: String,
-    split: Boolean,
-    artHeight: Dp,
-    margin: Dp,
-    menu: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit,
-    onPlay: () -> Unit,
-    onSeries: (() -> Unit)?,
-    onOpen: () -> Unit
-) {
-    Surface(
-        Modifier.fillMaxWidth().padding(start = margin, end = margin, bottom = 16.dp),
-        shape = MaterialTheme.shapes.extraLargeIncreased,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh
-    ) {
-        val artwork: @Composable (Modifier) -> Unit = { modifier ->
-            // 32dp shell - 8dp inset, for optical roundness at the adjacent corners.
-            Box(modifier.height(artHeight).clip(RoundedCornerShape(24.dp))) {
-                HomeHeroArtwork(item)
-            }
-        }
-        if (split) {
-            Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                HeroCopy(item, label, menu, onPlay, onSeries, onOpen, wide = true, Modifier.weight(1f))
-                artwork(Modifier.weight(1.22f))
-            }
-        } else {
-            Column(Modifier.padding(8.dp)) {
-                artwork(Modifier.fillMaxWidth())
-                HeroCopy(item, label, menu, onPlay, onSeries, onOpen, wide = false, Modifier.fillMaxWidth())
-            }
-        }
-    }
-}
-
-@Composable
-private fun HeroCopy(
-    item: MediaItemDto,
-    label: String,
-    menu: @Composable ColumnScope.(dismiss: () -> Unit) -> Unit,
-    onPlay: () -> Unit,
-    onSeries: (() -> Unit)?,
-    onOpen: () -> Unit,
-    wide: Boolean,
-    modifier: Modifier
-) {
-    var menuOpen by remember(item.id) { mutableStateOf(false) }
-    var lastPointer by remember { mutableStateOf(PointerType.Unknown) }
-    val style = MaterialTheme.typography
-    val colors = MaterialTheme.colorScheme
-    val headline = item.seriesName ?: item.name
-    val resume = item.userData.positionMs > 0 && !item.userData.played
-    Column(modifier.padding(horizontal = if (wide) 24.dp else 12.dp, vertical = 12.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, Modifier.weight(1f), style = style.labelLargeEmphasized, color = colors.tertiary)
-            Box {
-                TipIconButton("更多操作", onClick = { menuOpen = true }) {
-                    Icon(Icons.Filled.MoreHoriz, contentDescription = "更多操作")
-                }
-                AppMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) { menu { menuOpen = false } }
-            }
-        }
-        Tooltip(headline) {
-            Box(
-                Modifier.clip(MaterialTheme.shapes.small)
-                    .secondaryClick(onPointerType = { lastPointer = it }, onOpen = { menuOpen = true })
-                    .combinedClickable(
-                        role = Role.Button, onClickLabel = "查看详情", onClick = onOpen, onLongClickLabel = "打开菜单",
-                        onLongClick = { if (lastPointer != PointerType.Mouse) menuOpen = true }
-                    ).heightIn(min = 48.dp),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Text(headline, style = if (wide) style.displaySmallEmphasized else style.headlineSmallEmphasized,
-                    maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { heading() })
-            }
-        }
-        val metadata = listOfNotNull(item.year?.toString(), formatRuntime(item.runtimeMs),
-            item.communityRating?.let { "评分 ${(it * 10).toInt() / 10.0}" }).joinToString(" · ")
-        if (item.seriesName != null) {
-            Text(listOfNotNull(item.episodeLabel, item.name).joinToString(" · "),
-                style = style.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        }
-        if (metadata.isNotBlank()) {
-            Text(metadata, style = style.bodyMedium, color = colors.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-        }
-        if (resume) {
-            Spacer(Modifier.height(12.dp))
-            val time = "已看 ${formatDuration(item.userData.positionMs)}"
-            Text(time, style = style.labelMedium, color = colors.onSurfaceVariant)
-            if ((item.runtimeMs ?: 0L) > 0L) {
-                LinearProgressIndicator(
-                    progress = { item.userData.playedPercentage.toFloat().coerceIn(0f, 1f) },
-                    modifier = Modifier.padding(top = 4.dp).widthIn(max = 280.dp).fillMaxWidth(),
-                    trackColor = colors.surfaceContainerHighest
-                )
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.Center) {
-            PrimaryPageAction(if (resume) "继续播放" else "播放", Icons.Filled.PlayArrow, onPlay, largeTarget = wide)
-            FilledTonalButton(onClick = onOpen) { Text("详情") }
-            if (onSeries != null) TextButton(onClick = onSeries) { Text("整部剧") }
-        }
-    }
-}
-
-@Composable
-private fun BoxScope.HomeHeroArtwork(item: MediaItemDto) {
-    val colors = MaterialTheme.colorScheme
-    val artwork = item.backdropUrl ?: item.posterUrl
-    val palette = listOf(colors.secondaryContainer, colors.primaryContainer)
-    Box(Modifier.matchParentSize().background(Brush.linearGradient(palette)))
-    // Decorative silhouettes only, behind the media. No text depends on this image.
-    Canvas(Modifier.matchParentSize()) {
-        val center = Offset(size.width * 0.73f, size.height * 0.46f)
-        drawCircle(colors.tertiary.copy(alpha = 0.26f), size.minDimension * 0.38f, center)
-        drawCircle(colors.primary.copy(alpha = 0.23f), size.minDimension * 0.51f, Offset(center.x * 0.8f, center.y * 1.8f))
-        drawCircle(colors.primary.copy(alpha = 0.12f), size.minDimension * 0.32f, Offset(size.width * 0.16f, size.height * 0.27f))
-    }
-    if (artwork != null) {
-        AsyncImage(artwork, null, contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
     }
 }
 

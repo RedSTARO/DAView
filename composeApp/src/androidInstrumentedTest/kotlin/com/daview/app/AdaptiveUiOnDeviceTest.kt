@@ -116,7 +116,11 @@ class AdaptiveUiOnDeviceTest {
     fun selectedSeasonAndEpisodeAnchorSurviveResize() = onDevice("detail-continuity", AdaptiveDeviceWindow.SMALL) {
         openLibrary(SHOWS, SERIES_TITLE)
         openItem(SERIES_TITLE)
-        ui.reveal("second-season control") { it.hasLabel("Demo Season 2") && it.clickableAncestor() != null }
+        // The platform's page-sized accessibility scroll can overshoot the short season strip.
+        val scrollRegion = android.graphics.Rect(frame.usable).apply { inset(0, height() / 4) }
+        ui.reveal("second-season control", touchRegion = scrollRegion) {
+            it.hasLabel("Demo Season 2") && it.clickableAncestor() != null
+        }
         clickUsable("Demo Season 2")
         val end = "播放 S02E18"
         fun episodeNumber(node: android.view.accessibility.AccessibilityNodeInfo): Int? =
