@@ -10,7 +10,7 @@
 
 ## 系统栏与折叠过渡
 
-- **浏览沉浸**：状态栏继续显示。首页封面只在卡片内显示，标题与状态栏沿用页面底色；详情封面的装饰仍可画到透明状态栏后面，并随内容滚走。返回、刷新按钮、滚动区域和弹层仍在系统安全区内；装饰也不跨铰链。底部导航只延伸背景，点击目标不挤入系统导航区。Android 独立全屏播放恢复隐藏系统栏，退出播放恢复显示；分屏与 PiP 不主动隐藏系统栏。
+- **浏览和系统栏**：状态栏继续显示。首页和详情的封面都在卡片内，不绘制到状态栏或铰链。返回、刷新按钮、滚动区域和弹层留在系统安全区；导航只延伸背景。Android 独立全屏播放恢复隐藏系统栏，退出播放恢复显示；分屏与 PiP 不主动隐藏系统栏。
 - **折叠过渡**：保持同一页面与播放会话。姿态变化伴随实际排版变化时，先布置新的安全面板，再用 M3 的 `slow effects` 弹簧淡入新内容，透明度不回弹。即使没有可区分的铰链上报，Android 全屏窗口宽度明显变化（DAView 的判定：至少 144 dp 且相对较窄的一边至少 25%）并重新排版，也可触发这一过渡。仅尺寸触发的兜底不会推断铰链位置或强行做双栏。退出到后台数秒后回来、首次打开、普通旋转、小幅缩放、分屏、PiP 和键盘变化不单独触发动效；系统动画关闭时直接显示最终布局。
 - **播放连续性**：视频和字幕层不跟随 Compose 淡入，也不借机重建播放器或渲染视图。只淡入安全区域中的控件；原生控件自动隐藏时也保留一个短暂淡出的细边提示。
 
@@ -45,7 +45,7 @@
 ```powershell
 .\gradlew.bat :composeApp:assembleDebug :composeApp:assembleDebugAndroidTest :composeApp:desktopTest -PdaviewSideBySide=true
 .\scripts\verify-foldable-matrix.ps1 -Serial SERIAL -ConfirmDisposableTarget
-adb -s SERIAL shell am instrument -w -e class 'com.daview.app.FoldArrivalOnDeviceTest,com.daview.app.BrowseChromeOnDeviceTest' com.daview.app.debug.test/androidx.test.runner.AndroidJUnitRunner
+adb -s SERIAL shell am instrument -w -e class 'com.daview.app.FoldArrivalOnDeviceTest,com.daview.app.DetailEpisodesOnDeviceTest' com.daview.app.debug.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
 [验收脚本](../scripts/verify-foldable-matrix.ps1) 记录 APK 哈希、逻辑尺寸、安全区、铰链和每项结果；使用 `-Fit native` 可禁止拟合密度，需要至少约 1120×1120 px、160 dpi 的专用 AVD 来跑完矩阵。`-Case book,tabletop` 等可单独验收，`-Case seed` 仅准备内容。手动验证可由「Demo Shows → Demo Fold Series」切至第二季，在后段打开分集；查找「Demo Film 002」播放离线视频。按项目记录用实际系统分屏交换位置，播放时将焦点移到另一 App，并观察同一 MediaSession 的进度。

@@ -153,8 +153,8 @@ internal fun AdaptiveBrowse(
             enabled = imeTop == null
         )
 
-        // Layout policy, hit targets and popups use the safe panes. Only artwork and
-        // navigation backgrounds can paint in the system-bar strips at exterior edges.
+        // Pages (including their artwork) stay in safe panes. Only navigation
+        // backgrounds extend into the system-bar strips at exterior edges.
         fun WindowPane.allowDecoration(candidate: WindowPane): WindowPane = candidate.takeUnless {
             fold != null && fold.dividesWindow && fold.left < it.right && fold.right > it.left &&
                 fold.top < it.bottom && fold.bottom > it.top
@@ -163,13 +163,6 @@ internal fun AdaptiveBrowse(
         fun WindowPane.atStatusEdge(): WindowPane =
             if (height > 0.dp && top == viewport.top) allowDecoration(copy(top = y)) else this
 
-        // On Home the cover is contained in its card; only Detail can extend artwork
-        // above the pane. The root surface paints behind the Home status bar.
-        fun WindowPane.forPage(entry: BackStackEntry): WindowPane =
-            if (entry.screen is Screen.Detail) atStatusEdge() else this
-
-        val mainPaint = mainPane.forPage(mainEntry)
-        val detailPaint = detailEntry?.let { checkNotNull(detailPane).forPage(it) }
         val navPaint = navPane?.let { pane ->
             val paint = if (rail) pane.atStatusEdge() else pane
             if (imeTop == null && pane.height > 0.dp && pane.bottom == viewport.bottom) {
@@ -179,10 +172,10 @@ internal fun AdaptiveBrowse(
         val navColor = MaterialTheme.colorScheme.surfaceContainer
         val expanded = rail && panes.canExpandRail && railWidth >= (BrowseRailWidth + ExpandedBrowseRailWidth) / 2
         val toggleRail = onToggleRail.takeIf { panes.canExpandRail }
-        fun consumed(top: Dp = topInset) = PaddingValues(
+        fun consumed() = PaddingValues(
             start = if (rtl) rightInset else leftInset,
             end = if (rtl) leftInset else rightInset,
-            top = top,
+            top = topInset,
             bottom = maxOf(safeBottom, imeBottom)
         )
 
@@ -208,8 +201,6 @@ internal fun AdaptiveBrowse(
                 key(entry.key) {
                     val companion = entry == detailEntry
                     val pane = if (companion) checkNotNull(detailPane) else mainPane
-                    val paint = if (companion) checkNotNull(detailPaint) else mainPaint
-                    val topOverlap = pane.top - paint.top
                     val reportFocus: (Boolean) -> Unit = remember(entry.key) {
                         { focused ->
                             if (focused) focusedEditor = entry.key
@@ -218,11 +209,10 @@ internal fun AdaptiveBrowse(
                     }
                     Box(
                         Modifier.layoutId(entry.key).clipWithFoldArrival(arrival)
-                            .consumeWindowInsets(consumed(top = (topInset - topOverlap).coerceAtLeast(0.dp)))
+                            .consumeWindowInsets(consumed())
                     ) {
                         CompositionLocalProvider(
                             LocalBrowsePane provides pane.takeIf { panes.divided },
-                            LocalBrowseTopOverlap provides topOverlap,
                             LocalBrowseCompanionVisible provides companion,
                             LocalSelectedBrowseItem provides selectedId.takeIf { sourceVisible && entry == source },
                             LocalBrowseEditorFocus provides reportFocus
@@ -249,8 +239,8 @@ internal fun AdaptiveBrowse(
             val nav = navPaint?.let { pane ->
                 measurables.first { it.layoutId == BrowseSlot.Navigation }.measure(fixed(pane))
             }
-            val mainPage = measurables.first { it.layoutId == mainEntry.key }.measure(fixed(mainPaint))
-            val detailPage = detailPaint?.let { pane ->
+            val mainPage = measurables.first { it.layoutId == mainEntry.key }.measure(fixed(mainPane))
+            val detailPage = detailPane?.let { pane ->
                 measurables.first { it.layoutId == detailEntry?.key }.measure(fixed(pane))
             }
             val message = measurables.first { it.layoutId == BrowseSlot.Messages }.measure(
@@ -259,8 +249,8 @@ internal fun AdaptiveBrowse(
             val overlay = measurables.first { it.layoutId == BrowseSlot.Blocking }.measure(fixed(activePane))
             layout(constraints.maxWidth, constraints.maxHeight) {
                 if (nav != null && navPaint != null) nav.place(left(navPaint), top(navPaint))
-                mainPage.place(left(mainPaint), top(mainPaint))
-                if (detailPage != null && detailPaint != null) detailPage.place(left(detailPaint), top(detailPaint))
+                mainPage.place(left(mainPane), top(mainPane))
+                if (detailPage != null && detailPane != null) detailPage.place(left(detailPane), top(detailPane))
                 message.place(left(activePane) + (width(activePane) - message.width) / 2, top(activePane) + height(activePane) - message.height)
                 overlay.place(left(activePane), top(activePane))
             }

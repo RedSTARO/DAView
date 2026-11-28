@@ -58,6 +58,16 @@ class DetailLayoutTest {
     }
 
     @Test
+    fun `synopsis stays beside the hero on split and before the sibling shelf on one pane`() {
+        val rows = detailRows(true, listOf("e2", "e3"), related = false, people = true, shelf = true, synopsis = true)
+        assertEquals(listOf("hero", "synopsis", "people"), rows.summary)
+        assertEquals(listOf("hero", "synopsis", "seasons", "people", "files"), rows.stacked)
+        val preview = DetailAnchor("synopsis", 15)
+        val bookmark = DetailBookmark().record(preview)
+        assertEquals(1 to 15, resolveDetailAnchor(rows.stacked, bookmark.primaryAnchor(split = false, currentEpisode = "e2")))
+    }
+
+    @Test
     fun `empty or failed season reads leave a missing key available for restoration`() {
         val saved = DetailBookmark().record(DetailAnchor("episode:e8", 35))
         val absent = detailRows(true, emptyList(), related = false, people = true).stacked

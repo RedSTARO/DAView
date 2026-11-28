@@ -144,6 +144,40 @@ class AdaptiveUiOnDeviceTest {
     }
 
     @Test
+    fun siblingShelfOpensDetailsAndKeepsFileInfoSecondary() = onDevice("episode-shelf", AdaptiveDeviceWindow.LARGE_PORTRAIT) {
+        openLibrary(SHOWS, SERIES_TITLE)
+        openItem(SERIES_TITLE)
+        val scrollRegion = android.graphics.Rect(frame.usable).apply { inset(width() / 5, height() / 4) }
+        ui.reveal("second-season control", touchRegion = scrollRegion) {
+            it.hasLabel("Demo Season 2") && it.clickableAncestor() != null
+        }
+        clickUsable("Demo Season 2")
+        fun openEpisode(number: Int) {
+            val caption = "S02E0$number · Demo S2E00$number"
+            // A page-sized accessibility scroll can jump past the first rows when a season loads.
+            ui.reveal(caption, touchRegion = scrollRegion) { it.hasLabel(caption) && it.clickableAncestor() != null }
+            clickUsable(caption)
+            assertDetail("Demo S2E00$number")
+        }
+        openEpisode(2)
+        val play = ui.reveal("same-season thumbnail play action") { it.hasLabel("播放 S02E02") }
+        assertUsable("same-season thumbnail play action", play)
+        check(play.clickableAncestor() != null)
+        openEpisode(3)
+
+        val path = "/daview-adaptive-demo/shows/Season 2/Demo S2E003.mkv"
+        ui.reveal("collapsed file info") { it.hasLabel("文件信息") }
+        check(ui.findVisible { it.hasLabel(path) } == null) { "Technical fields must start collapsed" }
+        clickUsable("文件信息")
+        assertUsable("expanded file path", ui.reveal("expanded file path") { it.hasLabel(path) })
+
+        clickUsable("返回")
+        assertUsable("return to the source sibling", ui.awaitVisible("分集详情 · S02E02"))
+        clickUsable("返回")
+        assertUsable("restore the chosen season's episode list", ui.awaitAction("play S02E02 after Back") { it.hasLabel("播放 S02E02") })
+    }
+
+    @Test
     fun standaloneSeriesPairsOnlyWhenUseful() = onDevice("standalone-detail", AdaptiveDeviceWindow.ROOMY_DETAIL) {
         fun summaryPane() = ui.findVisible { android.os.Build.VERSION.SDK_INT >= 28 && it.paneTitle?.toString() == "媒体简介" }
         openItem(FILM_TITLE)
@@ -177,7 +211,7 @@ class AdaptiveUiOnDeviceTest {
         openItem(FILM_TITLE)
         assertUsable("return from detail", ui.awaitAction("返回"))
         assertUsable("resume film", ui.awaitVisible("continue film") { node ->
-            node.text?.startsWith("继续 ") == true && node.clickableAncestor() != null
+            node.text?.startsWith("继续播放 ") == true && node.clickableAncestor() != null
         })
         // A source pane may or may not share this window with Detail. Either way, Back must
         // return to the real source and make its title and selection action accessible again.
