@@ -1,0 +1,33 @@
+{
+  "version": "a2278ab",
+  "packageVersion": "1.0.144",
+  "publishedAt": "2026-11-28T11:38:59Z",
+  "pageUrl": "https://github.com/RedSTARO/DAView/releases/tag/ci",
+  "notes": "CI 构建 a2278ab（a2278ab1b11d56fa2438d970f001db0cc7f1c526）\n\n- feat(detail): redesign media and episode playback surfaces\n- fix(home): crop all spotlight artwork edge to edge\n- feat(home): redesign spotlight as a cinematic banner\n- fix(settings): redesign adaptive category navigation\n- fix(search): keep editor width stable with the keyboard\n- fix(home): keep spotlight artwork out of the status bar\n- feat(ui): redesign DAView with Material 3 Expressive\n- fix(android): restore immersive chrome and visible fold transitions",
+  "assets": {
+    "android": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-a2278ab.apk",
+      "name": "DAView-a2278ab.apk",
+      "sha256": "02f48921343eff7f76c30fcdcfa7aac4e4e2aafe76fdc627ec0d5c2773710c87",
+      "size": 8973149
+    },
+    "linux": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-a2278ab.deb",
+      "name": "DAView-a2278ab.deb",
+      "sha256": "c39889d7fd1c9dfc74064b962487e748e6b9c7fbb0039701767e4c6f5e46297b",
+      "size": 57303752
+    },
+    "macos": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-a2278ab.dmg",
+      "name": "DAView-a2278ab.dmg",
+      "sha256": "a64504fa67e4d35fb7deba9f04c2a8efff0a75bb0660c98060865b4756a550cd",
+      "size": 76324283
+    },
+    "windows": {
+      "url": "https://github.com/RedSTARO/DAView/releases/download/ci/DAView-a2278ab.msi",
+      "name": "DAView-a2278ab.msi",
+      "sha256": "d6684d79edcf84b2bc6d7332ac6ea37fe9925fb0194f7b8b22c45e1d31356733",
+      "size": 113421652
+    }
+  }
+}
