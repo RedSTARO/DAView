@@ -124,7 +124,6 @@ internal fun HomeSpotlight(
         val copyWidth = if (sideArtwork) desiredCopy else maxWidth
         val showSeries = onSeries != null && copyWidth - inset * 2 >= allActions + 4.dp
         val artworkHeight = (maxWidth * 0.32f).coerceIn(104.dp, 188.dp)
-        val poster = image != null && image != item.backdropUrl
 
         Surface(shape = MaterialTheme.shapes.extraLargeIncreased, color = surface) {
             Box {
@@ -134,7 +133,6 @@ internal fun HomeSpotlight(
                     Box(Modifier.matchParentSize().padding(start = copyWidth - 16.dp)) {
                         SpotlightImage(
                             image = image,
-                            poster = poster,
                             onError = { failedArtwork = failedArtwork + image },
                             modifier = Modifier.fillMaxSize().drawWithContent {
                                 drawContent()
@@ -155,7 +153,6 @@ internal fun HomeSpotlight(
                     if (image != null && stackedArtwork) {
                         SpotlightImage(
                             image = image,
-                            poster = poster,
                             onError = { failedArtwork = failedArtwork + image },
                             modifier = Modifier.fillMaxWidth().height(artworkHeight)
                         )
@@ -249,14 +246,14 @@ internal fun HomeSpotlight(
     }
 }
 
-/** A portrait poster is shown intact, on a tonal matte, when there's no landscape backdrop. */
+/** Crop to the artwork area regardless of source; an episode still can arrive as a poster. */
 @Composable
-private fun SpotlightImage(image: String, poster: Boolean, onError: () -> Unit, modifier: Modifier) {
+private fun SpotlightImage(image: String, onError: () -> Unit, modifier: Modifier) {
     key(image) {
         AsyncImage(
             model = image,
             contentDescription = null,
-            contentScale = if (poster) ContentScale.Fit else ContentScale.Crop,
+            contentScale = ContentScale.Crop,
             modifier = modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh),
             onError = { onError() }
         )

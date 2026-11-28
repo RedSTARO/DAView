@@ -62,16 +62,19 @@ class HomeSpotlightOnDeviceTest {
     }
 
     @Test
-    fun wideArtworkFillsItsEdgeWithoutPaintingUnderCopyOrOutsideTheCard() = withSpotlight { _, _ ->
+    fun wideEpisodeStillStoredAsPosterFillsBothEdgesWithoutBleeding() = withSpotlight(
+        Scene(posterOnly = true)
+    ) { _, _ ->
         val fixture = compose.onNodeWithTag(Fixture)
         compose.waitUntil(timeoutMillis = 5_000) {
             val image = fixture.captureToImage()
-            image.toPixelMap()[image.width - 48, 6] == Artwork
+            image.toPixelMap()[image.width - 48, image.height / 2] == Artwork
         }
         val image = fixture.captureToImage()
         val pixels = image.toPixelMap()
+        assertEquals("no matte along the top edge", Artwork, pixels[image.width - 48, 6])
+        assertEquals("no matte along the bottom edge", Artwork, pixels[image.width - 48, image.height - 7])
         assertEquals(DaViewDarkColors.surfaceContainer, pixels[80, 6])
-        assertEquals(Artwork, pixels[image.width - 48, image.height - 7])
         assertEquals(DaViewDarkColors.surface, pixels[0, 0])
 
         val play = compose.onNodeWithText("继续播放").assertHasClickAction().fetchSemanticsNode().boundsInRoot
@@ -110,13 +113,14 @@ class HomeSpotlightOnDeviceTest {
 
     @Test
     fun unavailableArtworkAndUnknownDurationLeaveNoPlaceholder() = withSpotlight(
-        Scene(width = 330.dp, duration = null, dark = false)
+        Scene(width = 330.dp, duration = null, dark = false, posterOnly = true)
     ) { _, scene ->
         val fixture = compose.onNodeWithTag(Fixture)
         compose.waitUntil(timeoutMillis = 5_000) {
             val image = fixture.captureToImage()
             image.toPixelMap()[image.width / 2, 6] == Artwork
         }
+        assertEquals("stacked artwork fills its width", Artwork, fixture.captureToImage().toPixelMap()[12, 48])
         val withArt = fixture.fetchSemanticsNode().boundsInRoot.height
         compose.runOnIdle { scene.value = scene.value.copy(brokenArt = true) }
         compose.waitUntil(timeoutMillis = 5_000) {
@@ -151,17 +155,19 @@ class HomeSpotlightOnDeviceTest {
                         ) {
                             val colors = if (current.dark) DaViewDarkColors else DaViewLightColors
                             Box(Modifier.width(current.width).background(colors.surface).testTag(Fixture)) {
+                                val artwork = when {
+                                    !current.art -> null
+                                    current.brokenArt -> file.resolveSibling("missing-${file.name}").absolutePath
+                                    else -> file.absolutePath
+                                }
                                 HomeSpotlight(
                                     item = MediaItemDto(
                                         "episode", "shows", ItemKind.EPISODE,
                                         seriesName = if (current.fontScale > 1f) LongTitle else "Demo Series",
                                         name = "The opening, but not the ending", parentIndexNumber = 2, indexNumber = 1,
                                         runtimeMs = current.duration, userData = UserDataDto(positionMs = 150_000),
-                                        backdropUrl = when {
-                                            !current.art -> null
-                                            current.brokenArt -> file.resolveSibling("missing-${file.name}").absolutePath
-                                            else -> file.absolutePath
-                                        }
+                                        backdropUrl = artwork.takeUnless { current.posterOnly },
+                                        posterUrl = artwork.takeIf { current.posterOnly }
                                     ),
                                     label = "继续观看", shortPane = current.short,
                                     onPlay = { actions += "play" }, onOpen = { actions += "details" }, onSeries = { actions += "series" }
@@ -184,6 +190,7 @@ class HomeSpotlightOnDeviceTest {
         val dark: Boolean = true,
         val art: Boolean = true,
         val brokenArt: Boolean = false,
+        val posterOnly: Boolean = false,
         val duration: Long? = 600_000
     )
 
